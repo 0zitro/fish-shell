@@ -1,3 +1,5 @@
+use ::core::borrow::{Borrow as _};
+
 use super::prelude::*;
 use crate::common::{bytes2wcstring, get_program_name, osstr2wcstring, str2wcstring};
 use crate::env::config_paths::get_fish_path;
@@ -52,6 +54,7 @@ macro_rules! str_enum {
 use StatusCmd::*;
 str_enum!(
     StatusCmd,
+    (STATUS_ARGV, "argv", "current-argv"),
     (STATUS_BASENAME, "basename", "current-basename"),
     (STATUS_BUILD_INFO, "build-info", "buildinfo"),
     (STATUS_CURRENT_CMD, "current-command"),
@@ -648,6 +651,39 @@ pub fn status(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -> B
                         None => wgettext!("Not a function").to_owned(),
                     };
                     streams.out.appendln(&f);
+                }
+                STATUS_ARGV => {
+                    let argv = parser.get_function_argv(opts.level);
+                    if argv.is_none() {
+                        streams.out.appendln(wgettext!("Not a function"));
+                        return Ok(SUCCESS);
+                    }
+                    let argv = argv.unwrap();
+
+                    // The following logic is copied from string-collect handling
+                    //   (`<Collect as StringSubCommand<'_>>::handle`) in `builtins/string/collect.rs`
+                    //   with ::
+                    //     `want_newline` := false for all args,
+                    //     `no_trim_newlines` := true,
+                    //     `allow_empty` := true.
+                    let mut appended = 0usize;
+                    for arg in argv.borrow().iter() {
+                        streams
+                            .out
+                            .append_with_separation(arg, SeparationType::explicitly, false);
+                        appended += arg.len();
+                    }
+                    // If we haven't printed anything and "no_empty" is set,
+                    // print something empty. Helps with empty elision:
+                    // echo (true | string collect --allow-empty)"bar"
+                    // prints "bar".
+                    if appended == 0 {
+                        streams.out.append_with_separation(
+                            L!(""),
+                            SeparationType::explicitly,
+                            true, /* historical behavior is to always print a newline */
+                        );
+                    }
                 }
                 STATUS_LINE_NUMBER => {
                     // TBD is how to interpret the level argument when fetching the line number.

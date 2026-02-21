@@ -1052,8 +1052,58 @@ impl Parser {
         }
     }
 
+    /// Return the function argv for the specified stack frame. Default is one (current frame).
+    pub fn get_function_argv(&self, level: i32) -> Option<Ref<'_, [WString]>> {
+        if level < 0 {
+            return None;
+        }
+
+        if level == 0 {
+            // Return the function name for the level preceding the most recent breakpoint. If there
+            // isn't one return the function name for the current level.
+            // Walk until we find a breakpoint, then take the next function.
+            return self
+                .blocks_iter_rev()
+                .skip_while(|b| b.typ() != BlockType::breakpoint)
+                .find_map(|b| {
+                    Ref::filter_map(b, |b| match b.data() {
+                        Some(BlockData::Function { args, .. }) => Some(args.as_slice()),
+                        _ => None,
+                    })
+                    .ok()
+                });
+        }
+
+        let mut remaining = level;
+        for b in self
+            .blocks_iter_rev()
+            // Historical: If we want the topmost function, but we are really in a file sourced by a
+            // function, don't consider ourselves to be in a function.
+            .take_while(|b| !(level == 1 && b.typ() == BlockType::source))
+        {
+            if !b.is_function_call() {
+                continue;
+            }
+            remaining -= 1;
+            if remaining != 0 {
+                continue;
+            }
+            debug_assert!(b.is_function_call());
+            return Ref::filter_map(b, |b| match b.data() {
+                Some(BlockData::Function { args, .. }) => Some(args.as_slice()),
+                _ => None,
+            })
+            .ok();
+        }
+        None
+    }
+
     /// Return the function name for the specified stack frame. Default is one (current frame).
     pub fn get_function_name(&self, level: i32) -> Option<WString> {
+        if level < 0 {
+            return None;
+        }
+
         if level == 0 {
             // Return the function name for the level preceding the most recent breakpoint. If there
             // isn't one return the function name for the current level.
@@ -1067,27 +1117,27 @@ impl Parser {
                 });
         }
 
-        self.blocks_iter_rev()
+        let mut remaining = level;
+        for b in self
+            .blocks_iter_rev()
             // Historical: If we want the topmost function, but we are really in a file sourced by a
             // function, don't consider ourselves to be in a function.
             .take_while(|b| !(level == 1 && b.typ() == BlockType::source))
-            .map(|b| (b, 0))
-            .map(|(b, level)| {
-                if b.is_function_call() {
-                    (b, level + 1)
-                } else {
-                    (b, level)
-                }
-            })
-            .skip_while(|(_, l)| *l != level)
-            .inspect(|(b, _)| debug_assert!(b.is_function_call()))
-            .map(|(b, _)| {
-                let Some(BlockData::Function { name, .. }) = b.data() else {
-                    unreachable!()
-                };
-                name.clone()
-            })
-            .next()
+        {
+            if !b.is_function_call() {
+                continue;
+            }
+            remaining -= 1;
+            if remaining != 0 {
+                continue;
+            }
+            debug_assert!(b.is_function_call());
+            let Some(BlockData::Function { name, .. }) = b.data() else {
+                unreachable!()
+            };
+            return Some(name.clone());
+        }
+        None
     }
 
     /// Promotes a job to the front of the list.
