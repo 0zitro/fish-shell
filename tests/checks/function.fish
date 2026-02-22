@@ -244,4 +244,45 @@ for flag in --on-process-exit --on-job-exit
     # CHECKERR:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
 end
 
+function transparent_fn --no-scope-shadowing=transparent
+end
+functions transparent_fn | string match '*--no-scope-shadowing=transparent*'
+# CHECK: function transparent_fn --no-scope-shadowing=transparent
+
+function bad_transparent_mode --no-scope-shadowing=banana
+end
+# CHECKERR: {{.*}}/function.fish (line {{\d+}}): function: --no-scope-shadowing: expected 'function' or 'transparent', got 'banana'
+# CHECKERR: function bad_transparent_mode --no-scope-shadowing=banana
+# CHECKERR: ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+
+function bad_transparent_flag --transparent-scope
+end
+# CHECKERR: {{.*}}/function.fish (line {{\d+}}): function: --transparent-scope: unknown option
+# CHECKERR: function bad_transparent_flag --transparent-scope
+# CHECKERR: ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+
+function transparent_callee --no-scope-shadowing=transparent --argument-names key value
+    set -l value persisted:$value
+    set -l argv persisted-argv $argv[2..]
+    set -l result $key:$value
+end
+
+function transparent_caller --argument-names value
+    set -l argv caller-argv
+    transparent_callee key-from-caller $value tail
+    echo caller-value:$value
+    echo caller-argv:$argv
+    set -q key
+    echo key-exists:$status
+    echo caller-result:$result
+end
+
+transparent_caller initial
+# CHECK: 1 2 3
+# CHECK: 1 2 3
+# CHECK: caller-value:persisted:initial
+# CHECK: caller-argv:persisted-argv caller-argv:initial caller-argv:tail
+# CHECK: key-exists:1
+# CHECK: caller-result:key-from-caller:persisted:initial
+
 exit 0

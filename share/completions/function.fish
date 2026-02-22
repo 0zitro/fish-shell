@@ -36,6 +36,6 @@ complete -c function -s s -l on-signal -d "Make the function a signal event hand
 complete -c function -s v -l on-variable -d "Make the function a variable update event handler" -xa "(__fish_complete_variables)"
 complete -c function -s e -l on-event -d "Make the function a generic event handler" -xa "(__fish_complete_function_event_handlers)"
 complete -c function -s a -l argument-names -d "Specify named arguments" -x
-complete -c function -s S -l no-scope-shadowing -d "Do not shadow variable scope of calling function"
+complete -c function -s S -l no-scope-shadowing -d "Do not shadow caller scope (modes: function, transparent)"
 complete -c function -s w -l wraps -d "Inherit completions from the given command" -xa "(__fish_complete_command)"
 complete -c function -s V -l inherit-variable -d "Snapshot and define local variable" -xa "(__fish_complete_variables)"

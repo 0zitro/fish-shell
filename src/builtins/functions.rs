@@ -234,12 +234,13 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
             };
             streams.out.appendln(&line.to_wstring());
 
-            let shadow = match props.as_ref() {
+            let scope_context = match props.as_ref() {
+                Some(p) if p.transparent_scope => L!("transparent").to_owned(),
                 Some(p) if p.shadow_scope => L!("scope-shadowing").to_owned(),
                 Some(p) if !p.shadow_scope => L!("no-scope-shadowing").to_owned(),
                 _ => L!("n/a").to_owned(),
             };
-            streams.out.appendln(&shadow);
+            streams.out.appendln(&scope_context);
 
             let desc = match props.as_ref() {
                 Some(p) => {

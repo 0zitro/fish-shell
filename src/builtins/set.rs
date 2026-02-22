@@ -819,6 +819,16 @@ fn erase(
                 );
             }
 
+            if retval == EnvStackSetResult::Ok
+                && opts.local
+                && mode.contains(EnvMode::LOCAL)
+                && !opts.function
+                && !opts.global
+                && !opts.universal
+            {
+                parser.mark_transparent_function_local_write(split.varname);
+            }
+
             // Set $status to the last error value.
             // This is cheesy, but I don't expect this to be checked often.
             if retval != EnvStackSetResult::Ok {
@@ -1024,6 +1034,9 @@ fn set_internal(
         env_set_reporting_errors(cmd, opts, split.varname, mode, new_values, streams, parser);
 
     if retval == EnvStackSetResult::Ok {
+        if opts.local && !opts.function && !opts.global && !opts.universal {
+            parser.mark_transparent_function_local_write(split.varname);
+        }
         warn_if_uvar_shadows_global(cmd, opts, split.varname, streams, parser);
     }
 

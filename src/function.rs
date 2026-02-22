@@ -37,6 +37,9 @@ pub struct FunctionProperties {
     /// Set to true if invoking this function shadows the variables of the underlying function.
     pub shadow_scope: bool,
 
+    /// Set to true if invoking this function allows access to the variables of the underlying function.
+    pub transparent_scope: bool,
+
     /// Whether the function was autoloaded.
     /// This is the only field which is mutated after the properties are created.
     pub is_autoload: RelaxedAtomicBool,
@@ -436,7 +439,9 @@ impl FunctionProperties {
             out.push_utfstr(&escape(desc));
         }
 
-        if !self.shadow_scope {
+        if self.transparent_scope {
+            out.push_str(" --no-scope-shadowing=transparent");
+        } else if !self.shadow_scope {
             out.push_str(" --no-scope-shadowing");
         }
 

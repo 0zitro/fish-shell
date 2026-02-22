@@ -240,6 +240,15 @@ function test_color_option
     echo hello
 end
 
+function transparent_details --no-scope-shadowing=transparent
+end
+functions -Dv transparent_details
+#CHECK: {{.*}}checks/functions.fish
+#CHECK: not-autoloaded
+#CHECK: {{\d+}}
+#CHECK: transparent
+#CHECK:
+
 functions --color=invalid
 # CHECKERR: functions: Invalid value for '--color' option: 'invalid'. Expected 'always', 'never', or 'auto'
 

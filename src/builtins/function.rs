@@ -18,6 +18,7 @@ use std::sync::Arc;
 struct FunctionCmdOpts {
     print_help: bool,
     shadow_scope: bool,
+    transparent_scope: bool,
     description: WString,
     events: Vec<EventDescription>,
     named_arguments: Vec<WString>,
@@ -30,6 +31,7 @@ impl Default for FunctionCmdOpts {
         Self {
             print_help: false,
             shadow_scope: true,
+            transparent_scope: false,
             description: WString::new(),
             events: Vec::new(),
             named_arguments: Vec::new(),
@@ -41,7 +43,7 @@ impl Default for FunctionCmdOpts {
 
 // This command is atypical in using the "-" (RETURN_IN_ORDER) option for flag parsing.
 // This is needed due to the semantics of the -a/--argument-names flag.
-const SHORT_OPTIONS: &wstr = L!("-a:d:e:hj:p:s:v:w:SV:");
+const SHORT_OPTIONS: &wstr = L!("-a:d:e:hj:p:s:v:w:S::V:");
 #[rustfmt::skip]
 const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("description"), ArgType::RequiredArgument, 'd'),
@@ -53,7 +55,7 @@ const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("wraps"), ArgType::RequiredArgument, 'w'),
     wopt(L!("help"), ArgType::NoArgument, 'h'),
     wopt(L!("argument-names"), ArgType::RequiredArgument, 'a'),
-    wopt(L!("no-scope-shadowing"), ArgType::NoArgument, 'S'),
+    wopt(L!("no-scope-shadowing"), ArgType::OptionalArgument, 'S'),
     wopt(L!("inherit-variable"), ArgType::RequiredArgument, 'V'),
 ];
 
@@ -201,6 +203,19 @@ fn parse_cmd_opts(
             }
             'S' => {
                 opts.shadow_scope = false;
+                opts.transparent_scope = false;
+                if let Some(scope_mode) = w.woptarg {
+                    if scope_mode == L!("transparent") {
+                        opts.transparent_scope = true;
+                    } else if scope_mode != L!("function") {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "%s: --no-scope-shadowing: expected 'function' or 'transparent', got '%s'",
+                            cmd,
+                            scope_mode
+                        ));
+                        return Err(STATUS_INVALID_ARGS);
+                    }
+                }
             }
             'w' => {
                 opts.wrap_targets.push(w.woptarg.unwrap().to_owned());
@@ -344,6 +359,7 @@ pub fn function(
         description: LocalizableString::from_external_source(opts.description),
         inherit_vars: inherit_vars.into_boxed_slice(),
         shadow_scope: opts.shadow_scope,
+        transparent_scope: opts.transparent_scope,
         is_autoload: RelaxedAtomicBool::new(false),
         definition_file,
         is_copy: false,

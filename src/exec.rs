@@ -61,6 +61,7 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::slice;
+use std::collections::HashSet;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicUsize, Ordering},
@@ -941,11 +942,21 @@ fn exec_external_command(
 
 // Given that we are about to execute a function, push a function block and set up the
 // variable environment.
+struct LocalBindingSnapshot {
+    name: WString,
+    value: Option<Vec<WString>>,
+}
+
+struct FunctionEnvironment {
+    block: BlockId,
+    transparent_bindings: Option<Vec<LocalBindingSnapshot>>,
+}
+
 fn function_prepare_environment(
     parser: &Parser,
     mut argv: Vec<WString>,
     props: &FunctionProperties,
-) -> BlockId {
+) -> FunctionEnvironment {
     // Extract the function name and remaining arguments.
     let mut func_name = WString::new();
     if !argv.is_empty() {
@@ -953,11 +964,15 @@ fn function_prepare_environment(
         func_name = argv.remove(0);
     }
 
-    let fb = parser.push_block(Block::function_block(
+    let env = FunctionEnvironment {
+        block: parser.push_block(Block::function_block(
         func_name,
         argv.clone(),
         props.shadow_scope,
-    ));
+        !props.transparent_scope,
+        )),
+        transparent_bindings: None,
+    };
     let vars = parser.vars();
 
     // Setup the environment for the function. There are three components of the environment:
@@ -965,13 +980,51 @@ fn function_prepare_environment(
     // 2. inherited variables
     // 3. argv
 
-    let mode = parser.convert_env_set_mode(ParserEnvSetMode::user(EnvMode::LOCAL));
-
     let mut overwrite_argv = false;
-    for (idx, named_arg) in props.named_arguments.iter().enumerate() {
+    let mut protected_names = vec![];
+    let mut protected_name_set = HashSet::<WString>::new();
+    let mut protect_name = |name: &wstr| {
+        if protected_name_set.insert(name.to_owned()) {
+            protected_names.push(name.to_owned());
+        }
+    };
+
+    for named_arg in props.named_arguments.iter() {
         if named_arg == L!("argv") {
             overwrite_argv = true;
         }
+        protect_name(named_arg);
+    }
+
+    for (key, _) in &*props.inherit_vars {
+        if key == L!("argv") {
+            overwrite_argv = true;
+        }
+        protect_name(key);
+    }
+
+    if !overwrite_argv {
+        protect_name(L!("argv"));
+    }
+
+    let mut env = env;
+    if props.transparent_scope {
+        parser.push_transparent_function_call(
+            protected_names.iter().cloned().collect::<HashSet<_>>(),
+        );
+        env.transparent_bindings = Some(
+            protected_names
+                .into_iter()
+                .map(|name| LocalBindingSnapshot {
+                    value: vars.getf(&name, EnvMode::LOCAL).map(|v| v.as_list().to_vec()),
+                    name,
+                })
+                .collect(),
+        );
+    }
+
+    let mode = parser.convert_env_set_mode(ParserEnvSetMode::user(EnvMode::LOCAL));
+    for (idx, named_arg) in props.named_arguments.iter().enumerate() {
         if idx < argv.len() {
             vars.set_one(named_arg, mode, argv[idx].clone());
         } else {
@@ -980,21 +1033,32 @@ fn function_prepare_environment(
     }
 
     for (key, value) in &*props.inherit_vars {
-        if key == L!("argv") {
-            overwrite_argv = true;
-        }
         vars.set(key, mode, value.clone());
     }
 
     if !overwrite_argv {
         vars.set_argv(argv, mode.is_repainting);
     }
-    fb
+    env
 }
 
 // Given that we are done executing a function, restore the environment.
-fn function_restore_environment(parser: &Parser, block: BlockId) {
-    parser.pop_block(block);
+fn function_restore_environment(parser: &Parser, env: FunctionEnvironment) {
+    if let Some(bindings) = env.transparent_bindings {
+        let explicit_local_writes = parser.pop_transparent_function_call();
+        for binding in bindings {
+            if explicit_local_writes.contains(&binding.name) {
+                continue;
+            }
+            if let Some(value) = binding.value {
+                parser.set_var(&binding.name, ParserEnvSetMode::new(EnvMode::LOCAL), value);
+            } else {
+                parser.remove_var(&binding.name, ParserEnvSetMode::new(EnvMode::LOCAL));
+            }
+        }
+    }
+
+    parser.pop_block(env.block);
 
     // If we returned due to a return statement, then stop returning now.
     parser.libdata_mut().returning = false;
@@ -1052,7 +1116,7 @@ fn get_performer_for_function(
     let argv = p.argv().clone();
     Ok(Box::new(move |parser: &Parser, _out, _err| {
         // Pull out the job list from the function.
-        let fb = function_prepare_environment(parser, argv, &props);
+        let env = function_prepare_environment(parser, argv, &props);
         let body_node = props.func_node.child_ref(|n| &n.jobs);
         let mut res = parser.eval_node(
             &body_node,
@@ -1061,7 +1125,7 @@ fn get_performer_for_function(
             BlockType::top,
             false,
         );
-        function_restore_environment(parser, fb);
+        function_restore_environment(parser, env);
 
         // If the function did not execute anything, treat it as success.
         if res.was_empty {

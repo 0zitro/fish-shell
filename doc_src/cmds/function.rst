@@ -48,10 +48,12 @@ The following options are available:
 **-s** *SIGSPEC* or **--on-signal** *SIGSPEC*
     Run this function when the signal ``SIGSPEC`` is delivered. ``SIGSPEC`` can be a signal number, or the signal name, such as ``SIGHUP`` (or just ``HUP``). Note that the signal must have been delivered to :program:`fish`; for example, :kbd:`ctrl-c` sends ``SIGINT`` to the foreground process group, which will not be :program:`fish` if you are running another command at the time. Observing a signal will prevent fish from exiting in response to that signal.
 
-**-S** or **--no-scope-shadowing**
+**-S** or **--no-scope-shadowing**\ [=\ *MODE*]
     Allows the function to access the variables of calling functions. Normally, any variables inside the function that have the same name as variables from the calling function are "shadowed", and their contents are independent of the calling function.
 
     It's important to note that this does not capture referenced variables or the scope at the time of function declaration! At this time, fish does not have any concept of closures, and variable lifetimes are never extended. In other words, by using **--no-scope-shadowing** the scope of the function each time it is run is shared with the scope it was *called* from rather than the scope it was *defined* in.
+
+    *MODE* may be ``function`` (the default) or ``transparent``. ``function`` keeps temporary call bindings such as ``argv`` and inherited variables local to the call frame. ``transparent`` runs without creating a new variable scope, so ``set -l`` in the callee writes to the caller's local scope.
 
 **-V** or **--inherit-variable NAME**
     Snapshots the value of the variable ``NAME`` and defines a local variable with that same name and value when the function is defined. This is similar to a closure in other languages like Python but a bit different. Note the word "snapshot" in the first sentence. If you change the value of the variable after defining the function, even if you do so in the same scope (typically another function) the new value will not be used by the function you just created using this option. See the ``function notify`` example below for how this might be used.

@@ -39,6 +39,7 @@ use fish_util::get_time;
 use fish_widestring::WExt as _;
 use libc::c_int;
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write as _;
@@ -82,6 +83,9 @@ pub struct Block {
 
     /// The node containing this block, for lazy line number computation.
     src_node: Option<NodeRef<ast::JobPipeline>>,
+
+    /// Whether this block pushes a variable environment scope.
+    pushes_env: bool,
 }
 
 impl Block {
@@ -92,7 +96,7 @@ impl Block {
 
     #[inline(always)]
     pub fn wants_pop_env(&self) -> bool {
-        self.typ() != BlockType::top
+        self.typ() != BlockType::top && self.pushes_env
     }
 
     /// Return the 1-based line number of this block, using a cache.
@@ -106,6 +110,7 @@ impl Block {
     pub fn new(block_type: BlockType) -> Self {
         Self {
             block_type,
+            pushes_env: true,
             ..Default::default()
         }
     }
@@ -155,8 +160,14 @@ impl Block {
         b.data = Some(Box::new(BlockData::Event(Rc::new(event))));
         b
     }
-    pub fn function_block(name: WString, args: Vec<WString>, shadows: bool) -> Block {
+    pub fn function_block(
+        name: WString,
+        args: Vec<WString>,
+        shadows: bool,
+        pushes_env: bool,
+    ) -> Block {
         let mut b = Block::new(BlockType::function_call { shadows });
+        b.pushes_env = pushes_env;
         b.data = Some(Box::new(BlockData::Function { name, args }));
         b
     }
@@ -271,6 +282,12 @@ impl Default for ScopedData {
 
 /// Miscellaneous data used to avoid recursion and others.
 #[derive(Default)]
+struct TransparentFunctionCall {
+    protected_names: HashSet<WString>,
+    explicit_local_writes: HashSet<WString>,
+}
+
+#[derive(Default)]
 pub struct LibraryData {
     /// The current filename we are evaluating, either from builtin source or on the command line.
     pub current_filename: Option<FilenameRef>,
@@ -322,6 +339,9 @@ pub struct LibraryData {
     /// Note this only exits up to the "current script boundary." That is, a call to exit within a
     /// 'source' or 'read' command will only exit up to that command.
     pub exit_current_script: bool,
+
+    /// Local write tracking for active transparent function calls.
+    transparent_function_calls: Vec<TransparentFunctionCall>,
 }
 
 impl LibraryData {
@@ -944,6 +964,32 @@ impl Parser {
         self.library_data.borrow_mut()
     }
 
+    pub fn push_transparent_function_call(&self, protected_names: HashSet<WString>) {
+        self.libdata_mut()
+            .transparent_function_calls
+            .push(TransparentFunctionCall {
+                protected_names,
+                explicit_local_writes: HashSet::new(),
+            });
+    }
+
+    pub fn pop_transparent_function_call(&self) -> HashSet<WString> {
+        self.libdata_mut()
+            .transparent_function_calls
+            .pop()
+            .map_or_else(HashSet::new, |ctx| ctx.explicit_local_writes)
+    }
+
+    pub fn mark_transparent_function_local_write(&self, name: &wstr) {
+        let mut libdata = self.libdata_mut();
+        let Some(ctx) = libdata.transparent_function_calls.last_mut() else {
+            return;
+        };
+        if ctx.protected_names.contains(name) {
+            ctx.explicit_local_writes.insert(name.to_owned());
+        }
+    }
+
     /// Get our wait handle store.
     pub fn get_wait_handles(&self) -> Ref<'_, WaitHandleStore> {
         self.wait_handles.borrow()
@@ -1030,7 +1076,7 @@ impl Parser {
     pub fn push_block(&self, mut block: Block) -> BlockId {
         block.src_filename = self.current_filename();
         block.src_node.clone_from(&self.current_node.borrow());
-        if block.typ() != BlockType::top {
+        if block.wants_pop_env() {
             let new_scope = block.typ() == BlockType::function_call { shadows: true };
             self.vars().push(new_scope);
         }
