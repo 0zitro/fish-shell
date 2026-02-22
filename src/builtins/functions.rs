@@ -16,7 +16,7 @@ use crate::termsize::termsize_last;
 struct FunctionsCmdOpts<'args> {
     print_help: bool,
     erase: bool,
-    outer: bool,
+    outer: Option<OuterMode>,
     list: bool,
     show_hidden: bool,
     query: bool,
@@ -30,13 +30,32 @@ struct FunctionsCmdOpts<'args> {
     description: Option<&'args wstr>,
 }
 
+#[derive(Clone, Copy, Default)]
+enum OuterMode {
+    #[default]
+    Current,
+    Initial,
+}
+
+impl TryFrom<&wstr> for OuterMode {
+    type Error = ();
+
+    fn try_from(value: &wstr) -> Result<Self, Self::Error> {
+        match value {
+            value if value == "current" => Ok(Self::Current),
+            value if value == "initial" => Ok(Self::Initial),
+            _ => Err(()),
+        }
+    }
+}
+
 const NO_METADATA_SHORT: char = 2 as char;
 
-const SHORT_OPTIONS: &wstr = L!("Ht:Dacd:ehnoqv");
+const SHORT_OPTIONS: &wstr = L!("Ht:Dacd:ehno::qv");
 #[rustfmt::skip]
 const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("erase"), ArgType::NoArgument, 'e'),
-    wopt(L!("outer"), ArgType::NoArgument, 'o'),
+    wopt(L!("outer"), ArgType::OptionalArgument, 'o'),
     wopt(L!("description"), ArgType::RequiredArgument, 'd'),
     wopt(L!("names"), ArgType::NoArgument, 'n'),
     wopt(L!("all"), ArgType::NoArgument, 'a'),
@@ -67,7 +86,20 @@ fn parse_cmd_opts<'args>(
         match opt {
             'v' => opts.verbose = true,
             'e' => opts.erase = true,
-            'o' => opts.outer = true,
+            'o' => {
+                let outer_mode = match w.woptarg {
+                    None => OuterMode::Current,
+                    Some(arg) => OuterMode::try_from(arg).map_err(|()| {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "%s: Invalid value for '--outer' option: '%s'. Expected 'current' or 'initial'",
+                            cmd,
+                            arg
+                        ));
+                        STATUS_INVALID_ARGS
+                    })?,
+                };
+                opts.outer = Some(outer_mode);
+            }
             'D' => opts.report_metadata = true,
             NO_METADATA_SHORT => opts.no_metadata = true,
             'd' => {
@@ -150,7 +182,14 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
     }
 
     let describe = opts.description.is_some();
-    if [describe, opts.erase, opts.outer, opts.list, opts.query, opts.copy]
+    if [
+        describe,
+        opts.erase,
+        opts.outer.is_some(),
+        opts.list,
+        opts.query,
+        opts.copy,
+    ]
         .into_iter()
         .filter(|b| *b)
         .count()
@@ -175,7 +214,7 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
         return Ok(SUCCESS);
     }
 
-    if opts.outer {
+    if let Some(outer_mode) = opts.outer {
         if args.len() != 1 {
             streams.err.appendln(&wgettext_fmt!(
                 BUILTIN_ERR_ARG_COUNT2,
@@ -187,7 +226,12 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
             return Err(STATUS_INVALID_ARGS);
         }
 
-        match function::get_outer(args[0]) {
+        let lookup_mode = match outer_mode {
+            OuterMode::Current => function::OuterLookupMode::Current,
+            OuterMode::Initial => function::OuterLookupMode::Initial,
+        };
+
+        match function::get_outer_by_mode(args[0], lookup_mode) {
             function::OuterLookupResult::Found(outer) => {
                 streams.out.appendln(&outer);
                 Ok(SUCCESS)

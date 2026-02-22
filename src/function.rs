@@ -72,6 +72,7 @@ pub struct FunctionRef {
 struct FunctionProvenance {
     generation: FunctionGeneration,
     outer: Option<FunctionRef>,
+    initial_outer: Option<WString>,
 }
 
 pub enum OuterLookupResult {
@@ -80,6 +81,12 @@ pub enum OuterLookupResult {
     OuterUnavailable(WString),
     Ambiguous,
     TargetUnavailable,
+}
+
+#[derive(Clone, Copy)]
+pub enum OuterLookupMode {
+    Current,
+    Initial,
 }
 
 /// Type wrapping up the set of all functions.
@@ -231,6 +238,11 @@ pub fn add(name: WString, props: Arc<FunctionProperties>, outer: Option<Function
         return;
     }
 
+    let preserved_initial_outer = funcset
+        .provenance
+        .get(&name)
+        .and_then(|provenance| provenance.initial_outer.clone());
+
     // Remove the old function.
     funcset.remove(&name, false);
 
@@ -240,12 +252,20 @@ pub fn add(name: WString, props: Arc<FunctionProperties>, outer: Option<Function
         .store(funcset.autoloader.autoload_in_progress(&name));
 
     let generation = funcset.next_generation(&name);
+    let initial_outer = preserved_initial_outer.or_else(|| outer.as_ref().map(|outer| outer.name.clone()));
 
     // Create and store a new function.
     let existing = funcset.funcs.insert(name.clone(), props);
     funcset
         .provenance
-        .insert(name, FunctionProvenance { generation, outer });
+        .insert(
+            name,
+            FunctionProvenance {
+                generation,
+                outer,
+                initial_outer,
+            },
+        );
     assert!(
         existing.is_none(),
         "Function should not already be present in the table"
@@ -266,6 +286,14 @@ pub fn get_props_with_generation(
 }
 
 pub fn get_outer(name: &wstr) -> OuterLookupResult {
+    get_outer_by_mode(name, OuterLookupMode::Current)
+}
+
+pub fn get_initial_outer(name: &wstr) -> OuterLookupResult {
+    get_outer_by_mode(name, OuterLookupMode::Initial)
+}
+
+pub fn get_outer_by_mode(name: &wstr, mode: OuterLookupMode) -> OuterLookupResult {
     if parser_keywords_is_reserved(name) {
         return OuterLookupResult::TargetUnavailable;
     }
@@ -287,16 +315,31 @@ pub fn get_outer(name: &wstr) -> OuterLookupResult {
         return OuterLookupResult::Ambiguous;
     }
 
-    let Some(outer) = provenance.outer.as_ref() else {
-        return OuterLookupResult::NoOuter;
-    };
+    match mode {
+        OuterLookupMode::Current => {
+            let Some(outer) = provenance.outer.as_ref() else {
+                return OuterLookupResult::NoOuter;
+            };
 
-    let outer_generation = funcset.current_generation(&outer.name);
-    if outer_generation != Some(outer.generation) {
-        return OuterLookupResult::OuterUnavailable(outer.name.clone());
+            let outer_generation = funcset.current_generation(&outer.name);
+            if outer_generation != Some(outer.generation) {
+                return OuterLookupResult::OuterUnavailable(outer.name.clone());
+            }
+
+            OuterLookupResult::Found(outer.name.clone())
+        }
+        OuterLookupMode::Initial => {
+            let Some(initial_outer) = provenance.initial_outer.as_ref() else {
+                return OuterLookupResult::NoOuter;
+            };
+
+            if funcset.current_generation(initial_outer).is_none() {
+                return OuterLookupResult::OuterUnavailable(initial_outer.clone());
+            }
+
+            OuterLookupResult::Found(initial_outer.clone())
+        }
     }
-
-    OuterLookupResult::Found(outer.name.clone())
 }
 
 /// Return the properties for a function, or None. This does not trigger autoloading.
@@ -410,10 +453,12 @@ pub fn copy(name: &wstr, new_name: WString, parser: &Parser) -> bool {
         // No such function.
         return false;
     };
-    let copied_outer = funcset
+    let (copied_outer, copied_initial_outer) = funcset
         .provenance
         .get(name)
-        .and_then(|provenance| provenance.outer.clone());
+        .map_or((None, None), |provenance| {
+            (provenance.outer.clone(), provenance.initial_outer.clone())
+        });
 
     // Copy is "create-only", we never replace an existing destination name, hence...
     // TODO: make collision a non-success result here.
@@ -449,6 +494,7 @@ pub fn copy(name: &wstr, new_name: WString, parser: &Parser) -> bool {
         FunctionProvenance {
             generation,
             outer: copied_outer,
+            initial_outer: copied_initial_outer,
         },
     );
     true

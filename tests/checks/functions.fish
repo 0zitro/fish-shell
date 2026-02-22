@@ -280,6 +280,10 @@ functions --outer inner_alive
 # CHECK: outer_alive
 echo $status
 # CHECK: 0
+functions --outer=current inner_alive
+# CHECK: outer_alive
+echo $status
+# CHECK: 0
 
 # Test --outer when the captured outer function is no longer available.
 function outer_dead
@@ -292,6 +296,56 @@ functions --outer inner_dead
 # CHECKERR: functions: Outer function 'outer_dead' for 'inner_dead' is no longer available
 echo $status
 # CHECK: 3
+
+# Test --outer=initial for nested definitions.
+function outer_initial
+    function middle_initial
+        function inner_initial
+        end
+    end
+    middle_initial
+end
+outer_initial
+functions --outer=initial inner_initial
+# CHECK: middle_initial
+echo $status
+# CHECK: 0
+
+# Test --outer=initial keeps the first anchor across same-name redefinition.
+function outer_initial_reset_a
+    function inner_initial_reset
+    end
+end
+outer_initial_reset_a
+functions --outer=initial inner_initial_reset
+# CHECK: outer_initial_reset_a
+echo $status
+# CHECK: 0
+function outer_initial_reset_b
+    function inner_initial_reset
+    end
+end
+outer_initial_reset_b
+functions --outer=initial inner_initial_reset
+# CHECK: outer_initial_reset_a
+echo $status
+# CHECK: 0
+
+# Test --outer=initial copies preserve source lineage anchor, not copy call-site.
+function outer_initial_copy_anchor
+    function inner_initial_copy_source
+    end
+end
+outer_initial_copy_anchor
+function outer_initial_copy_wrapper
+    functions -c inner_initial_copy_source inner_initial_copy_target
+end
+outer_initial_copy_wrapper
+functions -e outer_initial_copy_wrapper
+functions --outer=initial inner_initial_copy_target
+# CHECK: outer_initial_copy_anchor
+echo $status
+# CHECK: 0
 
 # Test that same-name redefinition invalidates old generations.
 function outer_same_name
@@ -373,5 +427,9 @@ functions --outer --query f1
 # CHECKERR: functions --outer --query f1
 # CHECKERR: ^
 # CHECKERR: (Type 'help functions' for related documentation)
+echo $status
+# CHECK: 2
+functions --outer=bomboclat f1
+# CHECKERR: functions: Invalid value for '--outer' option: 'bomboclat'. Expected 'current' or 'initial'
 echo $status
 # CHECK: 2

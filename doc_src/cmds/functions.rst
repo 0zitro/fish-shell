@@ -8,7 +8,7 @@ Synopsis
 
     functions [-a | --all] [-n | --names] [--color WHEN]
     functions [-D | --details] [-v] [--color WHEN] FUNCTION
-    functions [-o | --outer] FUNCTION
+    functions [-o | --outer[=MODE]] FUNCTION
     functions -c OLDNAME NEWNAME
     functions -d DESCRIPTION FUNCTION
     functions [-e | -q] FUNCTION ...
@@ -43,14 +43,19 @@ The following options are available:
 
     You should not assume that only five lines will be written since we may add additional information to the output in the future.
 
-**-o** or **--outer**
-    Reports the currently available outer function for *FUNCTION*. This reflects runtime provenance for the latest loaded definition and does not autoload the target function or its outer function.
+**-o** or **--outer**\ [**=**\ *MODE*]
+    Reports outer-function provenance for *FUNCTION*. This reflects runtime provenance for the latest loaded definition and does not autoload the target function or its outer function.
+
+    *MODE* may be:
+
+    - ``current`` (default): report the currently captured outer function for the loaded function generation.
+    - ``initial``: report the first recorded definition-site outer function name for the currently loaded function name.
 
     On success, one line is written containing the outer function name.
 
     If the target exists but has no outer function (for example, it was defined at top level), this command returns status 1.
 
-    If the target exists but its captured outer function generation is no longer available, this command returns status 3.
+    If the target exists but the requested outer function is no longer available, this command returns status 3.
 
     If provenance is ambiguous, this command returns status 4.
 
