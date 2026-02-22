@@ -265,6 +265,56 @@ where
     true
 }
 
+#[inline]
+fn linebreak_len(chars: &[char], i: usize) -> usize {
+    match chars[i] {
+        '\r' => {
+            if i + 1 < chars.len() && chars[i + 1] == '\n' {
+                2
+            } else {
+                1
+            }
+        }
+        '\n' => 1,
+        _ => 0,
+    }
+}
+
+#[inline]
+fn next_line(chars: &[char], start: usize) -> (usize, usize) {
+    let mut content_end = start;
+    while content_end < chars.len() && linebreak_len(chars, content_end) == 0 {
+        content_end += 1;
+    }
+
+    if content_end == chars.len() {
+        (content_end, content_end)
+    } else {
+        let next_start = content_end + linebreak_len(chars, content_end);
+        (content_end, next_start)
+    }
+}
+
+fn trim_outer_lines_by(
+    chars: &[char],
+    mut should_keep_line: impl FnMut(&[char]) -> bool,
+) -> Option<(usize, usize)> {
+    let mut first = None;
+    let mut last = None;
+
+    let mut line_start = 0;
+    while line_start < chars.len() {
+        let (content_end, next_start) = next_line(chars, line_start);
+        if should_keep_line(&chars[line_start..content_end]) {
+            first.get_or_insert(line_start);
+            last = Some(content_end);
+        }
+        line_start = next_start;
+    }
+
+    first.zip(last)
+}
+
 /// Iterator type for splitting a wide string on a char.
 pub struct WStrCharSplitIter<'a> {
     split: char,
@@ -408,6 +458,17 @@ pub trait WExt {
         let slice = self.slice_from(leading_count);
         slice.slice_to(slice.len() - trailing_count)
     }
+
+    fn trim_empty_lines(&self) -> &wstr {
+        let chars = self.as_char_slice();
+        let Some((start, end)) = trim_outer_lines_by(chars, |line| {
+            line.iter().any(|c| !c.is_whitespace())
+        }) else {
+            return L!("");
+        };
+
+        wstr::from_char_slice(&chars[start..end])
+    }
 }
 
 impl WExt for WString {
@@ -546,5 +607,29 @@ mod tests {
         assert_eq!(L!("|foo|").trim_matches('|'), L!("foo"));
         assert_eq!(L!("<foo|").trim_matches('|'), L!("<foo"));
         assert_eq!(L!("|foo>").trim_matches('|'), L!("foo>"));
+    }
+
+    #[test]
+    fn test_trim_empty_lines_newlines() {
+        let src = L!("\n\nfoo\nbar\n\n\n");
+        assert_eq!(src.trim_empty_lines(), L!("foo\nbar"));
+    }
+
+    #[test]
+    fn test_trim_empty_lines_crlf_and_trailing_spaces() {
+        let src = L!("\r\n\r\nline with spaces   \r\n\r\n");
+        assert_eq!(src.trim_empty_lines(), L!("line with spaces   "));
+    }
+
+    #[test]
+    fn test_trim_empty_lines_all_whitespace() {
+        let src = L!(" \t\n\r\n\r\t\n");
+        assert_eq!(src.trim_empty_lines(), L!(""));
+    }
+
+    #[test]
+    fn test_trim_empty_lines_preserves_interior_blank_lines() {
+        let src = L!("\nfoo\n\n\nbar\n\n");
+        assert_eq!(src.trim_empty_lines(), L!("foo\n\n\nbar"));
     }
 }

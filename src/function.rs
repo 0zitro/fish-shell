@@ -422,8 +422,11 @@ fn get_function_body_source(props: &FunctionProperties) -> &wstr {
         .func_node
         .parsed_source()
         .src
-        .slice_to(body_end)
-        .slice_from(body_start)
+        // narrow to what's immediately between the header and the end keyword
+        .slice_to(body_end).slice_from(body_start)
+        // trim useless empty lines from the immediate start and end
+        // (empty lines inbetween are not affected)
+        .trim_empty_lines()
 }
 
 /// Sets the description of the function with the name \c name.
