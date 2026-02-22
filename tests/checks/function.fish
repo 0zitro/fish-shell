@@ -285,4 +285,37 @@ transparent_caller initial
 # CHECK: key-exists:1
 # CHECK: caller-result:key-from-caller:persisted:initial
 
+function transparent_erase_default --no-scope-shadowing=transparent
+    set -l erased_var transparent-default
+    set -e erased_var
+    set -l default_after $erased_var
+end
+
+function transparent_erase_explicit --no-scope-shadowing=transparent
+    set -l erased_var transparent-explicit
+    set -l -e erased_var
+    set -l explicit_after $erased_var
+end
+
+function transparent_erase_test
+    set -l erased_var caller-default
+    transparent_erase_default
+    echo default-erased:$erased_var
+    echo default-after:$default_after
+
+    set -l erased_var caller-explicit
+    transparent_erase_explicit
+    set -q erased_var
+    echo explicit-exists:$status
+    set -q explicit_after[1]
+    and echo explicit-after:$explicit_after
+    or echo explicit-after:
+end
+
+transparent_erase_test
+# CHECK: default-erased:caller-default
+# CHECK: default-after:caller-default
+# CHECK: explicit-exists:1
+# CHECK: explicit-after:
+
 exit 0

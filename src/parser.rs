@@ -39,7 +39,7 @@ use fish_util::get_time;
 use fish_widestring::WExt as _;
 use libc::c_int;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write as _;
@@ -285,6 +285,8 @@ impl Default for ScopedData {
 struct TransparentFunctionCall {
     protected_names: HashSet<WString>,
     explicit_local_writes: HashSet<WString>,
+    // Needed so scope-less `set -e` in a transparent callee can reveal caller-local state again.
+    local_shadows: HashMap<WString, Option<Vec<WString>>>,
 }
 
 #[derive(Default)]
@@ -970,6 +972,7 @@ impl Parser {
             .push(TransparentFunctionCall {
                 protected_names,
                 explicit_local_writes: HashSet::new(),
+                local_shadows: HashMap::new(),
             });
     }
 
@@ -988,6 +991,53 @@ impl Parser {
         if ctx.protected_names.contains(name) {
             ctx.explicit_local_writes.insert(name.to_owned());
         }
+    }
+
+    pub fn remember_transparent_local_shadow(&self, name: &wstr) {
+        let existing_local = self
+            .vars()
+            .getf(name, EnvMode::LOCAL)
+            .map(|v| v.as_list().to_vec());
+
+        let mut libdata = self.libdata_mut();
+        let Some(ctx) = libdata.transparent_function_calls.last_mut() else {
+            return;
+        };
+        if ctx.protected_names.contains(name) {
+            return;
+        }
+        ctx.local_shadows
+            .entry(name.to_owned())
+            .or_insert(existing_local);
+    }
+
+    pub fn clear_transparent_local_shadow(&self, name: &wstr) {
+        let mut libdata = self.libdata_mut();
+        let Some(ctx) = libdata.transparent_function_calls.last_mut() else {
+            return;
+        };
+        ctx.local_shadows.remove(name);
+    }
+
+    pub fn restore_transparent_local_shadow(&self, name: &wstr) -> bool {
+        let existing_local = {
+            let mut libdata = self.libdata_mut();
+            let Some(ctx) = libdata.transparent_function_calls.last_mut() else {
+                return false;
+            };
+            ctx.local_shadows.remove(name)
+        };
+
+        let Some(existing_local) = existing_local else {
+            return false;
+        };
+
+        if let Some(values) = existing_local {
+            self.set_var(name, ParserEnvSetMode::new(EnvMode::LOCAL), values);
+        } else {
+            self.remove_var(name, ParserEnvSetMode::new(EnvMode::LOCAL));
+        }
+        true
     }
 
     /// Get our wait handle store.

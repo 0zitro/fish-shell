@@ -791,8 +791,17 @@ fn erase(
             }
             let retval;
             if split.indexes.is_empty() {
-                // unset the var
-                retval = parser.remove_var(split.varname, ParserEnvSetMode::new(mode));
+                let scope_flags = mode.intersection(EnvMode::ANY_SCOPE);
+                // In transparent functions, plain `set -e VAR` should behave like removing the
+                // callee-local overlay and revealing the caller-local value underneath.
+                if scope_flags.is_empty()
+                    && parser.restore_transparent_local_shadow(split.varname)
+                {
+                    retval = EnvStackSetResult::Ok;
+                } else {
+                    // unset the var
+                    retval = parser.remove_var(split.varname, ParserEnvSetMode::new(mode));
+                }
                 // When a non-existent-variable is unset, return NotFound as $status
                 // but do not emit any errors at the console as a compromise between user
                 // friendliness and correctness.
@@ -826,6 +835,8 @@ fn erase(
                 && !opts.global
                 && !opts.universal
             {
+                // Explicit local erase is intentionally intrusive for transparent calls.
+                parser.clear_transparent_local_shadow(split.varname);
                 parser.mark_transparent_function_local_write(split.varname);
             }
 
@@ -1030,6 +1041,9 @@ fn set_internal(
     };
 
     // Set the value back in the variable stack and fire any events.
+    if opts.local && !opts.function && !opts.global && !opts.universal {
+        parser.remember_transparent_local_shadow(split.varname);
+    }
     let retval =
         env_set_reporting_errors(cmd, opts, split.varname, mode, new_values, streams, parser);
 
