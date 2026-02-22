@@ -955,6 +955,7 @@ struct FunctionEnvironment {
 fn function_prepare_environment(
     parser: &Parser,
     mut argv: Vec<WString>,
+    generation: function::FunctionGeneration,
     props: &FunctionProperties,
 ) -> FunctionEnvironment {
     // Extract the function name and remaining arguments.
@@ -966,10 +967,11 @@ fn function_prepare_environment(
 
     let env = FunctionEnvironment {
         block: parser.push_block(Block::function_block(
-        func_name,
-        argv.clone(),
-        props.shadow_scope,
-        !props.transparent_scope,
+            func_name,
+            generation,
+            argv.clone(),
+            props.shadow_scope,
+            !props.transparent_scope,
         )),
         transparent_bindings: None,
     };
@@ -1106,7 +1108,7 @@ fn get_performer_for_function(
     let job_group = job.group.clone();
     let io_chain = io_chain.clone();
     // This may occur if the function was erased as part of its arguments or in other strange edge cases.
-    let Some(props) = function::get_props(p.argv0().unwrap()) else {
+    let Some((props, generation)) = function::get_props_with_generation(p.argv0().unwrap()) else {
         flog!(
             error,
             wgettext_fmt!("Unknown function '%s'", p.argv0().unwrap())
@@ -1116,7 +1118,7 @@ fn get_performer_for_function(
     let argv = p.argv().clone();
     Ok(Box::new(move |parser: &Parser, _out, _err| {
         // Pull out the job list from the function.
-        let env = function_prepare_environment(parser, argv, &props);
+        let env = function_prepare_environment(parser, argv, generation, &props);
         let body_node = props.func_node.child_ref(|n| &n.jobs);
         let mut res = parser.eval_node(
             &body_node,

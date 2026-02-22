@@ -261,3 +261,117 @@ string escape (functions --no-details --color=always test_color_option)
 # CHECK: function\ \e\[36mtest_color_option\e\[32m
 # CHECK: \e\[m\ \ \ \ echo\ \e\[36mhello\e\[32m
 # CHECK: \e\[mend\e\[32m\e\[m
+
+# Test --outer for top-level definition.
+function no_outer_target
+end
+functions --outer no_outer_target
+# CHECKERR: functions: Function 'no_outer_target' has no outer function
+echo $status
+# CHECK: 1
+
+# Test --outer with an available outer function.
+function outer_alive
+    function inner_alive
+    end
+end
+outer_alive
+functions --outer inner_alive
+# CHECK: outer_alive
+echo $status
+# CHECK: 0
+
+# Test --outer when the captured outer function is no longer available.
+function outer_dead
+    function inner_dead
+    end
+end
+outer_dead
+functions -e outer_dead
+functions --outer inner_dead
+# CHECKERR: functions: Outer function 'outer_dead' for 'inner_dead' is no longer available
+echo $status
+# CHECK: 3
+
+# Test that same-name redefinition invalidates old generations.
+function outer_same_name
+    function inner_same_name
+    end
+end
+outer_same_name
+functions -c inner_same_name inner_same_name_old
+echo "function outer_same_name; function inner_same_name; end; end" | source
+outer_same_name
+functions --outer inner_same_name
+# CHECK: outer_same_name
+echo $status
+# CHECK: 0
+functions --outer inner_same_name_old
+# CHECKERR: functions: Outer function 'outer_same_name' for 'inner_same_name_old' is no longer available
+echo $status
+# CHECK: 3
+
+# Test copy/redefine scenario: latest inner points to copied outer, copied old inner points to original outer.
+function outer_copy_source
+    function inner_copy_target
+    end
+end
+outer_copy_source
+functions -c outer_copy_source outer_copy_new
+functions -c inner_copy_target inner_copy_old
+outer_copy_new
+functions --outer inner_copy_target
+# CHECK: outer_copy_new
+echo $status
+# CHECK: 0
+functions --outer inner_copy_old
+# CHECK: outer_copy_source
+echo $status
+# CHECK: 0
+
+# Test dynamic naming with redefinition churn.
+for i in a builtin
+    function outer__dynamic__$i
+        function xyz
+        end
+    end
+    outer__dynamic__$i
+end
+functions --outer xyz
+# CHECK: outer__dynamic__builtin
+echo $status
+# CHECK: 0
+
+# Test no-autoload behavior for --outer.
+set -l old_fish_function_path $fish_function_path
+set -l autoload_probe_dir (mktemp -d)
+printf 'set -g __outer_autoload_marker loaded\nfunction __outer_autoload_probe\nend\n' >$autoload_probe_dir/__outer_autoload_probe.fish
+set -gx fish_function_path $autoload_probe_dir $fish_function_path
+set -e __outer_autoload_marker
+functions --outer __outer_autoload_probe
+# CHECKERR: functions: Function '__outer_autoload_probe' is not currently available
+echo $status
+# CHECK: 5
+set -q __outer_autoload_marker
+echo $status
+# CHECK: 1
+set -gx fish_function_path $old_fish_function_path
+
+# Test --outer argument and mode validation.
+functions --outer
+# CHECKERR: functions: --outer: expected 1 arguments; got 0
+echo $status
+# CHECK: 2
+functions --outer f1 f2
+# CHECKERR: functions: --outer: expected 1 arguments; got 2
+echo $status
+# CHECK: 2
+functions --outer --query f1
+# CHECKERR: functions: invalid option combination
+# CHECKERR:
+# CHECKERR: {{.*}}checks/functions.fish (line {{\d+}}):
+# CHECKERR: functions --outer --query f1
+# CHECKERR: ^
+# CHECKERR: (Type 'help functions' for related documentation)
+echo $status
+# CHECK: 2

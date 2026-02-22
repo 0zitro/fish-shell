@@ -15,7 +15,7 @@ use crate::parser_keywords::parser_keywords_is_reserved;
 use crate::prelude::*;
 use crate::proc::Pid;
 use crate::wutil::dir_iter::DirIter;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::num::NonZeroU32;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -60,6 +60,28 @@ pub struct FunctionProperties {
 /// FunctionProperties are safe to share between threads.
 const _: () = assert_sync::<FunctionProperties>();
 
+pub type FunctionGeneration = u64;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct FunctionRef {
+    pub name: WString,
+    pub generation: FunctionGeneration,
+}
+
+#[derive(Clone)]
+struct FunctionProvenance {
+    generation: FunctionGeneration,
+    outer: Option<FunctionRef>,
+}
+
+pub enum OuterLookupResult {
+    Found(WString),
+    NoOuter,
+    OuterUnavailable(WString),
+    Ambiguous,
+    TargetUnavailable,
+}
+
 /// Type wrapping up the set of all functions.
 /// There's only one of these; it's managed by a lock.
 struct FunctionSet {
@@ -69,18 +91,41 @@ struct FunctionSet {
     /// Tombstones for functions that should no longer be autoloaded.
     autoload_tombstones: HashSet<WString>,
 
+    /// Monotonically increasing generation for each function name.
+    generations: HashMap<WString, FunctionGeneration>,
+
+    /// Provenance for currently loaded function generations.
+    provenance: HashMap<WString, FunctionProvenance>,
+
     /// The autoloader for our functions.
     autoloader: Autoload,
 }
 
 impl FunctionSet {
+    fn next_generation(&mut self, name: &wstr) -> FunctionGeneration {
+        let generation = self.generations.entry(name.to_owned()).or_insert(0);
+        *generation += 1;
+        *generation
+    }
+
+    fn current_generation(&self, name: &wstr) -> Option<FunctionGeneration> {
+        self.funcs.contains_key(name).then(|| self.generations.get(name).copied()).flatten()
+    }
+
     /// Remove a function.
     /// Return true if successful, false if it doesn't exist.
-    fn remove(&mut self, name: &wstr) -> bool {
+    fn remove(&mut self, name: &wstr, bump_generation: bool) -> bool {
         if self.funcs.remove(name).is_some() {
             event::remove_function_handlers(name);
+            self.provenance.remove(name);
+            if bump_generation {
+                self.next_generation(name);
+            }
             true
         } else {
+            if bump_generation {
+                self.next_generation(name);
+            }
             false
         }
     }
@@ -107,6 +152,8 @@ static FUNCTION_SET: LazyLock<Mutex<FunctionSet>> = LazyLock::new(|| {
     Mutex::new(FunctionSet {
         funcs: HashMap::new(),
         autoload_tombstones: HashSet::new(),
+        generations: HashMap::new(),
+        provenance: HashMap::new(),
         autoloader: Autoload::new(L!("fish_function_path")),
     })
 });
@@ -176,7 +223,7 @@ fn autoload_names(names: &mut HashSet<WString>, vars: &dyn Environment, get_hidd
 }
 
 /// Add a function. This may mutate `props` to set is_autoload.
-pub fn add(name: WString, props: Arc<FunctionProperties>) {
+pub fn add(name: WString, props: Arc<FunctionProperties>, outer: Option<FunctionRef>) {
     let mut funcset = FUNCTION_SET.lock().unwrap();
 
     // Historical check. TODO: rationalize this.
@@ -185,19 +232,71 @@ pub fn add(name: WString, props: Arc<FunctionProperties>) {
     }
 
     // Remove the old function.
-    funcset.remove(&name);
+    funcset.remove(&name, false);
 
     // Check if this is a function that we are autoloading.
     props
         .is_autoload
         .store(funcset.autoloader.autoload_in_progress(&name));
 
+    let generation = funcset.next_generation(&name);
+
     // Create and store a new function.
-    let existing = funcset.funcs.insert(name, props);
+    let existing = funcset.funcs.insert(name.clone(), props);
+    funcset
+        .provenance
+        .insert(name, FunctionProvenance { generation, outer });
     assert!(
         existing.is_none(),
         "Function should not already be present in the table"
     );
+}
+
+pub fn get_props_with_generation(
+    name: &wstr,
+) -> Option<(Arc<FunctionProperties>, FunctionGeneration)> {
+    if parser_keywords_is_reserved(name) {
+        return None;
+    }
+
+    let funcset = FUNCTION_SET.lock().unwrap();
+    let props = funcset.get_props(name)?;
+    let generation = funcset.current_generation(name)?;
+    Some((props, generation))
+}
+
+pub fn get_outer(name: &wstr) -> OuterLookupResult {
+    if parser_keywords_is_reserved(name) {
+        return OuterLookupResult::TargetUnavailable;
+    }
+
+    let funcset = FUNCTION_SET.lock().unwrap();
+    if !funcset.funcs.contains_key(name) {
+        return OuterLookupResult::TargetUnavailable;
+    }
+
+    let Some(provenance) = funcset.provenance.get(name) else {
+        return OuterLookupResult::Ambiguous;
+    };
+
+    let Some(current_generation) = funcset.current_generation(name) else {
+        return OuterLookupResult::Ambiguous;
+    };
+
+    if provenance.generation != current_generation {
+        return OuterLookupResult::Ambiguous;
+    }
+
+    let Some(outer) = provenance.outer.as_ref() else {
+        return OuterLookupResult::NoOuter;
+    };
+
+    let outer_generation = funcset.current_generation(&outer.name);
+    if outer_generation != Some(outer.generation) {
+        return OuterLookupResult::OuterUnavailable(outer.name.clone());
+    }
+
+    OuterLookupResult::Found(outer.name.clone())
 }
 
 /// Return the properties for a function, or None. This does not trigger autoloading.
@@ -255,7 +354,7 @@ pub fn exists_no_autoload(cmd: &wstr) -> bool {
 /// Remove the function with the specified name.
 pub fn remove(name: &wstr) {
     let mut funcset = FUNCTION_SET.lock().unwrap();
-    funcset.remove(name);
+    funcset.remove(name, true);
     // Prevent (re-)autoloading this function.
     funcset.autoload_tombstones.insert(name.to_owned());
 }
@@ -311,6 +410,22 @@ pub fn copy(name: &wstr, new_name: WString, parser: &Parser) -> bool {
         // No such function.
         return false;
     };
+    let copied_outer = funcset
+        .provenance
+        .get(name)
+        .and_then(|provenance| provenance.outer.clone());
+
+    // Copy is "create-only", we never replace an existing destination name, hence...
+    // TODO: make collision a non-success result here.
+    //
+    // If called through the shell builtin, the end effect is correct, status 1;
+    // the pre-check reports this to users, BUT:
+    // WARN: returning success on a no-op at this layer can hide TOCTOU collisions
+    // WARN: and mislead future __internal__ callers.
+    if let Entry::Occupied(_) = funcset.funcs.entry(new_name.clone()) {
+        return true;
+    }
+
     // Copy the function's props.
     let mut new_props = props.as_ref().clone();
     new_props.is_autoload.store(false);
@@ -320,7 +435,22 @@ pub fn copy(name: &wstr, new_name: WString, parser: &Parser) -> bool {
 
     // Note this will NOT overwrite an existing function with the new name.
     // TODO: rationalize if this behavior is desired.
-    funcset.funcs.entry(new_name).or_insert(Arc::new(new_props));
+    let generation = funcset.next_generation(&new_name);
+    let insert_ok = funcset
+        .funcs
+        .insert(new_name.clone(), Arc::new(new_props))
+        .is_none();
+    assert!(
+        insert_ok,
+        "Function should not already be present in the table"
+    );
+    funcset.provenance.insert(
+        new_name,
+        FunctionProvenance {
+            generation,
+            outer: copied_outer,
+        },
+    );
     true
 }
 
@@ -359,7 +489,17 @@ pub fn get_names(get_hidden: bool, vars: &dyn Environment) -> Vec<WString> {
 pub fn invalidate_path() {
     // Remove all autoloaded functions and update the autoload path.
     let mut funcset = FUNCTION_SET.lock().unwrap();
-    funcset.funcs.retain(|_, props| !props.is_autoload.load());
+    let names_to_remove: Vec<WString> = funcset
+        .funcs
+        .iter()
+        .filter(|(_, props)| props.is_autoload.load())
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in names_to_remove {
+        funcset.funcs.remove(&name);
+        funcset.provenance.remove(&name);
+        funcset.next_generation(&name);
+    }
     funcset.autoloader.clear();
 }
 

@@ -53,6 +53,8 @@ pub enum BlockData {
     Function {
         /// Name of the function
         name: WString,
+        /// Generation of the function name at call entry.
+        generation: function::FunctionGeneration,
         /// Arguments passed to the function
         args: Vec<WString>,
     },
@@ -162,13 +164,18 @@ impl Block {
     }
     pub fn function_block(
         name: WString,
+        generation: function::FunctionGeneration,
         args: Vec<WString>,
         shadows: bool,
         pushes_env: bool,
     ) -> Block {
         let mut b = Block::new(BlockType::function_call { shadows });
         b.pushes_env = pushes_env;
-        b.data = Some(Box::new(BlockData::Function { name, args }));
+        b.data = Some(Box::new(BlockData::Function {
+            name,
+            generation,
+            args,
+        }));
         b
     }
     pub fn source_block(src: FilenameRef) -> Block {
@@ -1196,6 +1203,11 @@ impl Parser {
 
     /// Return the function name for the specified stack frame. Default is one (current frame).
     pub fn get_function_name(&self, level: i32) -> Option<WString> {
+        self.get_function_ref(level).map(|func_ref| func_ref.name)
+    }
+
+    /// Return function identity for the specified stack frame. Default is one (current frame).
+    pub fn get_function_ref(&self, level: i32) -> Option<function::FunctionRef> {
         if level < 0 {
             return None;
         }
@@ -1208,7 +1220,14 @@ impl Parser {
                 .blocks_iter_rev()
                 .skip_while(|b| b.typ() != BlockType::breakpoint)
                 .find_map(|b| match b.data() {
-                    Some(BlockData::Function { name, .. }) => Some(name.clone()),
+                    Some(BlockData::Function {
+                        name,
+                        generation,
+                        ..
+                    }) => Some(function::FunctionRef {
+                        name: name.clone(),
+                        generation: *generation,
+                    }),
                     _ => None,
                 });
         }
@@ -1228,10 +1247,18 @@ impl Parser {
                 continue;
             }
             debug_assert!(b.is_function_call());
-            let Some(BlockData::Function { name, .. }) = b.data() else {
+            let Some(BlockData::Function {
+                name,
+                generation,
+                ..
+            }) = b.data()
+            else {
                 unreachable!()
             };
-            return Some(name.clone());
+            return Some(function::FunctionRef {
+                name: name.clone(),
+                generation: *generation,
+            });
         }
         None
     }

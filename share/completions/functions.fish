@@ -15,6 +15,7 @@ complete -c functions -s d -l description -d "Set function description" -x
 complete -c functions -s q -l query -d "Test if function is defined"
 complete -c functions -s n -l names -d "List the names of the functions, but not their definition"
 complete -c functions -s c -l copy -d "Copy the specified function to the specified new name"
+complete -c functions -s o -l outer -d "Print the outer function that defined the function"
 complete -c functions -s D -l details -d "Display information about the function"
 complete -c functions -s v -l verbose -d "Print more output"
 complete -c functions -s H -l handlers -d "Show event handlers"

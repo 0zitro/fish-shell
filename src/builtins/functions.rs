@@ -16,6 +16,7 @@ use crate::termsize::termsize_last;
 struct FunctionsCmdOpts<'args> {
     print_help: bool,
     erase: bool,
+    outer: bool,
     list: bool,
     show_hidden: bool,
     query: bool,
@@ -31,10 +32,11 @@ struct FunctionsCmdOpts<'args> {
 
 const NO_METADATA_SHORT: char = 2 as char;
 
-const SHORT_OPTIONS: &wstr = L!("Ht:Dacd:ehnqv");
+const SHORT_OPTIONS: &wstr = L!("Ht:Dacd:ehnoqv");
 #[rustfmt::skip]
 const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("erase"), ArgType::NoArgument, 'e'),
+    wopt(L!("outer"), ArgType::NoArgument, 'o'),
     wopt(L!("description"), ArgType::RequiredArgument, 'd'),
     wopt(L!("names"), ArgType::NoArgument, 'n'),
     wopt(L!("all"), ArgType::NoArgument, 'a'),
@@ -65,6 +67,7 @@ fn parse_cmd_opts<'args>(
         match opt {
             'v' => opts.verbose = true,
             'e' => opts.erase = true,
+            'o' => opts.outer = true,
             'D' => opts.report_metadata = true,
             NO_METADATA_SHORT => opts.no_metadata = true,
             'd' => {
@@ -119,6 +122,18 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
     localizable_consts! {
         FUNCTION_DOES_NOT_EXIST
         "%s: Function '%s' does not exist"
+
+        FUNCTION_HAS_NO_OUTER
+        "%s: Function '%s' has no outer function"
+
+        FUNCTION_OUTER_UNAVAILABLE
+        "%s: Outer function '%s' for '%s' is no longer available"
+
+        FUNCTION_OUTER_AMBIGUOUS
+        "%s: Outer function for '%s' is ambiguous"
+
+        FUNCTION_IS_UNAVAILABLE
+        "%s: Function '%s' is not currently available"
     }
 
     let mut opts = FunctionsCmdOpts::default();
@@ -135,7 +150,7 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
     }
 
     let describe = opts.description.is_some();
-    if [describe, opts.erase, opts.list, opts.query, opts.copy]
+    if [describe, opts.erase, opts.outer, opts.list, opts.query, opts.copy]
         .into_iter()
         .filter(|b| *b)
         .count()
@@ -157,6 +172,55 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
             function::remove(arg);
         }
         // Historical - this never failed?
+        return Ok(SUCCESS);
+    }
+
+    if opts.outer {
+        if args.len() != 1 {
+            streams.err.appendln(&wgettext_fmt!(
+                BUILTIN_ERR_ARG_COUNT2,
+                cmd,
+                "--outer",
+                1,
+                args.len()
+            ));
+            return Err(STATUS_INVALID_ARGS);
+        }
+
+        match function::get_outer(args[0]) {
+            function::OuterLookupResult::Found(outer) => {
+                streams.out.appendln(&outer);
+                Ok(SUCCESS)
+            }
+            function::OuterLookupResult::NoOuter => {
+                streams
+                    .err
+                    .appendln(&wgettext_fmt!(FUNCTION_HAS_NO_OUTER, cmd, args[0]));
+                Err(1)
+            }
+            function::OuterLookupResult::OuterUnavailable(outer) => {
+                streams.err.appendln(&wgettext_fmt!(
+                    FUNCTION_OUTER_UNAVAILABLE,
+                    cmd,
+                    outer,
+                    args[0]
+                ));
+                Err(3)
+            }
+            function::OuterLookupResult::Ambiguous => {
+                streams
+                    .err
+                    .appendln(&wgettext_fmt!(FUNCTION_OUTER_AMBIGUOUS, cmd, args[0]));
+                Err(4)
+            }
+            function::OuterLookupResult::TargetUnavailable => {
+                streams
+                    .err
+                    .appendln(&wgettext_fmt!(FUNCTION_IS_UNAVAILABLE, cmd, args[0]));
+                Err(5)
+            }
+        }?;
+
         return Ok(SUCCESS);
     }
 

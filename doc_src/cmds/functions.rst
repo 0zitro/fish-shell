@@ -8,6 +8,7 @@ Synopsis
 
     functions [-a | --all] [-n | --names] [--color WHEN]
     functions [-D | --details] [-v] [--color WHEN] FUNCTION
+    functions [-o | --outer] FUNCTION
     functions -c OLDNAME NEWNAME
     functions -d DESCRIPTION FUNCTION
     functions [-e | -q] FUNCTION ...
@@ -41,6 +42,19 @@ The following options are available:
     - the function description minimally escaped so it is a single line, or ``n/a`` if the function isn't defined or has no description.
 
     You should not assume that only five lines will be written since we may add additional information to the output in the future.
+
+**-o** or **--outer**
+    Reports the currently available outer function for *FUNCTION*. This reflects runtime provenance for the latest loaded definition and does not autoload the target function or its outer function.
+
+    On success, one line is written containing the outer function name.
+
+    If the target exists but has no outer function (for example, it was defined at top level), this command returns status 1.
+
+    If the target exists but its captured outer function generation is no longer available, this command returns status 3.
+
+    If provenance is ambiguous, this command returns status 4.
+
+    If the target function is not currently loaded, this command returns status 5.
 
 **--no-details**
     Turns off function path reporting, so just the definition will be printed.
