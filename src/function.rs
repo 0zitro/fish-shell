@@ -593,6 +593,11 @@ impl FunctionProperties {
             .count() as i32
     }
 
+    /// Return the function body source between header and `end`.
+    pub fn body_source(&self) -> &wstr {
+        get_function_body_source(self)
+    }
+
     /// If this function is a copy, return the original 1-based line number. Otherwise, return 0.
     pub fn copy_definition_lineno(&self) -> u32 {
         self.copy_definition_lineno.map_or(0, |val| val.get())

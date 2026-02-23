@@ -8,6 +8,7 @@ Synopsis
 
     functions [-a | --all] [-n | --names] [--color WHEN]
     functions [-D | --details] [-v] [--color WHEN] FUNCTION
+    functions [--no-details[=MODE]] [--color WHEN] FUNCTION ...
     functions [-o | --outer[=MODE]] FUNCTION
     functions -c OLDNAME NEWNAME
     functions -d DESCRIPTION FUNCTION
@@ -61,8 +62,13 @@ The following options are available:
 
     If the target function is not currently loaded, this command returns status 5.
 
-**--no-details**
-    Turns off function path reporting, so just the definition will be printed.
+**--no-details**\ [**=**\ *MODE*]
+    Turns off function path reporting. By default this prints the full function definition.
+
+    *MODE* may be:
+
+    - ``definition-only`` (default): print only the function definition, without path metadata.
+    - ``body-only``: print only the function body exactly as sourced, omitting the ``function ...`` header and ``end``.
 
 **-n** or **--names**
     Lists the names of all defined functions.

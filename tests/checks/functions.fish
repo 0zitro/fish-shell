@@ -132,6 +132,17 @@ functions --no-details t
 # CHECK: echo tttt;
 # CHECK: end
 
+functions --no-details=definition-only t
+# CHECK: function t
+# CHECK: echo tttt;
+# CHECK: end
+
+set -- x (functions --no-details=body-only t)
+if test (count $x) -ne 1
+    or test "$x[1]" != ' echo tttt; '
+    echo -- "Unexpected output for 'functions --no-details=body-only t': $(string escape -- $x)" >&2
+end
+
 functions -c t t2
 functions t2
 # CHECK: # Defined via `source`, copied in {{.*}}checks/functions.fish @ line {{\d+}}
@@ -175,6 +186,11 @@ functions --no-details --details t
 # CHECKERR: ^
 # CHECKERR: (Type 'help functions' for related documentation)
 # XXX FIXME ^ caret should point at --no-details --details
+
+functions --no-details=kazoo t
+# CHECKERR: functions: Invalid value for '--no-details' option: 'kazoo'. Expected 'definition-only' or 'body-only'
+echo $status
+# CHECK: 2
 
 function term1 --on-signal TERM
 end

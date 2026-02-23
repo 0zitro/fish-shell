@@ -22,7 +22,7 @@ struct FunctionsCmdOpts<'args> {
     query: bool,
     copy: bool,
     report_metadata: bool,
-    no_metadata: bool,
+    no_details_mode: NoDetailsMode,
     verbose: bool,
     handlers: bool,
     color: ColorEnabled,
@@ -35,6 +35,26 @@ enum OuterMode {
     #[default]
     Current,
     Initial,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum NoDetailsMode {
+    #[default]
+    Disabled,
+    DefinitionOnly,
+    BodyOnly,
+}
+
+impl TryFrom<&wstr> for NoDetailsMode {
+    type Error = ();
+
+    fn try_from(value: &wstr) -> Result<Self, Self::Error> {
+        match value {
+            value if value == "definition-only" => Ok(Self::DefinitionOnly),
+            value if value == "body-only" => Ok(Self::BodyOnly),
+            _ => Err(()),
+        }
+    }
 }
 
 impl TryFrom<&wstr> for OuterMode {
@@ -63,7 +83,7 @@ const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("query"), ArgType::NoArgument, 'q'),
     wopt(L!("copy"), ArgType::NoArgument, 'c'),
     wopt(L!("details"), ArgType::NoArgument, 'D'),
-    wopt(L!("no-details"), ArgType::NoArgument, NO_METADATA_SHORT),
+    wopt(L!("no-details"), ArgType::OptionalArgument, NO_METADATA_SHORT),
     wopt(L!("verbose"), ArgType::NoArgument, 'v'),
     wopt(L!("handlers"), ArgType::NoArgument, 'H'),
     wopt(L!("handlers-type"), ArgType::RequiredArgument, 't'),
@@ -101,7 +121,19 @@ fn parse_cmd_opts<'args>(
                 opts.outer = Some(outer_mode);
             }
             'D' => opts.report_metadata = true,
-            NO_METADATA_SHORT => opts.no_metadata = true,
+            NO_METADATA_SHORT => {
+                opts.no_details_mode = match w.woptarg {
+                    None => NoDetailsMode::DefinitionOnly,
+                    Some(arg) => NoDetailsMode::try_from(arg).map_err(|()| {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "%s: Invalid value for '--no-details' option: '%s'. Expected 'definition-only' or 'body-only'",
+                            cmd,
+                            arg
+                        ));
+                        STATUS_INVALID_ARGS
+                    })?,
+                };
+            }
             'd' => {
                 opts.description = Some(w.woptarg.unwrap());
             }
@@ -200,7 +232,7 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
         return Err(STATUS_INVALID_ARGS);
     }
 
-    if opts.report_metadata && opts.no_metadata {
+    if opts.report_metadata && opts.no_details_mode != NoDetailsMode::Disabled {
         streams.err.appendln(&wgettext_fmt!(BUILTIN_ERR_COMBO, cmd));
         builtin_print_error_trailer(parser, streams.err, cmd);
         return Err(STATUS_INVALID_ARGS);
@@ -480,7 +512,7 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
         }
 
         let mut comment = WString::new();
-        if !opts.no_metadata {
+        if opts.no_details_mode == NoDetailsMode::Disabled {
             // TODO: This is duplicated in type.
             // Extract this into a helper.
             match props.definition_file() {
@@ -514,17 +546,16 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
             }
         }
 
-        let mut def = WString::new();
-
-        if !comment.is_empty() {
-            def.push_utfstr(&sprintf!(
-                "# %s\n%s",
-                comment,
-                props.annotated_definition(arg)
-            ));
-        } else {
-            def = props.annotated_definition(arg);
-        }
+        let mut def = match opts.no_details_mode {
+            NoDetailsMode::BodyOnly => props.body_source().to_owned(),
+            NoDetailsMode::Disabled | NoDetailsMode::DefinitionOnly => {
+                if !comment.is_empty() {
+                    sprintf!("# %s\n%s", comment, props.annotated_definition(arg))
+                } else {
+                    props.annotated_definition(arg)
+                }
+            }
+        };
 
         if props.definition_file().is_none() {
             def = apply_indents(&def, &compute_indents(&def));

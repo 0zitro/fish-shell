@@ -18,6 +18,8 @@ complete -c functions -s c -l copy -d "Copy the specified function to the specif
 complete -c functions -s o -l outer -d "Print outer function provenance (name)"
 complete -c functions -n "string match -qr -- '^--outer=' (commandline -ct)" -a "current initial"
 complete -c functions -s D -l details -d "Display information about the function"
+complete -c functions -l no-details -d "Print function definitions without path metadata"
+complete -c functions -n "string match -qr -- '^--no-details=' (commandline -ct)" -a "definition-only body-only"
 complete -c functions -s v -l verbose -d "Print more output"
 complete -c functions -s H -l handlers -d "Show event handlers"
 complete -c functions -s t -l handlers-type -d "Show event handlers matching the given type" -x -a "signal variable exit job-id generic"
