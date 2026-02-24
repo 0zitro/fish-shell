@@ -16,12 +16,13 @@ use crate::termsize::termsize_last;
 struct FunctionsCmdOpts<'args> {
     print_help: bool,
     erase: bool,
+    outer: Option<OuterMode>,
     list: bool,
     show_hidden: bool,
     query: bool,
     copy: bool,
     report_metadata: bool,
-    no_metadata: bool,
+    no_details_mode: NoDetailsMode,
     verbose: bool,
     handlers: bool,
     color: ColorEnabled,
@@ -29,12 +30,52 @@ struct FunctionsCmdOpts<'args> {
     description: Option<&'args wstr>,
 }
 
+#[derive(Clone, Copy, Default)]
+enum OuterMode {
+    #[default]
+    Current,
+    Initial,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum NoDetailsMode {
+    #[default]
+    Disabled,
+    DefinitionOnly,
+    BodyOnly,
+}
+
+impl TryFrom<&wstr> for NoDetailsMode {
+    type Error = ();
+
+    fn try_from(value: &wstr) -> Result<Self, Self::Error> {
+        match value {
+            value if value == "definition-only" => Ok(Self::DefinitionOnly),
+            value if value == "body-only" => Ok(Self::BodyOnly),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<&wstr> for OuterMode {
+    type Error = ();
+
+    fn try_from(value: &wstr) -> Result<Self, Self::Error> {
+        match value {
+            value if value == "current" => Ok(Self::Current),
+            value if value == "initial" => Ok(Self::Initial),
+            _ => Err(()),
+        }
+    }
+}
+
 const NO_METADATA_SHORT: char = 2 as char;
 
-const SHORT_OPTIONS: &wstr = L!("Ht:Dacd:ehnqv");
+const SHORT_OPTIONS: &wstr = L!("Ht:Dacd:ehno::qv");
 #[rustfmt::skip]
 const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("erase"), ArgType::NoArgument, 'e'),
+    wopt(L!("outer"), ArgType::OptionalArgument, 'o'),
     wopt(L!("description"), ArgType::RequiredArgument, 'd'),
     wopt(L!("names"), ArgType::NoArgument, 'n'),
     wopt(L!("all"), ArgType::NoArgument, 'a'),
@@ -42,7 +83,7 @@ const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("query"), ArgType::NoArgument, 'q'),
     wopt(L!("copy"), ArgType::NoArgument, 'c'),
     wopt(L!("details"), ArgType::NoArgument, 'D'),
-    wopt(L!("no-details"), ArgType::NoArgument, NO_METADATA_SHORT),
+    wopt(L!("no-details"), ArgType::OptionalArgument, NO_METADATA_SHORT),
     wopt(L!("verbose"), ArgType::NoArgument, 'v'),
     wopt(L!("handlers"), ArgType::NoArgument, 'H'),
     wopt(L!("handlers-type"), ArgType::RequiredArgument, 't'),
@@ -65,8 +106,34 @@ fn parse_cmd_opts<'args>(
         match opt {
             'v' => opts.verbose = true,
             'e' => opts.erase = true,
+            'o' => {
+                let outer_mode = match w.woptarg {
+                    None => OuterMode::Current,
+                    Some(arg) => OuterMode::try_from(arg).map_err(|()| {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "%s: Invalid value for '--outer' option: '%s'. Expected 'current' or 'initial'",
+                            cmd,
+                            arg
+                        ));
+                        STATUS_INVALID_ARGS
+                    })?,
+                };
+                opts.outer = Some(outer_mode);
+            }
             'D' => opts.report_metadata = true,
-            NO_METADATA_SHORT => opts.no_metadata = true,
+            NO_METADATA_SHORT => {
+                opts.no_details_mode = match w.woptarg {
+                    None => NoDetailsMode::DefinitionOnly,
+                    Some(arg) => NoDetailsMode::try_from(arg).map_err(|()| {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "%s: Invalid value for '--no-details' option: '%s'. Expected 'definition-only' or 'body-only'",
+                            cmd,
+                            arg
+                        ));
+                        STATUS_INVALID_ARGS
+                    })?,
+                };
+            }
             'd' => {
                 opts.description = Some(w.woptarg.unwrap());
             }
@@ -119,6 +186,18 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
     localizable_consts! {
         FUNCTION_DOES_NOT_EXIST
         "%s: Function '%s' does not exist"
+
+        FUNCTION_HAS_NO_OUTER
+        "%s: Function '%s' has no outer function"
+
+        FUNCTION_OUTER_UNAVAILABLE
+        "%s: Outer function '%s' for '%s' is no longer available"
+
+        FUNCTION_OUTER_AMBIGUOUS
+        "%s: Outer function for '%s' is ambiguous"
+
+        FUNCTION_IS_UNAVAILABLE
+        "%s: Function '%s' is not currently available"
     }
 
     let mut opts = FunctionsCmdOpts::default();
@@ -135,7 +214,14 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
     }
 
     let describe = opts.description.is_some();
-    if [describe, opts.erase, opts.list, opts.query, opts.copy]
+    if [
+        describe,
+        opts.erase,
+        opts.outer.is_some(),
+        opts.list,
+        opts.query,
+        opts.copy,
+    ]
         .into_iter()
         .filter(|b| *b)
         .count()
@@ -146,7 +232,7 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
         return Err(STATUS_INVALID_ARGS);
     }
 
-    if opts.report_metadata && opts.no_metadata {
+    if opts.report_metadata && opts.no_details_mode != NoDetailsMode::Disabled {
         streams.err.appendln(&wgettext_fmt!(BUILTIN_ERR_COMBO, cmd));
         builtin_print_error_trailer(parser, streams.err, cmd);
         return Err(STATUS_INVALID_ARGS);
@@ -157,6 +243,60 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
             function::remove(arg);
         }
         // Historical - this never failed?
+        return Ok(SUCCESS);
+    }
+
+    if let Some(outer_mode) = opts.outer {
+        if args.len() != 1 {
+            streams.err.appendln(&wgettext_fmt!(
+                BUILTIN_ERR_ARG_COUNT2,
+                cmd,
+                "--outer",
+                1,
+                args.len()
+            ));
+            return Err(STATUS_INVALID_ARGS);
+        }
+
+        let lookup_mode = match outer_mode {
+            OuterMode::Current => function::OuterLookupMode::Current,
+            OuterMode::Initial => function::OuterLookupMode::Initial,
+        };
+
+        match function::get_outer_by_mode(args[0], lookup_mode) {
+            function::OuterLookupResult::Found(outer) => {
+                streams.out.appendln(&outer);
+                Ok(SUCCESS)
+            }
+            function::OuterLookupResult::NoOuter => {
+                streams
+                    .err
+                    .appendln(&wgettext_fmt!(FUNCTION_HAS_NO_OUTER, cmd, args[0]));
+                Err(1)
+            }
+            function::OuterLookupResult::OuterUnavailable(outer) => {
+                streams.err.appendln(&wgettext_fmt!(
+                    FUNCTION_OUTER_UNAVAILABLE,
+                    cmd,
+                    outer,
+                    args[0]
+                ));
+                Err(3)
+            }
+            function::OuterLookupResult::Ambiguous => {
+                streams
+                    .err
+                    .appendln(&wgettext_fmt!(FUNCTION_OUTER_AMBIGUOUS, cmd, args[0]));
+                Err(4)
+            }
+            function::OuterLookupResult::TargetUnavailable => {
+                streams
+                    .err
+                    .appendln(&wgettext_fmt!(FUNCTION_IS_UNAVAILABLE, cmd, args[0]));
+                Err(5)
+            }
+        }?;
+
         return Ok(SUCCESS);
     }
 
@@ -372,7 +512,7 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
         }
 
         let mut comment = WString::new();
-        if !opts.no_metadata {
+        if opts.no_details_mode == NoDetailsMode::Disabled {
             // TODO: This is duplicated in type.
             // Extract this into a helper.
             match props.definition_file() {
@@ -406,17 +546,16 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
             }
         }
 
-        let mut def = WString::new();
-
-        if !comment.is_empty() {
-            def.push_utfstr(&sprintf!(
-                "# %s\n%s",
-                comment,
-                props.annotated_definition(arg)
-            ));
-        } else {
-            def = props.annotated_definition(arg);
-        }
+        let mut def = match opts.no_details_mode {
+            NoDetailsMode::BodyOnly => props.body_source().to_owned(),
+            NoDetailsMode::Disabled | NoDetailsMode::DefinitionOnly => {
+                if !comment.is_empty() {
+                    sprintf!("# %s\n%s", comment, props.annotated_definition(arg))
+                } else {
+                    props.annotated_definition(arg)
+                }
+            }
+        };
 
         if props.definition_file().is_none() {
             def = apply_indents(&def, &compute_indents(&def));

@@ -8,6 +8,8 @@ Synopsis
 
     functions [-a | --all] [-n | --names] [--color WHEN]
     functions [-D | --details] [-v] [--color WHEN] FUNCTION
+    functions [--no-details[=MODE]] [--color WHEN] FUNCTION ...
+    functions [-o | --outer[=MODE]] FUNCTION
     functions -c OLDNAME NEWNAME
     functions -d DESCRIPTION FUNCTION
     functions [-e | -q] FUNCTION ...
@@ -42,8 +44,31 @@ The following options are available:
 
     You should not assume that only five lines will be written since we may add additional information to the output in the future.
 
-**--no-details**
-    Turns off function path reporting, so just the definition will be printed.
+**-o** or **--outer**\ [**=**\ *MODE*]
+    Reports outer-function provenance for *FUNCTION*. This reflects runtime provenance for the latest loaded definition and does not autoload the target function or its outer function.
+
+    *MODE* may be:
+
+    - ``current`` (default): report the currently captured outer function for the loaded function generation.
+    - ``initial``: report the first recorded definition-site outer function name for the currently loaded function name.
+
+    On success, one line is written containing the outer function name.
+
+    If the target exists but has no outer function (for example, it was defined at top level), this command returns status 1.
+
+    If the target exists but the requested outer function is no longer available, this command returns status 3.
+
+    If provenance is ambiguous, this command returns status 4.
+
+    If the target function is not currently loaded, this command returns status 5.
+
+**--no-details**\ [**=**\ *MODE*]
+    Turns off function path reporting. By default this prints the full function definition.
+
+    *MODE* may be:
+
+    - ``definition-only`` (default): print only the function definition, without path metadata.
+    - ``body-only``: print only the function body exactly as sourced, omitting the ``function ...`` header and ``end``.
 
 **-n** or **--names**
     Lists the names of all defined functions.

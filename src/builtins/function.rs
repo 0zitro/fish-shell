@@ -367,8 +367,10 @@ pub fn function(
         copy_definition_lineno: None,
     };
 
+    let outer = parser.get_function_ref(1);
+
     // Add the function itself.
-    function::add(function_name.clone(), Arc::new(props));
+    function::add(function_name.clone(), Arc::new(props), outer);
 
     // Handle wrap targets by creating the appropriate completions.
     for wt in opts.wrap_targets {
