@@ -794,8 +794,7 @@ fn erase(
                 let scope_flags = mode.intersection(EnvMode::ANY_SCOPE);
                 // In transparent functions, plain `set -e VAR` should behave like removing the
                 // callee-local overlay and revealing the caller-local value underneath.
-                if scope_flags.is_empty()
-                    && parser.restore_transparent_local_shadow(split.varname)
+                if scope_flags.is_empty() && parser.restore_transparent_local_shadow(split.varname)
                 {
                     retval = EnvStackSetResult::Ok;
                 } else {

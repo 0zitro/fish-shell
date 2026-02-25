@@ -222,9 +222,9 @@ pub fn functions(parser: &Parser, streams: &mut IoStreams, args: &mut [&wstr]) -
         opts.query,
         opts.copy,
     ]
-        .into_iter()
-        .filter(|b| *b)
-        .count()
+    .into_iter()
+    .filter(|b| *b)
+    .count()
         > 1
     {
         streams.err.appendln(&wgettext_fmt!(BUILTIN_ERR_COMBO, cmd));

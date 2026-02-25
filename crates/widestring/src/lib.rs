@@ -459,11 +459,14 @@ pub trait WExt {
         slice.slice_to(slice.len() - trailing_count)
     }
 
+    #[rustfmt::skip]
     fn trim_empty_lines(&self) -> &wstr {
         let chars = self.as_char_slice();
-        let Some((start, end)) = trim_outer_lines_by(chars, |line| {
-            line.iter().any(|c| !c.is_whitespace())
-        }) else {
+        let Some((start, end)) =
+            trim_outer_lines_by(chars, |line| {
+                line.iter().any(|c| !c.is_whitespace())
+            })
+        else {
             return L!("");
         };
 

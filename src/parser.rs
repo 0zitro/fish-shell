@@ -1221,9 +1221,7 @@ impl Parser {
                 .skip_while(|b| b.typ() != BlockType::breakpoint)
                 .find_map(|b| match b.data() {
                     Some(BlockData::Function {
-                        name,
-                        generation,
-                        ..
+                        name, generation, ..
                     }) => Some(function::FunctionRef {
                         name: name.clone(),
                         generation: *generation,
@@ -1248,9 +1246,7 @@ impl Parser {
             }
             debug_assert!(b.is_function_call());
             let Some(BlockData::Function {
-                name,
-                generation,
-                ..
+                name, generation, ..
             }) = b.data()
             else {
                 unreachable!()

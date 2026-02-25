@@ -1,4 +1,4 @@
-use ::core::borrow::{Borrow as _};
+use ::core::borrow::Borrow as _;
 
 use super::prelude::*;
 use crate::common::{bytes2wcstring, get_program_name, osstr2wcstring, str2wcstring};
