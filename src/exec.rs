@@ -55,13 +55,13 @@ use libc::{
 use nix::fcntl::OFlag;
 use nix::sys::stat;
 use nix::unistd::getpgrp;
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::io::{Read as _, Write as _};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::slice;
-use std::collections::HashSet;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicUsize, Ordering},
@@ -1018,7 +1018,9 @@ fn function_prepare_environment(
             protected_names
                 .into_iter()
                 .map(|name| LocalBindingSnapshot {
-                    value: vars.getf(&name, EnvMode::LOCAL).map(|v| v.as_list().to_vec()),
+                    value: vars
+                        .getf(&name, EnvMode::LOCAL)
+                        .map(|v| v.as_list().to_vec()),
                     name,
                 })
                 .collect(),

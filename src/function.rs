@@ -116,7 +116,10 @@ impl FunctionSet {
     }
 
     fn current_generation(&self, name: &wstr) -> Option<FunctionGeneration> {
-        self.funcs.contains_key(name).then(|| self.generations.get(name).copied()).flatten()
+        self.funcs
+            .contains_key(name)
+            .then(|| self.generations.get(name).copied())
+            .flatten()
     }
 
     /// Remove a function.
@@ -230,6 +233,7 @@ fn autoload_names(names: &mut HashSet<WString>, vars: &dyn Environment, get_hidd
 }
 
 /// Add a function. This may mutate `props` to set is_autoload.
+#[rustfmt::skip]
 pub fn add(name: WString, props: Arc<FunctionProperties>, outer: Option<FunctionRef>) {
     let mut funcset = FUNCTION_SET.lock().unwrap();
 
@@ -252,12 +256,15 @@ pub fn add(name: WString, props: Arc<FunctionProperties>, outer: Option<Function
         .store(funcset.autoloader.autoload_in_progress(&name));
 
     let generation = funcset.next_generation(&name);
-    let initial_outer = preserved_initial_outer.or_else(|| outer.as_ref().map(|outer| outer.name.clone()));
+    let initial_outer =
+        preserved_initial_outer.or_else(|| {
+            outer.as_ref()
+                .map(|outer| outer.name.clone())
+        });
 
     // Create and store a new function.
     let existing = funcset.funcs.insert(name.clone(), props);
-    funcset
-        .provenance
+    funcset.provenance
         .insert(
             name,
             FunctionProvenance {
@@ -423,7 +430,8 @@ fn get_function_body_source(props: &FunctionProperties) -> &wstr {
         .parsed_source()
         .src
         // narrow to what's immediately between the header and the end keyword
-        .slice_to(body_end).slice_from(body_start)
+        .slice_to(body_end)
+        .slice_from(body_start)
         // trim useless empty lines from the immediate start and end
         // (empty lines inbetween are not affected)
         .trim_empty_lines()
