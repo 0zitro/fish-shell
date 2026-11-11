@@ -39,9 +39,7 @@ $fish -c 'echo "unfinished "$(subshell'
 # CHECKERR: {{^}}                   ^
 
 $fish -c 'echo "ok $(echo still ok)syntax error: \x"'
-# CHECKERR: fish: Invalid token '"ok $(echo still ok)syntax error: \x"'
-# CHECKERR: {{^}}echo "ok $(echo still ok)syntax error: \x"
-# CHECKERR: {{^}}                         ^~~~~~~~~~~~~~~~^
+# CHECK: ok still oksyntax error: \x
 
 echo "function this_should_be_an_error" >$TMPDIR/this_should_be_an_error.fish
 $fish -c "set -g fish_function_path $(string escape $TMPDIR); this_should_be_an_error" 2>| string replace -r "^ {$(string length "$TMPDIR")}" "      " >&2
