@@ -1330,73 +1330,78 @@ pub fn detect_errors_in_argument(
     let mut issue = ParseIssue::default();
 
     // Check if a subtoken contains errors. Returns true if there is an error, and appends to out_errors if provided.
-    let check_subtoken =
-        |begin: usize, end: usize, out_errors: &mut Option<&mut ParseErrorList>| -> bool {
-            let Some(unesc) = unescape_string(
-                &arg_src[begin..end],
-                UnescapeStringStyle::Script(UnescapeFlags {
-                    special: true,
-                    ..Default::default()
-                }),
-            ) else {
-                if out_errors.is_some() {
-                    let src = arg_src.as_char_slice();
-                    if src.len() == 2
-                        && src[0] == '\\'
-                        && (src[1] == 'c'
-                            || src[1].eq_ignore_ascii_case(&'u')
-                            || src[1].eq_ignore_ascii_case(&'x'))
-                    {
-                        append_syntax_error!(
-                            out_errors,
-                            source_start + begin,
-                            end - begin,
-                            "Incomplete escape sequence '%s'",
-                            arg_src
-                        );
-                        return true;
-                    }
+    let check_subtoken = |begin: usize,
+                          end: usize,
+                          initial_double_quotes: bool,
+                          out_errors: &mut Option<&mut ParseErrorList>|
+     -> bool {
+        let Some(unesc) = unescape_string(
+            &arg_src[begin..end],
+            UnescapeStringStyle::Script(UnescapeFlags {
+                special: true,
+                initial_double_quotes,
+                ..Default::default()
+            }),
+        ) else {
+            if out_errors.is_some() {
+                let src = arg_src.as_char_slice();
+                if src.len() == 2
+                    && src[0] == '\\'
+                    && (src[1] == 'c'
+                        || src[1].eq_ignore_ascii_case(&'u')
+                        || src[1].eq_ignore_ascii_case(&'x'))
+                {
                     append_syntax_error!(
                         out_errors,
                         source_start + begin,
                         end - begin,
-                        "Invalid token '%s'",
+                        "Incomplete escape sequence '%s'",
                         arg_src
                     );
+                    return true;
                 }
-                return true;
-            };
+                append_syntax_error!(
+                    out_errors,
+                    source_start + begin,
+                    end - begin,
+                    "Invalid token '%s'",
+                    arg_src
+                );
+            }
+            return true;
+        };
 
-            let mut errored = false;
-            // Check for invalid variable expansions.
-            let unesc = unesc.as_char_slice();
-            for (idx, c) in unesc.iter().enumerate() {
-                if ![VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE].contains(c) {
-                    continue;
-                }
-                let next_char = unesc.get(idx + 1).copied().unwrap_or('\0');
-                if !matches!(next_char, VARIABLE_EXPAND | VARIABLE_EXPAND_SINGLE | '(')
-                    && !valid_var_name_char(next_char)
-                {
-                    errored = true;
-                    if let Some(out_errors) = out_errors {
-                        let mut first_dollar = idx;
-                        while first_dollar > 0
-                            && [VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE]
-                                .contains(&unesc[first_dollar - 1])
-                        {
-                            first_dollar -= 1;
-                        }
-                        expand_variable_error(unesc.into(), source_start, first_dollar, out_errors);
+        let mut errored = false;
+        // Check for invalid variable expansions.
+        let unesc = unesc.as_char_slice();
+        for (idx, c) in unesc.iter().enumerate() {
+            if ![VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE].contains(c) {
+                continue;
+            }
+            let next_char = unesc.get(idx + 1).copied().unwrap_or('\0');
+            if !matches!(next_char, VARIABLE_EXPAND | VARIABLE_EXPAND_SINGLE | '(')
+                && !valid_var_name_char(next_char)
+            {
+                errored = true;
+                if let Some(out_errors) = out_errors {
+                    let mut first_dollar = idx;
+                    while first_dollar > 0
+                        && [VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE]
+                            .contains(&unesc[first_dollar - 1])
+                    {
+                        first_dollar -= 1;
                     }
+                    expand_variable_error(unesc.into(), source_start, first_dollar, out_errors);
                 }
             }
+        }
 
-            errored
-        };
+        errored
+    };
 
     let mut cursor = 0;
     let mut checked = 0;
+    let mut checked_quoted = false;
 
     let mut do_loop = true;
     let mut is_quoted = false;
@@ -1421,6 +1426,7 @@ pub fn detect_errors_in_argument(
                 issue.error |= check_subtoken(
                     checked,
                     cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 },
+                    checked_quoted,
                     out_errors,
                 );
                 let mut subst_errors = ParseErrorList::new();
@@ -1443,18 +1449,12 @@ pub fn detect_errors_in_argument(
                 }
 
                 checked = cmdsub.end();
-                // A quoted command substitution ends with an invisible double quote
-                // after the `)`: the actual `"` in the source is that closing quote.
-                // Skip it, or the next subtoken starts by treating it as an opening
-                // quote and misparses everything after it.
-                if is_quoted && arg_src.char_at(checked) == '"' {
-                    checked += 1;
-                }
+                checked_quoted = is_quoted;
             }
         }
     }
 
-    issue.error |= check_subtoken(checked, arg_src.len(), out_errors);
+    issue.error |= check_subtoken(checked, arg_src.len(), checked_quoted, out_errors);
     if issue.error || issue.incomplete {
         Err(issue)
     } else {
