@@ -1443,6 +1443,13 @@ pub fn detect_errors_in_argument(
                 }
 
                 checked = cmdsub.end();
+                // A quoted command substitution ends with an invisible double quote
+                // after the `)`: the actual `"` in the source is that closing quote.
+                // Skip it, or the next subtoken starts by treating it as an opening
+                // quote and misparses everything after it.
+                if is_quoted && arg_src.char_at(checked) == '"' {
+                    checked += 1;
+                }
             }
         }
     }
