@@ -1073,6 +1073,19 @@ When using indirect variable expansion with multiple ``$`` (``$$name``), you hav
     > echo $$name[1..-1][1..3] # or $$name[1][1..3], since $name only has one element.
     1 2 3
 
+The indirect name may also be produced by a command substitution::
+
+    > set name list
+    > set list 1 2 3
+    > echo $$(echo name)
+    1 2 3
+
+The substitution must produce exactly one line and that line must be a valid
+variable name.  Empty output, several lines, or a name containing a subscript
+is an expansion error.  The produced name is resolved once, so ``$$(echo name)``
+is equivalent to ``$$name``.  The form is a variable expansion and is allowed
+in command position.
+
 .. _expand-home:
 
 Home directory expansion

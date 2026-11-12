@@ -11,7 +11,7 @@ use crate::{
         STATUS_INVALID_ARGS, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
         STATUS_UNMATCHED_WILDCARD,
     },
-    common::valid_var_name_char,
+    common::{valid_var_name, valid_var_name_char},
     complete::{Completion, CompletionList, CompletionReceiver},
     env::{EnvVar, Environment},
     exec::exec_subshell_for_expand,
@@ -1051,6 +1051,39 @@ pub fn expand_cmdsubst(
         };
         append_cmdsub_error!(errors, cmdsub.opening_paren_offset(), cmdsub.end() - 1, err);
         return ExpandResult::make_error(subshell_status);
+    }
+
+    let opening = cmdsub.opening_paren_offset();
+    let dynamic_name = has_dollar
+        && opening >= 2
+        && (input.as_char_slice()[opening - 2] == '$'
+            || [VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE]
+                .contains(&input.as_char_slice()[opening - 2]));
+    if dynamic_name {
+        let name = sub_res.first();
+        if sub_res.len() != 1
+            || !name.is_some_and(|name| {
+                valid_var_name(name) && !name.chars().any(|c| c == '[' || c == ']')
+            })
+        {
+            append_syntax_error!(
+                errors,
+                opening,
+                "Dynamic variable name must be a single valid variable name"
+            );
+            return ExpandResult::make_error(STATUS_EXPAND_ERROR);
+        }
+        let mut result = if input.as_char_slice()[opening - 1] == '$' {
+            input[..opening].to_owned()
+        } else {
+            input[..opening - 1].to_owned()
+        };
+        if input.as_char_slice()[opening - 1] != '$' {
+            result.push('$');
+        }
+        result.push_utfstr(name.unwrap());
+        result.push_utfstr(&input[cmdsub.end()..]);
+        return expand_cmdsubst(result, ctx, out, errors);
     }
 
     // Expand slices like (cat /var/words)[1]

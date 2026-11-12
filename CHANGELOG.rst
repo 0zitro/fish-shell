@@ -24,6 +24,7 @@ Scripting improvements
 - ``command``, ``builtin``, ``exec`` and ``time`` now accept a ``--`` separator between the keyword and the command name, so for example ``command -- -q`` runs a command literally called ``-q`` (:issue:`9941`).
 - Command substitutions are now allowed in command position, for example ``$(echo echo) hello world`` (:issue:`12829`).`
 - ``begin`` accepts quoted options: ``-q`` (or ``--quoted``) emits its body as source text with command substitutions evaluated eagerly, while two quoted options (``-qq``, ``-q -q``, or ``--quoted --quoted``) leave the body unexpanded.
+- ``$$(command substitution)`` expands a variable whose name is the single valid name produced by the substitution, performing one level of indirection.
 
 Regression fixes:
 -----------------

@@ -1375,6 +1375,12 @@ pub fn detect_errors_in_argument(
                     continue;
                 }
                 let next_char = unesc.get(idx + 1).copied().unwrap_or('\0');
+                if [VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE].contains(c)
+                    && next_char == '$'
+                    && unesc.get(idx + 2) == Some(&'(')
+                {
+                    continue;
+                }
                 if !matches!(next_char, VARIABLE_EXPAND | VARIABLE_EXPAND_SINGLE | '(')
                     && !valid_var_name_char(next_char)
                 {
@@ -1418,11 +1424,13 @@ pub fn detect_errors_in_argument(
                 do_loop = false;
             }
             Ok(Some(cmdsub)) => {
-                issue.error |= check_subtoken(
-                    checked,
-                    cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 },
-                    out_errors,
-                );
+                let opening = cmdsub.opening_paren_offset();
+                let skip_dollars = if opening >= 2 && arg_src.as_char_slice()[opening - 2] == '$' {
+                    2
+                } else {
+                    usize::from(has_dollar)
+                };
+                issue.error |= check_subtoken(checked, opening - skip_dollars, out_errors);
                 let mut subst_errors = ParseErrorList::new();
                 if let Err(e) = detect_parse_errors(
                     &arg_src[cmdsub.command_range()],
@@ -1654,7 +1662,11 @@ fn detect_errors_in_decorated_statement(
     }
 
     let unexp_command = com;
-    if !unexp_command.is_empty() {
+    let dynamic_command = unexp_command
+        .as_char_slice()
+        .windows(3)
+        .any(|w| w == ['$', '$', '(']);
+    if !unexp_command.is_empty() && !dynamic_command {
         // Check that we can expand the command.
         // Make a new error list so we can fix the offset for just those, then append later.
         let mut new_errors = ParseErrorList::new();
