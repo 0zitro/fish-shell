@@ -38,3 +38,38 @@ $fish -c 'begin -qq -q echo 1; end'
 # CHECKERR: fish: begin accepts at most two quoted options
 # CHECKERR: {{^}}begin -qq -q echo 1; end
 # CHECKERR: {{^}}          ^^
+
+# A single quoted option evaluates command substitutions only.
+begin -q echo (printf x); end
+# CHECK: echo x
+
+begin -q echo pre(printf 'a\nb')post; end
+# CHECK: echo preapost prebpost
+
+begin -q echo (printf 'a\nb') (printf 'c\nd'); end
+# CHECK: echo a b c d
+
+begin -q echo "$(printf '')"; end
+# CHECK: echo ""
+
+begin -q echo (printf ''); end
+# CHECK: echo
+
+begin -q echo "$(printf 'a\nb')"; end
+# CHECK: echo "a
+# CHECK: b"
+
+begin -q
+# comment
+set x 1
+echo $x
+end
+# CHECK: # comment
+# CHECK: set x 1
+# CHECK: echo $x
+
+begin -q echo {a,b} ~; end
+# CHECK: echo {a,b} ~
+
+begin -q echo 1 > (printf out); end
+# CHECK: echo 1 > out

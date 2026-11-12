@@ -840,6 +840,7 @@ pub struct FunctionHeader {
 pub enum BeginQuoteMode {
     #[default]
     Plain,
+    EagerSubstitutions,
     RawSource,
 }
 
@@ -2664,32 +2665,20 @@ impl<'s> Populator<'s> {
     fn visit_begin_header(&mut self, node: &mut BeginHeader) -> VisitResult {
         node.kw_begin = self.allocate_visit::<KeywordBegin>();
 
-        let mut lookahead = 0;
-        let mut idx = 0;
-        while let Some(weight) = self.begin_quote_option_weight_at(idx) {
-            lookahead += weight;
-            idx += 1;
-            if lookahead >= 2 {
-                break;
-            }
-        }
-
         let mut count = 0;
         let mut options_start = None;
         let mut options_end = 0;
         let mut too_many = None;
-        if lookahead >= 2 {
-            while let Some(weight) = self.begin_quote_option_weight_at(0) {
-                let token = self.consume_any_token();
-                let range = token.range();
-                if options_start.is_none() {
-                    options_start = Some(range.start());
-                }
-                options_end = range.end();
-                count += weight;
-                if count > 2 && too_many.is_none() {
-                    too_many = Some(token);
-                }
+        while let Some(weight) = self.begin_quote_option_weight_at(0) {
+            let token = self.consume_any_token();
+            let range = token.range();
+            if options_start.is_none() {
+                options_start = Some(range.start());
+            }
+            options_end = range.end();
+            count += weight;
+            if count > 2 && too_many.is_none() {
+                too_many = Some(token);
             }
         }
         if let Some(token) = too_many {
@@ -2701,10 +2690,10 @@ impl<'s> Populator<'s> {
             );
         }
 
-        let mode = if count == 0 {
-            BeginQuoteMode::Plain
-        } else {
-            BeginQuoteMode::RawSource
+        let mode = match count {
+            0 => BeginQuoteMode::Plain,
+            1 => BeginQuoteMode::EagerSubstitutions,
+            _ => BeginQuoteMode::RawSource,
         };
         node.quote = BeginQuote {
             mode,

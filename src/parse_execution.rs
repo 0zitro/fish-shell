@@ -15,7 +15,7 @@ use crate::{
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::{create_output_stream_for_builtin, exec_job},
+    exec::{create_output_stream_for_builtin, exec_job, exec_subshell_for_expand},
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
     },
@@ -46,11 +46,15 @@ use crate::{
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
     timer::push_timer,
-    tokenizer::{PipeOrRedir, TokenType, variable_assignment_equals_pos},
+    tokenizer::{
+        PipeOrRedir, TokFlags, TokenType, Tokenizer, TokenizerError, variable_assignment_equals_pos,
+    },
     trace::{trace_if_enabled, trace_if_enabled_with_args},
     wildcard::wildcard_match,
 };
-use fish_common::{ScopeGuard, escape, help_section, truncate_at_nul};
+use fish_common::{
+    ScopeGuard, escape, escape_string_for_double_quotes, help_section, truncate_at_nul,
+};
 use fish_widestring::WExt as _;
 use libc::{EXIT_SUCCESS, STDERR_FILENO, STDOUT_FILENO, c_int};
 use nix::errno::Errno;
@@ -114,6 +118,19 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
         help_section!("language#shell-variable-and-function-names")
     )
     .cmd(command)
+}
+
+fn trim_begin_body(text: &wstr) -> &wstr {
+    let chars = text.as_char_slice();
+    let mut start = 0;
+    while start < chars.len() && (chars[start].is_whitespace() || chars[start] == ';') {
+        start += 1;
+    }
+    let mut end = chars.len();
+    while end > start && (chars[end - 1].is_whitespace() || chars[end - 1] == ';') {
+        end -= 1;
+    }
+    &text[start..end]
 }
 
 impl ExecutionContext {
@@ -893,9 +910,150 @@ impl ExecutionContext {
             BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
             BlockStatementHeader::Begin(bh) => match bh.quote.mode {
                 ast::BeginQuoteMode::Plain => self.run_begin_statement(ctx, contents),
+                ast::BeginQuoteMode::EagerSubstitutions => {
+                    self.run_eager_begin_statement(ctx, statement)
+                }
                 ast::BeginQuoteMode::RawSource => self.run_quoted_begin_statement(ctx, statement),
             },
         }
+    }
+
+    fn begin_body_source(&self, statement: &ast::BlockStatement) -> Option<WString> {
+        let ast::BlockStatementHeader::Begin(header) = &statement.header else {
+            return None;
+        };
+        let end_range = statement.end.try_source_range()?;
+        let body_start = header
+            .quote
+            .options
+            .map_or_else(|| header.kw_begin.source_range().end(), |r| r.end());
+        Some(self.pstree().src[body_start..end_range.start()].to_owned())
+    }
+
+    fn serialize_eager_word(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        word: &wstr,
+    ) -> Result<Vec<WString>, ()> {
+        let mut variants = vec![WString::new()];
+        let mut cursor = 0;
+        let mut last = 0;
+        let mut is_quoted = false;
+        let mut has_dollar = false;
+        while let Some(cmdsub) = locate_cmdsubst_range(
+            word,
+            &mut cursor,
+            false,
+            Some(&mut is_quoted),
+            Some(&mut has_dollar),
+        )? {
+            let sub_start = cmdsub.opening_paren_offset() - usize::from(has_dollar);
+            for variant in &mut variants {
+                variant.push_utfstr(&word[last..sub_start]);
+            }
+
+            let mut lines = vec![];
+            let job_group = ctx.job_group.clone();
+            exec_subshell_for_expand(
+                &word[cmdsub.command_range()],
+                ctx.parser(),
+                job_group.as_ref(),
+                &mut lines,
+            )
+            .map_err(|_| ())?;
+
+            if is_quoted {
+                let mut joined = WString::new();
+                for line in &lines {
+                    joined.push_utfstr(line);
+                    joined.push('\n');
+                }
+                let mut len = joined.len();
+                while len > 0 && joined.as_char_slice()[len - 1] == '\n' {
+                    len -= 1;
+                }
+                joined.truncate(len);
+                let escaped = escape_string_for_double_quotes(&joined);
+                for variant in &mut variants {
+                    variant.push_utfstr(&escaped);
+                }
+            } else {
+                if lines.is_empty() {
+                    return Ok(vec![]);
+                }
+                let mut next = Vec::new();
+                for variant in &variants {
+                    for line in &lines {
+                        let mut branch = variant.clone();
+                        branch.push_utfstr(&escape(line));
+                        next.push(branch);
+                    }
+                }
+                variants = next;
+            }
+            last = cmdsub.end();
+        }
+
+        for variant in &mut variants {
+            variant.push_utfstr(&word[last..]);
+        }
+        Ok(variants)
+    }
+
+    fn serialize_eager_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        body: &wstr,
+    ) -> Result<WString, ()> {
+        let mut out = WString::new();
+        let mut last = 0;
+        let flags = TokFlags {
+            show_comments: true,
+            ..Default::default()
+        };
+        for token in Tokenizer::new(body, flags) {
+            if token.error != TokenizerError::None || token.type_ == TokenType::Error {
+                return Err(());
+            }
+            let start = token.offset as usize;
+            let end = start + token.length as usize;
+            out.push_utfstr(&body[last..start]);
+            if token.type_ == TokenType::String {
+                let variants = self.serialize_eager_word(ctx, &body[start..end])?;
+                for (i, variant) in variants.iter().enumerate() {
+                    if i > 0 {
+                        out.push(' ');
+                    }
+                    out.push_utfstr(variant);
+                }
+            } else {
+                out.push_utfstr(&body[start..end]);
+            }
+            last = end;
+        }
+        out.push_utfstr(&body[last..]);
+        Ok(out)
+    }
+
+    fn run_eager_begin_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        statement: &ast::BlockStatement,
+    ) -> EndExecutionReason {
+        let Some(body) = self.begin_body_source(statement) else {
+            return EndExecutionReason::Ok;
+        };
+        let serialized = match self.serialize_eager_body(ctx, &body) {
+            Ok(serialized) => serialized,
+            Err(()) => {
+                ctx.parser().libdata_mut().status_count += 1;
+                ctx.parser()
+                    .set_last_statuses(Statuses::just(STATUS_EXPAND_ERROR));
+                return EndExecutionReason::Error;
+            }
+        };
+        let body = trim_begin_body(&serialized);
+        self.emit_begin_body(ctx, body)
     }
 
     fn run_quoted_begin_statement(
@@ -903,28 +1061,18 @@ impl ExecutionContext {
         ctx: &mut OperationContext<'_>,
         statement: &ast::BlockStatement,
     ) -> EndExecutionReason {
-        let ast::BlockStatementHeader::Begin(header) = &statement.header else {
-            unreachable!("quoted begin statement has a begin header");
-        };
-        let Some(end_range) = statement.end.try_source_range() else {
+        let Some(body) = self.begin_body_source(statement) else {
             return EndExecutionReason::Ok;
         };
-        let body_start = header
-            .quote
-            .options
-            .map_or_else(|| header.kw_begin.source_range().end(), |r| r.end());
-        let raw = &self.pstree().src[body_start..end_range.start()];
-        let chars = raw.as_char_slice();
-        let mut start = 0;
-        while start < chars.len() && (chars[start].is_whitespace() || chars[start] == ';') {
-            start += 1;
-        }
-        let mut end = chars.len();
-        while end > start && (chars[end - 1].is_whitespace() || chars[end - 1] == ';') {
-            end -= 1;
-        }
-        let body = &raw[start..end];
+        let body = trim_begin_body(&body);
+        self.emit_begin_body(ctx, body)
+    }
 
+    fn emit_begin_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        body: &wstr,
+    ) -> EndExecutionReason {
         let mut out = create_output_stream_for_builtin(STDOUT_FILENO, &self.block_io, false);
         if !body.is_empty() {
             out.append(body.chars());

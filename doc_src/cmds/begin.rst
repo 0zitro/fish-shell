@@ -7,6 +7,8 @@ Synopsis
 .. synopsis::
 
     begin; [COMMANDS ...]; end
+    begin -q; [COMMANDS ...]; end
+    begin --quoted; [COMMANDS ...]; end
     begin -qq; [COMMANDS ...]; end
     begin -q -q; [COMMANDS ...]; end
     begin --quoted --quoted; [COMMANDS ...]; end
@@ -30,9 +32,24 @@ The **-h** or **--help** option displays help about using this command.
 Quoted blocks
 -------------
 
-Two quoted options make ``begin`` emit its body as source text instead of
-executing it.  ``begin -qq``, ``begin -q -q``, and
-``begin --quoted --quoted`` are equivalent spellings.
+A quoted option makes ``begin`` emit its body as source text instead of
+executing it.  ``begin -q`` and ``begin --quoted`` evaluate command
+substitutions eagerly and leave everything else suspended.  ``begin -qq``,
+``begin -q -q``, and ``begin --quoted --quoted`` are equivalent spellings that
+leave command substitutions suspended as well.
+
+::
+
+    begin -q
+        echo (date)
+        echo $x
+    end
+
+This emits ``echo <date output>`` and the literal line ``echo $x``.  Variables,
+braces, globs, tildes, and the structure of the body remain source; only
+command substitutions are replaced by their output.
+
+With two quoted options nothing is expanded:
 
 ::
 
@@ -40,16 +57,14 @@ executing it.  ``begin -qq``, ``begin -q -q``, and
         echo (date)
     end
 
-This writes the two lines ``echo (date)`` without running ``date`` or expanding
-anything else in the body.  The body is still parsed so that nested blocks and
-the matching ``end`` are found, but its commands, variables, braces, globs, and
-command substitutions remain literal source.
+This writes ``echo (date)`` without running ``date``.  The body is still parsed
+so that nested blocks and the matching ``end`` are found.
 
 The emitted text can be captured or redirected like any other command output:
 
 ::
 
-    set -l code "$(begin -qq
+    set -l code "$(begin -q
         echo $x
     end)"
     eval $code
