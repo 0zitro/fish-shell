@@ -11,15 +11,14 @@ use crate::{
         builtin_exists,
     },
     common::{get_program_name, valid_func_name, valid_var_name},
-    complete::CompletionList,
+    complete::{CompletionList, CompletionReceiver},
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::{exec_job, exec_subshell_for_expand},
+    exec::exec_job,
     expand::{
-        self, ExpandFlags, ExpandResultCode, ParseSliceError, apply_cmdsubst_slice,
-        dynamic_variable_reference, escape_quoted_cmdsubst, escape_unquoted_cmdsubst, expand_one,
-        expand_string, expand_to_command_and_args,
+        self, ExpandFlags, ExpandResultCode, expand_cmdsubst, expand_one, expand_string,
+        expand_to_command_and_args,
     },
     flog::flog,
     function,
@@ -31,14 +30,12 @@ use crate::{
     operation_context::OperationContext,
     parse_constants::{
         CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_COMMAND_SUBSTITUTION_FAILED,
-        ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_MISMATCHED_PARENTHESIS, ERROR_SLICE_INVALID_INDEX,
-        ERROR_SLICE_ZERO_INDEX, ERROR_TIME_BACKGROUND, FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG,
-        ILLEGAL_FD_ERR_MSG, INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode,
-        ParseErrorList, ParseKeyword, ParseTokenType, StatementDecoration,
-        parse_error_offset_source_start,
+        ERROR_TIME_BACKGROUND, FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG, ILLEGAL_FD_ERR_MSG,
+        INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
+        ParseTokenType, StatementDecoration, parse_error_offset_source_start,
     },
     parse_tree::{NodeRef, ParsedSourceRef},
-    parse_util::{cmdsub_dollar_run, locate_cmdsubst_range, unescape_wildcards},
+    parse_util::{locate_cmdsubst_range, unescape_wildcards},
     parser::{
         Block, BlockData, BlockId, BlockType, LoopStatus, Parser, ParserEnvSetMode, ProfileItem,
     },
@@ -60,7 +57,7 @@ use crate::{
     wildcard::wildcard_match,
 };
 use fish_common::{ScopeGuard, escape, help_section, truncate_at_nul};
-use fish_widestring::WExt as _;
+use fish_widestring::{INTERNAL_SEPARATOR, WExt as _};
 use libc::{EXIT_SUCCESS, STDERR_FILENO, STDOUT_FILENO, c_int};
 use nix::errno::Errno;
 use std::{io::ErrorKind, rc::Rc, sync::Arc};
@@ -153,13 +150,6 @@ struct BeginSerializationError {
 
 fn serialization_error(status: i32, message: WString) -> BeginSerializationError {
     BeginSerializationError { status, message }
-}
-
-fn slice_error_message(error: ParseSliceError) -> WString {
-    match error {
-        ParseSliceError::ZeroIndex => wgettext!(ERROR_SLICE_ZERO_INDEX).into(),
-        ParseSliceError::InvalidIndex => wgettext!(ERROR_SLICE_INVALID_INDEX).into(),
-    }
 }
 
 impl ExecutionContext {
@@ -964,111 +954,31 @@ impl ExecutionContext {
         ctx: &mut OperationContext<'_>,
         word: &wstr,
     ) -> Result<Vec<WString>, BeginSerializationError> {
-        let mut variants = vec![WString::new()];
-        let mut cursor = 0;
-        let mut last = 0;
-        let mut is_quoted = false;
-        let mut has_dollar = false;
-        loop {
-            let cmdsub = match locate_cmdsubst_range(
-                word,
-                &mut cursor,
-                false,
-                Some(&mut is_quoted),
-                Some(&mut has_dollar),
-            ) {
-                Ok(Some(cmdsub)) => cmdsub,
-                Ok(None) => break,
-                Err(()) => {
-                    return Err(serialization_error(
-                        STATUS_EXPAND_ERROR,
-                        wgettext!(ERROR_MISMATCHED_PARENTHESIS).to_owned(),
-                    ));
-                }
-            };
-
-            let opening = cmdsub.opening_paren_offset();
-            let dollar_count = cmdsub_dollar_run(word, opening);
-            let mut lines = vec![];
-            let job_group = ctx.job_group.clone();
-            exec_subshell_for_expand(
-                &word[cmdsub.command_range()],
-                ctx.parser(),
-                job_group.as_ref(),
-                &mut lines,
-            )
-            .map_err(|status| {
-                serialization_error(
-                    status,
-                    wgettext!(ERROR_COMMAND_SUBSTITUTION_FAILED).to_owned(),
-                )
-            })?;
-
-            if dollar_count >= 2 {
-                let sub_start = opening - dollar_count;
-                for variant in &mut variants {
-                    variant.push_utfstr(&word[last..sub_start]);
-                }
-                if lines.len() != 1 || !dynamic_variable_reference(&lines[0]) {
-                    return Err(serialization_error(
-                        STATUS_EXPAND_ERROR,
-                        wgettext!(ERROR_DYNAMIC_VARIABLE_REFERENCE).to_owned(),
-                    ));
-                }
-                let mut replacement = WString::new();
-                for _ in 1..dollar_count {
-                    replacement.push('$');
-                }
-                replacement.push_utfstr(&lines[0]);
-                for variant in &mut variants {
-                    variant.push_utfstr(&replacement);
-                }
-                last = cmdsub.end();
-                continue;
-            }
-
-            let sub_start = opening - usize::from(has_dollar);
-            for variant in &mut variants {
-                variant.push_utfstr(&word[last..sub_start]);
-            }
-
-            let mut tail_begin = cmdsub.end();
-            if word.as_char_slice().get(tail_begin) == Some(&'[') {
-                match apply_cmdsubst_slice(&word[tail_begin..], &mut lines) {
-                    Ok(offset) => tail_begin += offset,
-                    Err((_, error)) => {
-                        return Err(serialization_error(
-                            STATUS_EXPAND_ERROR,
-                            slice_error_message(error),
-                        ));
-                    }
-                }
-            }
-
-            if is_quoted {
-                let escaped = escape_quoted_cmdsubst(&lines);
-                for variant in &mut variants {
-                    variant.push_utfstr(&escaped);
-                }
+        let mut errors = ParseErrorList::new();
+        let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
+        let result = expand_cmdsubst(word.to_owned(), ctx, &mut receiver, &mut Some(&mut errors));
+        if result.failed() || !errors.is_empty() {
+            let status = if result.status != 0 {
+                result.status
             } else {
-                if lines.is_empty() {
-                    return Ok(vec![]);
-                }
-                let mut next = Vec::new();
-                for variant in &variants {
-                    for line in &lines {
-                        let mut branch = variant.clone();
-                        branch.push_utfstr(&escape_unquoted_cmdsubst(line));
-                        next.push(branch);
-                    }
-                }
-                variants = next;
-            }
-            last = tail_begin;
+                STATUS_EXPAND_ERROR
+            };
+            let message = errors.first().map_or_else(
+                || wgettext!(ERROR_COMMAND_SUBSTITUTION_FAILED).to_owned(),
+                |error| error.text.clone(),
+            );
+            return Err(serialization_error(status, message));
         }
 
-        for variant in &mut variants {
-            variant.push_utfstr(&word[last..]);
+        let mut variants = Vec::with_capacity(receiver.len());
+        for completion in receiver.take() {
+            let mut source = WString::new();
+            for c in completion.completion.chars() {
+                if c != INTERNAL_SEPARATOR {
+                    source.push(c);
+                }
+            }
+            variants.push(source);
         }
         Ok(variants)
     }

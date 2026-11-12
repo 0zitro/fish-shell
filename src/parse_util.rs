@@ -1375,12 +1375,6 @@ pub fn detect_errors_in_argument(
                     continue;
                 }
                 let next_char = unesc.get(idx + 1).copied().unwrap_or('\0');
-                if [VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE].contains(c)
-                    && next_char == '$'
-                    && unesc.get(idx + 2) == Some(&'(')
-                {
-                    continue;
-                }
                 if !matches!(next_char, VARIABLE_EXPAND | VARIABLE_EXPAND_SINGLE | '(')
                     && !valid_var_name_char(next_char)
                 {
@@ -1431,14 +1425,7 @@ pub fn detect_errors_in_argument(
             }
             Ok(Some(cmdsub)) => {
                 let opening = cmdsub.opening_paren_offset();
-                let mut skip_dollars = 0;
-                while skip_dollars < opening {
-                    let c = arg_src.as_char_slice()[opening - skip_dollars - 1];
-                    if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
-                        break;
-                    }
-                    skip_dollars += 1;
-                }
+                let mut skip_dollars = cmdsub_dollar_run(arg_src, opening);
                 if skip_dollars == 0 {
                     skip_dollars = usize::from(has_dollar);
                 }
@@ -1583,34 +1570,19 @@ pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
     opening - start
 }
 
-fn mask_dynamic_cmdsubst(input: &wstr) -> WString {
-    let mut out = WString::new();
+enum CommandSource<'a> {
+    Static(&'a wstr),
+    Dynamic,
+}
+
+fn command_source(com: &wstr) -> CommandSource<'_> {
     let mut cursor = 0;
-    let mut last = 0;
-    let mut is_quoted = false;
-    loop {
-        let mut has_dollar = false;
-        let cmdsub = match locate_cmdsubst_range(
-            input,
-            &mut cursor,
-            false,
-            Some(&mut is_quoted),
-            Some(&mut has_dollar),
-        ) {
-            Ok(Some(cmdsub)) => cmdsub,
-            _ => break,
-        };
-        let opening = cmdsub.opening_paren_offset();
-        let dollar_count = cmdsub_dollar_run(input, opening);
-        if dollar_count >= 2 {
-            let start = opening - dollar_count;
-            out.push_utfstr(&input[last..start]);
-            out.push_utfstr(L!("__fish_dynamic_command"));
-            last = cmdsub.end();
+    while let Ok(Some(cmdsub)) = locate_cmdsubst_range(com, &mut cursor, false, None, None) {
+        if cmdsub_dollar_run(com, cmdsub.opening_paren_offset()) >= 2 {
+            return CommandSource::Dynamic;
         }
     }
-    out.push_utfstr(&input[last..]);
-    out
+    CommandSource::Static(com)
 }
 
 fn detect_errors_in_decorated_statement(
@@ -1715,14 +1687,14 @@ fn detect_errors_in_decorated_statement(
         );
     }
 
-    let unexp_command = mask_dynamic_cmdsubst(com);
-    if !unexp_command.is_empty() {
+    let source = command_source(com);
+    if let CommandSource::Static(unexp_command) = source {
         // Check that we can expand the command.
         // Make a new error list so we can fix the offset for just those, then append later.
         let mut new_errors = ParseErrorList::new();
         let mut command = WString::new();
         if expand_to_command_and_args(
-            &unexp_command,
+            unexp_command,
             &mut OperationContext::empty(),
             &mut command,
             None,
@@ -1795,7 +1767,7 @@ fn detect_errors_in_decorated_statement(
 
         // Check that we don't do an invalid builtin (issue #1252).
         if !errored && decoration == StatementDecoration::Builtin {
-            let mut command = unexp_command.clone();
+            let mut command = unexp_command.to_owned();
             if expand_one(
                 &mut command,
                 ExpandFlags::FAIL_ON_CMDSUBST,
@@ -1804,7 +1776,7 @@ fn detect_errors_in_decorated_statement(
                     Some(pe) => Some(pe),
                     None => None,
                 },
-            ) && !builtin_exists(&unexp_command)
+            ) && !builtin_exists(unexp_command)
             {
                 errored = append_syntax_error!(
                     parse_errors,
