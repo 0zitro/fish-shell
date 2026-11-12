@@ -1308,11 +1308,15 @@ fn expand_percent_self(input: &mut WString) {
     }
 }
 
+/// Remove any internal separators.
+pub(crate) fn remove_internal_separators(s: &mut WString) {
+    s.retain(|c| c != INTERNAL_SEPARATOR);
+}
+
 /// Remove any internal separators. Also optionally convert wildcard characters to regular
 /// equivalents. This is done to support skip_wildcards.
 fn remove_internal_separator(s: &mut WString, conv: bool) {
-    // Remove all instances of INTERNAL_SEPARATOR.
-    s.retain(|c| c != INTERNAL_SEPARATOR);
+    remove_internal_separators(s);
 
     // If conv is true, replace all instances of ANY_STRING with '*',
     // ANY_STRING_RECURSIVE with '*'.

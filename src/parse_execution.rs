@@ -18,7 +18,7 @@ use crate::{
     exec::exec_job,
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_cmdsubst, expand_one, expand_string,
-        expand_to_command_and_args,
+        expand_to_command_and_args, remove_internal_separators,
     },
     flog::flog,
     function,
@@ -57,7 +57,7 @@ use crate::{
     wildcard::wildcard_match,
 };
 use fish_common::{ScopeGuard, escape, help_section, truncate_at_nul};
-use fish_widestring::{INTERNAL_SEPARATOR, WExt as _};
+use fish_widestring::WExt as _;
 use libc::{EXIT_SUCCESS, STDERR_FILENO, STDOUT_FILENO, c_int};
 use nix::errno::Errno;
 use std::{io::ErrorKind, rc::Rc, sync::Arc};
@@ -972,12 +972,8 @@ impl ExecutionContext {
 
         let mut variants = Vec::with_capacity(receiver.len());
         for completion in receiver.take() {
-            let mut source = WString::new();
-            for c in completion.completion.chars() {
-                if c != INTERNAL_SEPARATOR {
-                    source.push(c);
-                }
-            }
+            let mut source = completion.completion;
+            remove_internal_separators(&mut source);
             variants.push(source);
         }
         Ok(variants)
