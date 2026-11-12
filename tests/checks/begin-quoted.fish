@@ -39,6 +39,12 @@ $fish -c 'begin -qq -q echo 1; end'
 # CHECKERR: {{^}}begin -qq -q echo 1; end
 # CHECKERR: {{^}}          ^^
 
+# A compact spelling carries one option per q, so a third q is an error too.
+$fish -c 'begin -qqq echo 1; end'
+# CHECKERR: fish: begin accepts at most two quoted options
+# CHECKERR: {{^}}begin -qqq echo 1; end
+# CHECKERR: {{^}}      ^~~^
+
 # A single quoted option evaluates command substitutions only.
 begin -q echo (printf x); end
 # CHECK: echo x
@@ -90,3 +96,28 @@ begin -q echo {pre(printf 'a,b')}; end
 
 begin -q echo 1 > (printf out); end
 # CHECK: echo 1 > out
+
+# A command-substitution result keeps the boundary of the value beside it.
+set foo 1
+eval (begin -q echo $foo(printf bar); end)
+# CHECK: 1bar
+echo $foo(printf bar)
+# CHECK: 1bar
+eval (begin -q echo "$foo$(printf bar)"; end)
+# CHECK: 1bar
+set foo bar
+set bar 2
+eval (begin -q echo $$foo(printf x); end)
+# CHECK: 2x
+
+# A `$^N(...)` operand is a complete reference; following source is a suffix.
+set n x
+set x 123
+eval (begin -q echo $$(echo n)post; end)
+# CHECK: xpost
+
+# An eager-serialisation error points at the substitution that failed.
+$fish -c "begin -q echo (printf 'a')[0]; end"
+# CHECKERR: fish: array indices start at 1, not 0.
+# CHECKERR: {{^}}begin -q echo (printf 'a')[0]; end
+# CHECKERR: {{^}}                           ^

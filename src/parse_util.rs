@@ -21,7 +21,7 @@ use crate::{
 };
 use fish_common::{UnescapeFlags, UnescapeStringStyle, help_section, unescape_string};
 use fish_feature_flags::{FeatureFlag, feature_test};
-use fish_wcstringutil::{count_newlines, truncate};
+use fish_wcstringutil::{count_newlines, count_preceding_backslashes, truncate};
 use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP,
     INTERNAL_SEPARATOR, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
@@ -1399,16 +1399,11 @@ pub fn detect_errors_in_argument(
     let mut checked = 0;
 
     let mut do_loop = true;
+    // The quote state carries across calls: after a command substitution that
+    // closes a double-quoted region, the scan resumes inside that quote.
     let mut is_quoted = false;
     while do_loop {
-        let mut has_dollar = false;
-        match locate_cmdsubst_range(
-            arg_src,
-            &mut cursor,
-            false,
-            Some(&mut is_quoted),
-            Some(&mut has_dollar),
-        ) {
+        match locate_cmdsubst_range(arg_src, &mut cursor, false, Some(&mut is_quoted), None) {
             Err(()) => {
                 issue.error = true;
                 append_syntax_error!(
@@ -1425,10 +1420,7 @@ pub fn detect_errors_in_argument(
             }
             Ok(Some(cmdsub)) => {
                 let opening = cmdsub.opening_paren_offset();
-                let mut skip_dollars = cmdsub_dollar_run(arg_src, opening);
-                if skip_dollars == 0 {
-                    skip_dollars = usize::from(has_dollar);
-                }
+                let skip_dollars = cmdsub_dollar_run(arg_src, opening);
                 issue.error |= check_subtoken(checked, opening - skip_dollars, out_errors);
                 let mut subst_errors = ParseErrorList::new();
                 if let Err(e) = detect_parse_errors(
@@ -1556,13 +1548,17 @@ fn detect_errors_in_backgrounded_job(
     errored
 }
 
-/// Given a source buffer `buff_src` and decorated statement `dst` within it, return true if there
-/// is an error and false if not.
+/// Return how many unescaped `$` characters run immediately before the command
+/// substitution opening parenthesis at `opening`.
+///
+/// Every argument here is raw source: this runs before the variable stage
+/// replaces dollar signs with expansion sentinels, so a `$` preceded by an odd
+/// number of backslashes is a literal dollar and ends the run.
 pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
+    let chars = input.as_char_slice();
     let mut start = opening;
     while start > 0 {
-        let c = input.as_char_slice()[start - 1];
-        if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
+        if chars[start - 1] != '$' || count_preceding_backslashes(input, start - 1) % 2 == 1 {
             break;
         }
         start -= 1;

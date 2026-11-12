@@ -473,16 +473,19 @@ pub(crate) enum ParseSliceError {
     InvalidIndex,
 }
 
-/// Parse an array slicing specification Returns 0 on success. If a parse error occurs, returns the
-/// index of the bad token. Note that 0 can never be a bad index because the string always starts
-/// with [.
+/// Parse the slice at the start of `input`, returning the number of characters
+/// it consumes and, when `array_size` is given, the indices it selects against
+/// that size.
+///
+/// With `array_size` absent the slice grammar is still validated, but no index
+/// is resolved: the caller only wants the extent.
 fn parse_slice(
     input: &wstr,
-    idx: &mut Vec<i64>,
-    array_size: usize,
+    array_size: Option<usize>,
     unescaped: bool,
-) -> Result<usize, (usize, ParseSliceError)> {
-    let size = i64::try_from(array_size).unwrap();
+) -> Result<(usize, Vec<i64>), (usize, ParseSliceError)> {
+    let size = array_size.map(|size| i64::try_from(size).unwrap());
+    let mut idx = vec![];
     let mut pos = 1; // skip past the opening square bracket
     let end_char = if unescaped { SLICE_END } else { ']' };
 
@@ -527,7 +530,7 @@ fn parse_slice(
             }
         };
 
-        let mut i1 = if tmp > -1 { tmp } else { size + tmp + 1 };
+        let i1 = size.map(|size| if tmp > -1 { tmp } else { size + tmp + 1 });
         while input.char_at(pos) == INTERNAL_SEPARATOR {
             pos += 1;
         }
@@ -565,6 +568,10 @@ fn parse_slice(
                 }
             };
 
+            let Some(size) = size else {
+                continue;
+            };
+            let mut i1 = i1.unwrap();
             let mut i2 = if tmp1 > -1 { tmp1 } else { size + tmp1 + 1 };
             // Skip sequences that are entirely outside.
             // This means "17..18" expands to nothing if there are less than 17 elements.
@@ -591,10 +598,12 @@ fn parse_slice(
             continue;
         }
 
-        idx.push(i1);
+        if let Some(i1) = i1 {
+            idx.push(i1);
+        }
     }
 
-    Ok(pos)
+    Ok((pos, idx))
 }
 
 /// Expand all environment variables in the string *ptr.
@@ -711,13 +720,9 @@ fn expand_variables(
         } else if let Some(ref history) = history {
             effective_val_count = history.size();
         }
-        match parse_slice(
-            &instr[slice_start..],
-            &mut var_idx_list,
-            effective_val_count,
-            true,
-        ) {
-            Ok(offset) => {
+        match parse_slice(&instr[slice_start..], Some(effective_val_count), true) {
+            Ok((offset, indices)) => {
+                var_idx_list = indices;
                 var_name_and_slice_stop = slice_start + offset;
             }
             Err((bad_pos, error)) => {
@@ -982,8 +987,7 @@ pub(crate) fn apply_cmdsubst_slice(
     slice: &wstr,
     lines: &mut Vec<WString>,
 ) -> Result<usize, (usize, ParseSliceError)> {
-    let mut indices = vec![];
-    let offset = parse_slice(slice, &mut indices, lines.len(), false)?;
+    let (offset, indices) = parse_slice(slice, Some(lines.len()), false)?;
     let mut selected = vec![];
     for index in indices {
         if index < 1 || index as usize > lines.len() {
@@ -993,6 +997,13 @@ pub(crate) fn apply_cmdsubst_slice(
     }
     *lines = selected;
     Ok(offset)
+}
+
+/// The number of characters the slice syntax at the start of `slice` consumes.
+///
+/// This is the grammar check without an array to resolve against.
+fn slice_consumed_len(slice: &wstr) -> Result<usize, (usize, ParseSliceError)> {
+    parse_slice(slice, None, false).map(|(offset, _)| offset)
 }
 
 pub(crate) fn escape_unquoted_cmdsubst(output: &wstr) -> WString {
@@ -1026,8 +1037,7 @@ pub(crate) fn dynamic_variable_reference(operand: &wstr) -> bool {
     if !valid_var_name(&operand[..bracket]) {
         return false;
     }
-    let mut lines = vec![];
-    match apply_cmdsubst_slice(&operand[bracket..], &mut lines) {
+    match slice_consumed_len(&operand[bracket..]) {
         Ok(offset) => bracket + offset == operand.len(),
         Err(_) => false,
     }
@@ -1145,7 +1155,13 @@ pub fn expand_cmdsubst(
             result.push('$');
         }
         result.push_utfstr(&sub_res[0]);
-        result.push_utfstr(&input[cmdsub.end()..]);
+        // The produced operand is a complete variable reference; following source
+        // must not extend its name.
+        let tail = &input[cmdsub.end()..];
+        if tail.chars().next().is_some_and(valid_var_name_char) {
+            result.push(INTERNAL_SEPARATOR);
+        }
+        result.push_utfstr(tail);
         return expand_cmdsubst(result, ctx, out, errors);
     }
 

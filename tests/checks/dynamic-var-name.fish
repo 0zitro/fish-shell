@@ -11,6 +11,26 @@ echo "$$(echo n)"
 echo pre"$$(echo n)"post
 # CHECK: prexpost
 
+# An escaped dollar is literal and does not join a dereference run.
+echo \$$(echo n)
+# CHECK: $n
+echo "\$$(echo n)"
+# CHECK: $n
+echo x\$$(echo n)
+# CHECK: x$n
+echo \\$$(echo n)
+# CHECK: \x
+
+# Following source is a suffix on the produced reference, not part of its name.
+echo $$(echo n)post
+# CHECK: xpost
+echo "$$(echo n)post"
+# CHECK: xpost
+echo pre$$(echo n)post
+# CHECK: prexpost
+echo $$$(echo n)2
+# CHECK: 1232
+
 echo $$(printf 'n\n')
 # CHECK: x
 

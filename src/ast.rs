@@ -840,30 +840,38 @@ pub struct FunctionHeader {
     pub semi_nl: SemiNl,
 }
 
+/// The expansion mode selected by the number of quoted options in a `begin`
+/// header: one option evaluates command substitutions eagerly and leaves every
+/// other expansion for later; two options expand nothing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum BeginQuoteMode {
     #[default]
-    Plain,
     EagerSubstitutions,
     RawSource,
 }
 
+/// The literal quoted-option tokens written in a `begin` header.
+///
+/// A plain `begin` holds no `BeginQuote`: absence is the plain mode, so no leaf
+/// stands for options that were not written. A header that writes the tokens
+/// sources them as one contiguous range; a parse that cannot source leaves
+/// allocates no leaf.
 #[derive(Default, Debug, Node!, Leaf!)]
 pub struct BeginQuote {
     range: Option<SourceRange>,
     pub mode: BeginQuoteMode,
 }
 
-impl BeginQuote {
-    pub fn options_range(&self) -> Option<SourceRange> {
-        self.range
+impl CheckParse for BeginQuote {
+    fn can_be_parsed(pop: &mut Populator<'_>) -> bool {
+        !pop.unsource_leaves() && pop.begin_quote_option_weight_at(0).is_some()
     }
 }
 
 #[derive(Default, Debug, Node!, Acceptor!)]
 pub struct BeginHeader {
     pub kw_begin: KeywordBegin,
-    pub quote: BeginQuote,
+    pub quote: Option<BeginQuote>,
     /// Note that 'begin' does NOT require a semi or nl afterwards.
     /// This is valid: begin echo hi; end
     pub semi_nl: Option<SemiNl>,
@@ -1830,7 +1838,7 @@ impl<'s> NodeVisitorMut for Populator<'s> {
             KM::WhileHeader(node) => node.accept_mut(self),
             KM::FunctionHeader(node) => node.accept_mut(self),
             KM::BeginHeader(node) => return self.visit_begin_header(node),
-            KM::BeginQuote(node) => node.accept_mut(self),
+            KM::BeginQuote(node) => return self.visit_begin_quote(node),
             KM::BlockStatement(node) => node.accept_mut(self),
             KM::BraceStatement(node) => node.accept_mut(self),
             KM::IfClause(node) => node.accept_mut(self),
@@ -2650,6 +2658,11 @@ impl<'s> Populator<'s> {
             );
         }
     }
+    /// Return the number of quoted options the literal header token at `idx`
+    /// spells, or `None` when the token is not a quoted option.
+    ///
+    /// `--quoted` is one option, and `-q` followed by a run of `q` counts its
+    /// q's.
     fn begin_quote_option_weight_at(&mut self, idx: usize) -> Option<usize> {
         let token = *self.peek_token(idx);
         if token.typ != ParseTokenType::String {
@@ -2657,10 +2670,12 @@ impl<'s> Populator<'s> {
         }
         let start = token.source_start();
         let text = &self.tokens.src[start..start + token.source_length()];
-        if text == L!("-q") || text == L!("--quoted") {
-            Some(1)
-        } else if text == L!("-qq") {
-            Some(2)
+        if text == L!("--quoted") {
+            return Some(1);
+        }
+        let qs = text.strip_prefix('-')?;
+        if !qs.is_empty() && qs.chars().all(|c| c == 'q') {
+            Some(qs.len())
         } else {
             None
         }
@@ -2668,18 +2683,22 @@ impl<'s> Populator<'s> {
 
     fn visit_begin_header(&mut self, node: &mut BeginHeader) -> VisitResult {
         node.kw_begin = self.allocate_visit::<KeywordBegin>();
+        node.quote = self.try_parse::<BeginQuote>();
+        node.semi_nl = self.try_parse::<SemiNl>();
+        VisitResult::Continue(())
+    }
 
+    fn visit_begin_quote(&mut self, node: &mut BeginQuote) -> VisitResult {
+        let mut range: Option<SourceRange> = None;
         let mut count = 0;
-        let mut options_start = None;
-        let mut options_end = 0;
         let mut too_many = None;
         while let Some(weight) = self.begin_quote_option_weight_at(0) {
             let token = self.consume_any_token();
-            let range = token.range();
-            if options_start.is_none() {
-                options_start = Some(range.start());
-            }
-            options_end = range.end();
+            let token_range = token.range();
+            range = Some(match range {
+                Some(range) => range.combine(token_range),
+                None => token_range,
+            });
             count += weight;
             if count > 2 && too_many.is_none() {
                 too_many = Some(token);
@@ -2694,22 +2713,11 @@ impl<'s> Populator<'s> {
                 wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
             );
         }
-
-        let mode = match count {
-            0 => BeginQuoteMode::Plain,
+        node.mode = match count {
             1 => BeginQuoteMode::EagerSubstitutions,
             _ => BeginQuoteMode::RawSource,
         };
-        let options_range = options_start.map_or_else(
-            || SourceRange::new(node.kw_begin.source_range().end(), 0),
-            |start| SourceRange::new(start, options_end - start),
-        );
-        node.quote = BeginQuote {
-            mode,
-            range: Some(options_range),
-        };
-
-        node.semi_nl = self.try_parse::<SemiNl>();
+        *node.range_mut() = range;
         VisitResult::Continue(())
     }
 
