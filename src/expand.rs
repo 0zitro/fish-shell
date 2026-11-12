@@ -11,7 +11,7 @@ use crate::{
         STATUS_INVALID_ARGS, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
         STATUS_UNMATCHED_WILDCARD,
     },
-    common::{valid_var_name, valid_var_name_char},
+    common::valid_var_name_char,
     complete::{Completion, CompletionList, CompletionReceiver},
     env::{EnvVar, Environment},
     exec::exec_subshell_for_expand,
@@ -966,6 +966,41 @@ fn expand_braces(
 
 /// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
 /// `out_list`, or any errors into `errors`. Return an expand result.
+fn dynamic_variable_reference(operand: &wstr) -> bool {
+    let chars = operand.as_char_slice();
+    let mut pos = 0;
+    while pos < chars.len() && valid_var_name_char(chars[pos]) {
+        pos += 1;
+    }
+    if pos == 0 {
+        return false;
+    }
+    if pos == chars.len() {
+        return true;
+    }
+    if chars[pos] != '[' {
+        return false;
+    }
+
+    let mut slice_end = None;
+    for (idx, c) in chars.iter().enumerate().skip(pos + 1) {
+        match c {
+            ']' => {
+                slice_end = Some(idx);
+                break;
+            }
+            '[' | '\'' | '"' | ';' | '|' | '&' | '<' | '>' | '(' | ')' => return false,
+            c if c.is_whitespace() => return false,
+            _ => {}
+        }
+    }
+
+    let Some(slice_end) = slice_end else {
+        return false;
+    };
+    slice_end > pos + 1 && slice_end + 1 == chars.len()
+}
+
 pub fn expand_cmdsubst(
     input: WString,
     ctx: &mut OperationContext,
@@ -1054,34 +1089,30 @@ pub fn expand_cmdsubst(
     }
 
     let opening = cmdsub.opening_paren_offset();
-    let dynamic_name = has_dollar
-        && opening >= 2
-        && (input.as_char_slice()[opening - 2] == '$'
-            || [VARIABLE_EXPAND, VARIABLE_EXPAND_SINGLE]
-                .contains(&input.as_char_slice()[opening - 2]));
-    if dynamic_name {
-        let name = sub_res.first();
-        if sub_res.len() != 1
-            || !name.is_some_and(|name| {
-                valid_var_name(name) && !name.chars().any(|c| c == '[' || c == ']')
-            })
-        {
+    let mut dollars_start = opening;
+    while dollars_start > 0 {
+        let c = input.as_char_slice()[dollars_start - 1];
+        if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
+            break;
+        }
+        dollars_start -= 1;
+    }
+    let dollar_count = opening - dollars_start;
+    if dollar_count >= 2 {
+        let valid = sub_res.len() == 1 && dynamic_variable_reference(&sub_res[0]);
+        if !valid {
             append_syntax_error!(
                 errors,
                 opening,
-                "Dynamic variable name must be a single valid variable name"
+                "Dynamic variable reference must be exactly one variable reference"
             );
             return ExpandResult::make_error(STATUS_EXPAND_ERROR);
         }
-        let mut result = if input.as_char_slice()[opening - 1] == '$' {
-            input[..opening].to_owned()
-        } else {
-            input[..opening - 1].to_owned()
-        };
-        if input.as_char_slice()[opening - 1] != '$' {
+        let mut result = input[..dollars_start].to_owned();
+        for _ in 1..dollar_count {
             result.push('$');
         }
-        result.push_utfstr(name.unwrap());
+        result.push_utfstr(&sub_res[0]);
         result.push_utfstr(&input[cmdsub.end()..]);
         return expand_cmdsubst(result, ctx, out, errors);
     }

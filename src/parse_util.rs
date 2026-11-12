@@ -1425,11 +1425,17 @@ pub fn detect_errors_in_argument(
             }
             Ok(Some(cmdsub)) => {
                 let opening = cmdsub.opening_paren_offset();
-                let skip_dollars = if opening >= 2 && arg_src.as_char_slice()[opening - 2] == '$' {
-                    2
-                } else {
-                    usize::from(has_dollar)
-                };
+                let mut skip_dollars = 0;
+                while skip_dollars < opening {
+                    let c = arg_src.as_char_slice()[opening - skip_dollars - 1];
+                    if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
+                        break;
+                    }
+                    skip_dollars += 1;
+                }
+                if skip_dollars == 0 {
+                    skip_dollars = usize::from(has_dollar);
+                }
                 issue.error |= check_subtoken(checked, opening - skip_dollars, out_errors);
                 let mut subst_errors = ParseErrorList::new();
                 if let Err(e) = detect_parse_errors(

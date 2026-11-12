@@ -1073,18 +1073,29 @@ When using indirect variable expansion with multiple ``$`` (``$$name``), you hav
     > echo $$name[1..-1][1..3] # or $$name[1][1..3], since $name only has one element.
     1 2 3
 
-The indirect name may also be produced by a command substitution::
+The variable reference may also be produced by a command substitution.  A
+command substitution is the base case with no extra indirection; each
+additional ``$`` before it adds one dereference::
 
-    > set name list
-    > set list 1 2 3
-    > echo $$(echo name)
-    1 2 3
+    > set x 123
+    > echo $$(echo x)      # $x -> 123
+    > set x a b c
+    > echo $$(echo 'x[1]') # $x[1] -> a
 
-The substitution must produce exactly one line and that line must be a valid
-variable name.  Empty output, several lines, or a name containing a subscript
-is an expansion error.  The produced name is resolved once, so ``$$(echo name)``
-is equivalent to ``$$name``.  The form is a variable expansion and is allowed
-in command position.
+    > set x y
+    > set y z
+    > set z 123
+    > echo $$(echo x)      # $x  -> y
+    > echo $$$(echo x)     # $$x -> z
+    > echo $$$$(echo x)    # $$$x -> 123
+
+``$$(...)`` therefore has one dereference, ``$$$(...)`` two, and so on.  The
+substitution must produce exactly one variable reference: a valid name,
+optionally followed by one slice group.  Empty output, several lines, multiple
+slice groups, quotes, whitespace, or other source syntax is an expansion
+error.  The produced reference is parsed and its optional slice is applied
+before the remaining dereferences.  The form is a variable expansion and is
+allowed in command position.
 
 .. _expand-home:
 
