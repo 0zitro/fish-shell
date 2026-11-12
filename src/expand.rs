@@ -11,13 +11,16 @@ use crate::{
         STATUS_INVALID_ARGS, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
         STATUS_UNMATCHED_WILDCARD,
     },
-    common::valid_var_name_char,
+    common::{valid_var_name, valid_var_name_char},
     complete::{Completion, CompletionList, CompletionReceiver},
     env::{EnvVar, Environment},
     exec::exec_subshell_for_expand,
     history::{History, history_id},
     operation_context::OperationContext,
-    parse_constants::{ParseError, ParseErrorCode, ParseErrorList, SOURCE_LOCATION_UNKNOWN},
+    parse_constants::{
+        ERROR_DYNAMIC_VARIABLE_REFERENCE, ParseError, ParseErrorCode, ParseErrorList,
+        SOURCE_LOCATION_UNKNOWN,
+    },
     parse_util::{expand_variable_error, locate_cmdsubst_range},
     path::path_apply_working_directory,
     prelude::*,
@@ -464,7 +467,7 @@ fn is_quotable(s: &wstr) -> bool {
     !s.chars().any(|c| "\n\t\r\x08\x1B".contains(c))
 }
 
-enum ParseSliceError {
+pub(crate) enum ParseSliceError {
     ZeroIndex,
     InvalidIndex,
 }
@@ -966,39 +969,47 @@ fn expand_braces(
 
 /// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
 /// `out_list`, or any errors into `errors`. Return an expand result.
-fn dynamic_variable_reference(operand: &wstr) -> bool {
-    let chars = operand.as_char_slice();
-    let mut pos = 0;
-    while pos < chars.len() && valid_var_name_char(chars[pos]) {
-        pos += 1;
-    }
-    if pos == 0 {
-        return false;
-    }
-    if pos == chars.len() {
-        return true;
-    }
-    if chars[pos] != '[' {
-        return false;
-    }
-
-    let mut slice_end = None;
-    for (idx, c) in chars.iter().enumerate().skip(pos + 1) {
-        match c {
-            ']' => {
-                slice_end = Some(idx);
-                break;
-            }
-            '[' | '\'' | '"' | ';' | '|' | '&' | '<' | '>' | '(' | ')' => return false,
-            c if c.is_whitespace() => return false,
-            _ => {}
+pub(crate) fn apply_cmdsubst_slice(
+    slice: &wstr,
+    lines: &mut Vec<WString>,
+) -> Result<usize, (usize, ParseSliceError)> {
+    let mut indices = vec![];
+    let offset = parse_slice(slice, &mut indices, lines.len(), false)?;
+    let mut selected = vec![];
+    for index in indices {
+        if index < 1 || index as usize > lines.len() {
+            continue;
         }
+        selected.push(lines[index as usize - 1].clone());
     }
+    *lines = selected;
+    Ok(offset)
+}
 
-    let Some(slice_end) = slice_end else {
-        return false;
+pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
+    let mut start = opening;
+    while start > 0 {
+        let c = input.as_char_slice()[start - 1];
+        if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
+            break;
+        }
+        start -= 1;
+    }
+    opening - start
+}
+
+pub(crate) fn dynamic_variable_reference(operand: &wstr) -> bool {
+    let Some(bracket) = operand.chars().position(|c| c == '[') else {
+        return valid_var_name(operand);
     };
-    slice_end > pos + 1 && slice_end + 1 == chars.len()
+    if !valid_var_name(&operand[..bracket]) {
+        return false;
+    }
+    let mut lines = vec![];
+    match apply_cmdsubst_slice(&operand[bracket..], &mut lines) {
+        Ok(offset) => bracket + offset == operand.len(),
+        Err(_) => false,
+    }
 }
 
 pub fn expand_cmdsubst(
@@ -1089,26 +1100,19 @@ pub fn expand_cmdsubst(
     }
 
     let opening = cmdsub.opening_paren_offset();
-    let mut dollars_start = opening;
-    while dollars_start > 0 {
-        let c = input.as_char_slice()[dollars_start - 1];
-        if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
-            break;
-        }
-        dollars_start -= 1;
-    }
-    let dollar_count = opening - dollars_start;
+    let dollar_count = cmdsub_dollar_run(&input, opening);
     if dollar_count >= 2 {
         let valid = sub_res.len() == 1 && dynamic_variable_reference(&sub_res[0]);
         if !valid {
             append_syntax_error!(
                 errors,
                 opening,
-                "Dynamic variable reference must be exactly one variable reference"
+                "%s",
+                wgettext!(ERROR_DYNAMIC_VARIABLE_REFERENCE)
             );
             return ExpandResult::make_error(STATUS_EXPAND_ERROR);
         }
-        let mut result = input[..dollars_start].to_owned();
+        let mut result = input[..opening - dollar_count].to_owned();
         for _ in 1..dollar_count {
             result.push('$');
         }
@@ -1120,42 +1124,25 @@ pub fn expand_cmdsubst(
     // Expand slices like (cat /var/words)[1]
     let mut tail_begin = cmdsub.end();
     if input.as_char_slice().get(tail_begin) == Some(&'[') {
-        let mut slice_idx = vec![];
         let slice_begin = tail_begin;
-        let slice_end =
-            match parse_slice(&input[slice_begin..], &mut slice_idx, sub_res.len(), false) {
-                Ok(offset) => slice_begin + offset,
-                Err((bad_pos, error)) => {
-                    match error {
-                        ParseSliceError::ZeroIndex => {
-                            append_syntax_error!(
-                                errors,
-                                slice_begin + bad_pos,
-                                "array indices start at 1, not 0."
-                            );
-                        }
-                        ParseSliceError::InvalidIndex => {
-                            append_syntax_error!(
-                                errors,
-                                slice_begin + bad_pos,
-                                "Invalid index value"
-                            );
-                        }
+        match apply_cmdsubst_slice(&input[slice_begin..], &mut sub_res) {
+            Ok(offset) => tail_begin = slice_begin + offset,
+            Err((bad_pos, error)) => {
+                match error {
+                    ParseSliceError::ZeroIndex => {
+                        append_syntax_error!(
+                            errors,
+                            slice_begin + bad_pos,
+                            "array indices start at 1, not 0."
+                        );
                     }
-                    return ExpandResult::make_error(STATUS_EXPAND_ERROR);
+                    ParseSliceError::InvalidIndex => {
+                        append_syntax_error!(errors, slice_begin + bad_pos, "Invalid index value");
+                    }
                 }
-            };
-
-        let mut sub_res2 = vec![];
-        tail_begin = slice_end;
-        for idx in slice_idx {
-            if idx as usize > sub_res.len() || idx < 1 {
-                continue;
+                return ExpandResult::make_error(STATUS_EXPAND_ERROR);
             }
-            // -1 to convert from 1-based slice index to 0-based vector index.
-            sub_res2.push(sub_res[idx as usize - 1].clone());
         }
-        sub_res = sub_res2;
     }
 
     // Recursively call ourselves to expand any remaining command substitutions. The result of this

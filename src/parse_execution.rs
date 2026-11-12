@@ -15,9 +15,11 @@ use crate::{
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::{create_output_stream_for_builtin, exec_job, exec_subshell_for_expand},
+    exec::{create_output_stream_for_fd, exec_job, exec_subshell_for_expand},
     expand::{
-        self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
+        self, ExpandFlags, ExpandResultCode, ParseSliceError, apply_cmdsubst_slice,
+        cmdsub_dollar_run, dynamic_variable_reference, expand_one, expand_string,
+        expand_to_command_and_args,
     },
     flog::flog,
     function,
@@ -25,7 +27,7 @@ use crate::{
     job_group::JobGroup,
     operation_context::OperationContext,
     parse_constants::{
-        CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_TIME_BACKGROUND,
+        CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_TIME_BACKGROUND,
         FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG, ILLEGAL_FD_ERR_MSG,
         INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
         ParseTokenType, StatementDecoration, parse_error_offset_source_start,
@@ -121,16 +123,40 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
 }
 
 fn trim_begin_body(text: &wstr) -> &wstr {
-    let chars = text.as_char_slice();
-    let mut start = 0;
-    while start < chars.len() && (chars[start].is_whitespace() || chars[start] == ';') {
-        start += 1;
+    let flags = TokFlags {
+        show_comments: true,
+        ..Default::default()
+    };
+    let mut first = None;
+    let mut last = 0;
+    for token in Tokenizer::new(text, flags) {
+        if token.error != TokenizerError::None || token.type_ == TokenType::Error {
+            return text;
+        }
+        if token.type_ == TokenType::End {
+            continue;
+        }
+        let start = token.offset as usize;
+        first.get_or_insert(start);
+        last = start + token.length as usize;
     }
-    let mut end = chars.len();
-    while end > start && (chars[end - 1].is_whitespace() || chars[end - 1] == ';') {
-        end -= 1;
+    first.map_or(L!(""), |start| &text[start..last])
+}
+
+struct BeginSerializationError {
+    status: i32,
+    message: WString,
+}
+
+fn serialization_error(status: i32, message: WString) -> BeginSerializationError {
+    BeginSerializationError { status, message }
+}
+
+fn slice_error_message(error: ParseSliceError) -> WString {
+    match error {
+        ParseSliceError::ZeroIndex => wgettext!("array indices start at 1, not 0.").into(),
+        ParseSliceError::InvalidIndex => wgettext!("Invalid index value").into(),
     }
-    &text[start..end]
 }
 
 impl ExecutionContext {
@@ -925,7 +951,7 @@ impl ExecutionContext {
         let end_range = statement.end.try_source_range()?;
         let body_start = header
             .quote
-            .options
+            .options_range()
             .map_or_else(|| header.kw_begin.source_range().end(), |r| r.end());
         Some(self.pstree().src[body_start..end_range.start()].to_owned())
     }
@@ -934,24 +960,32 @@ impl ExecutionContext {
         &mut self,
         ctx: &mut OperationContext<'_>,
         word: &wstr,
-    ) -> Result<Vec<WString>, ()> {
+    ) -> Result<Vec<WString>, BeginSerializationError> {
         let mut variants = vec![WString::new()];
         let mut cursor = 0;
         let mut last = 0;
         let mut is_quoted = false;
         let mut has_dollar = false;
-        while let Some(cmdsub) = locate_cmdsubst_range(
-            word,
-            &mut cursor,
-            false,
-            Some(&mut is_quoted),
-            Some(&mut has_dollar),
-        )? {
-            let sub_start = cmdsub.opening_paren_offset() - usize::from(has_dollar);
-            for variant in &mut variants {
-                variant.push_utfstr(&word[last..sub_start]);
-            }
+        loop {
+            let cmdsub = match locate_cmdsubst_range(
+                word,
+                &mut cursor,
+                false,
+                Some(&mut is_quoted),
+                Some(&mut has_dollar),
+            ) {
+                Ok(Some(cmdsub)) => cmdsub,
+                Ok(None) => break,
+                Err(()) => {
+                    return Err(serialization_error(
+                        STATUS_EXPAND_ERROR,
+                        wgettext!("Mismatched parenthesis").to_owned(),
+                    ));
+                }
+            };
 
+            let opening = cmdsub.opening_paren_offset();
+            let dollar_count = cmdsub_dollar_run(word, opening);
             let mut lines = vec![];
             let job_group = ctx.job_group.clone();
             exec_subshell_for_expand(
@@ -960,7 +994,50 @@ impl ExecutionContext {
                 job_group.as_ref(),
                 &mut lines,
             )
-            .map_err(|_| ())?;
+            .map_err(|status| {
+                serialization_error(status, wgettext!("Command substitution failed").to_owned())
+            })?;
+
+            if dollar_count >= 2 {
+                let sub_start = opening - dollar_count;
+                for variant in &mut variants {
+                    variant.push_utfstr(&word[last..sub_start]);
+                }
+                if lines.len() != 1 || !dynamic_variable_reference(&lines[0]) {
+                    return Err(serialization_error(
+                        STATUS_EXPAND_ERROR,
+                        wgettext!(ERROR_DYNAMIC_VARIABLE_REFERENCE).to_owned(),
+                    ));
+                }
+                let mut replacement = WString::new();
+                for _ in 1..dollar_count {
+                    replacement.push('$');
+                }
+                replacement.push_utfstr(&lines[0]);
+                for variant in &mut variants {
+                    variant.push_utfstr(&replacement);
+                }
+                last = cmdsub.end();
+                continue;
+            }
+
+            let sub_start = opening - usize::from(has_dollar);
+            for variant in &mut variants {
+                variant.push_utfstr(&word[last..sub_start]);
+            }
+
+            let mut tail_begin = cmdsub.end();
+            if word.as_char_slice().get(tail_begin) == Some(&'[') {
+                match apply_cmdsubst_slice(&word[tail_begin..], &mut lines) {
+                    Ok(offset) => tail_begin += offset,
+                    Err((_, error)) => {
+                        return Err(serialization_error(
+                            STATUS_EXPAND_ERROR,
+                            slice_error_message(error),
+                        ));
+                    }
+                }
+            }
 
             if is_quoted {
                 let mut joined = WString::new();
@@ -991,7 +1068,7 @@ impl ExecutionContext {
                 }
                 variants = next;
             }
-            last = cmdsub.end();
+            last = tail_begin;
         }
 
         for variant in &mut variants {
@@ -1004,7 +1081,7 @@ impl ExecutionContext {
         &mut self,
         ctx: &mut OperationContext<'_>,
         body: &wstr,
-    ) -> Result<WString, ()> {
+    ) -> Result<WString, BeginSerializationError> {
         let mut out = WString::new();
         let mut last = 0;
         let flags = TokFlags {
@@ -1013,7 +1090,10 @@ impl ExecutionContext {
         };
         for token in Tokenizer::new(body, flags) {
             if token.error != TokenizerError::None || token.type_ == TokenType::Error {
-                return Err(());
+                return Err(serialization_error(
+                    STATUS_EXPAND_ERROR,
+                    WString::from(token.error),
+                ));
             }
             let start = token.offset as usize;
             let end = start + token.length as usize;
@@ -1045,11 +1125,8 @@ impl ExecutionContext {
         };
         let serialized = match self.serialize_eager_body(ctx, &body) {
             Ok(serialized) => serialized,
-            Err(()) => {
-                ctx.parser().libdata_mut().status_count += 1;
-                ctx.parser()
-                    .set_last_statuses(Statuses::just(STATUS_EXPAND_ERROR));
-                return EndExecutionReason::Error;
+            Err(error) => {
+                return report_error!(self, ctx, error.status, statement, "%s", error.message);
             }
         };
         let body = trim_begin_body(&serialized);
@@ -1073,7 +1150,7 @@ impl ExecutionContext {
         ctx: &mut OperationContext<'_>,
         body: &wstr,
     ) -> EndExecutionReason {
-        let mut out = create_output_stream_for_builtin(STDOUT_FILENO, &self.block_io, false);
+        let mut out = create_output_stream_for_fd(STDOUT_FILENO, &self.block_io, false);
         if !body.is_empty() {
             out.append(body.chars());
             out.append('\n');

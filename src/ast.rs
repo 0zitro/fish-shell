@@ -12,9 +12,10 @@
 use crate::{
     flog::{flog, flogf},
     parse_constants::{
-        ERROR_BAD_COMMAND_ASSIGN_ERR_MSG, INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode,
-        ParseErrorList, ParseKeyword, ParseTokenType, ParseTreeFlags, SOURCE_OFFSET_INVALID,
-        SourceRange, StatementDecoration, token_type_user_presentable_description,
+        ERROR_BAD_COMMAND_ASSIGN_ERR_MSG, ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS,
+        INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
+        ParseTokenType, ParseTreeFlags, SOURCE_OFFSET_INVALID, SourceRange, StatementDecoration,
+        token_type_user_presentable_description,
     },
     parse_tree::ParseToken,
     prelude::*,
@@ -151,6 +152,7 @@ pub trait Node: Acceptor + AsNode + std::fmt::Debug {
             Kind::VariableAssignment(n) => Some(n),
             Kind::MaybeNewlines(n) => Some(n),
             Kind::Argument(n) => Some(n),
+            Kind::BeginQuote(n) => Some(n),
             _ => None,
         }
     }
@@ -279,6 +281,7 @@ pub enum Kind<'a> {
     WhileHeader(&'a WhileHeader),
     FunctionHeader(&'a FunctionHeader),
     BeginHeader(&'a BeginHeader),
+    BeginQuote(&'a BeginQuote),
     BlockStatement(&'a BlockStatement),
     BraceStatement(&'a BraceStatement),
     IfClause(&'a IfClause),
@@ -322,6 +325,7 @@ pub enum KindMut<'a> {
     WhileHeader(&'a mut WhileHeader),
     FunctionHeader(&'a mut FunctionHeader),
     BeginHeader(&'a mut BeginHeader),
+    BeginQuote(&'a mut BeginQuote),
     BlockStatement(&'a mut BlockStatement),
     BraceStatement(&'a mut BraceStatement),
     IfClause(&'a mut IfClause),
@@ -844,17 +848,15 @@ pub enum BeginQuoteMode {
     RawSource,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Default, Debug, Node!, Leaf!)]
 pub struct BeginQuote {
+    range: Option<SourceRange>,
     pub mode: BeginQuoteMode,
-    pub options: Option<SourceRange>,
 }
 
-impl VisitableField for BeginQuote {
-    fn do_visit<'a>(&'a self, _visitor: &mut dyn NodeVisitor<'a>) {}
-
-    fn do_visit_mut<V: NodeVisitorMut>(&mut self, _visitor: &mut V) -> VisitResult {
-        VisitResult::Continue(())
+impl BeginQuote {
+    pub fn options_range(&self) -> Option<SourceRange> {
+        self.range
     }
 }
 
@@ -1273,6 +1275,7 @@ pub fn ast_kind_to_string(k: Kind<'_>) -> &'static wstr {
         Kind::WhileHeader(_) => L!("while_header"),
         Kind::FunctionHeader(_) => L!("function_header"),
         Kind::BeginHeader(_) => L!("begin_header"),
+        Kind::BeginQuote(_) => L!("begin_quote"),
         Kind::BlockStatement(_) => L!("block_statement"),
         Kind::BraceStatement(_) => L!("brace_statement"),
         Kind::IfClause(_) => L!("if_clause"),
@@ -1827,6 +1830,7 @@ impl<'s> NodeVisitorMut for Populator<'s> {
             KM::WhileHeader(node) => node.accept_mut(self),
             KM::FunctionHeader(node) => node.accept_mut(self),
             KM::BeginHeader(node) => return self.visit_begin_header(node),
+            KM::BeginQuote(node) => node.accept_mut(self),
             KM::BlockStatement(node) => node.accept_mut(self),
             KM::BraceStatement(node) => node.accept_mut(self),
             KM::IfClause(node) => node.accept_mut(self),
@@ -2686,7 +2690,8 @@ impl<'s> Populator<'s> {
                 self,
                 token,
                 ParseErrorCode::Generic,
-                "begin accepts at most two quoted options"
+                "%s",
+                wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
             );
         }
 
@@ -2695,9 +2700,13 @@ impl<'s> Populator<'s> {
             1 => BeginQuoteMode::EagerSubstitutions,
             _ => BeginQuoteMode::RawSource,
         };
+        let options_range = options_start.map_or_else(
+            || SourceRange::new(node.kw_begin.source_range().end(), 0),
+            |start| SourceRange::new(start, options_end - start),
+        );
         node.quote = BeginQuote {
             mode,
-            options: options_start.map(|start| SourceRange::new(start, options_end - start)),
+            range: Some(options_range),
         };
 
         node.semi_nl = self.try_parse::<SemiNl>();

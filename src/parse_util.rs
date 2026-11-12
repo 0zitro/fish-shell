@@ -1565,6 +1565,42 @@ fn detect_errors_in_backgrounded_job(
 
 /// Given a source buffer `buff_src` and decorated statement `dst` within it, return true if there
 /// is an error and false if not.
+fn mask_dynamic_cmdsubst(input: &wstr) -> WString {
+    let mut out = WString::new();
+    let mut cursor = 0;
+    let mut last = 0;
+    let mut is_quoted = false;
+    loop {
+        let mut has_dollar = false;
+        let cmdsub = match locate_cmdsubst_range(
+            input,
+            &mut cursor,
+            false,
+            Some(&mut is_quoted),
+            Some(&mut has_dollar),
+        ) {
+            Ok(Some(cmdsub)) => cmdsub,
+            _ => break,
+        };
+        let opening = cmdsub.opening_paren_offset();
+        let mut start = opening;
+        while start > 0 {
+            let c = input.as_char_slice()[start - 1];
+            if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
+                break;
+            }
+            start -= 1;
+        }
+        if opening - start >= 2 {
+            out.push_utfstr(&input[last..start]);
+            out.push_utfstr(L!("$__dynamic"));
+            last = cmdsub.end();
+        }
+    }
+    out.push_utfstr(&input[last..]);
+    out
+}
+
 fn detect_errors_in_decorated_statement(
     buff_src: &wstr,
     traversal: &ast::Traversal,
@@ -1667,18 +1703,14 @@ fn detect_errors_in_decorated_statement(
         );
     }
 
-    let unexp_command = com;
-    let dynamic_command = unexp_command
-        .as_char_slice()
-        .windows(3)
-        .any(|w| w == ['$', '$', '(']);
-    if !unexp_command.is_empty() && !dynamic_command {
+    let unexp_command = mask_dynamic_cmdsubst(com);
+    if !unexp_command.is_empty() {
         // Check that we can expand the command.
         // Make a new error list so we can fix the offset for just those, then append later.
         let mut new_errors = ParseErrorList::new();
         let mut command = WString::new();
         if expand_to_command_and_args(
-            unexp_command,
+            &unexp_command,
             &mut OperationContext::empty(),
             &mut command,
             None,
@@ -1751,7 +1783,7 @@ fn detect_errors_in_decorated_statement(
 
         // Check that we don't do an invalid builtin (issue #1252).
         if !errored && decoration == StatementDecoration::Builtin {
-            let mut command = unexp_command.to_owned();
+            let mut command = unexp_command.clone();
             if expand_one(
                 &mut command,
                 ExpandFlags::FAIL_ON_CMDSUBST,
@@ -1760,7 +1792,7 @@ fn detect_errors_in_decorated_statement(
                     Some(pe) => Some(pe),
                     None => None,
                 },
-            ) && !builtin_exists(unexp_command)
+            ) && !builtin_exists(&unexp_command)
             {
                 errored = append_syntax_error!(
                     parse_errors,

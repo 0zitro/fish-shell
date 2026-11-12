@@ -470,6 +470,9 @@ msgstr "コマンドが実行可能ではありません"
 msgid "Command not valid at an interactive prompt"
 msgstr "インタラクティブプロンプトでは無効なコマンドです"
 
+msgid "Command substitution failed"
+msgstr ""
+
 msgid "Commandname was invalid"
 msgstr "コマンド名が無効でした"
 
@@ -539,6 +542,9 @@ msgstr "`set %s %s` のことですか？"
 
 msgid "Division by zero"
 msgstr "ゼロ除算(0 での割り算)"
+
+msgid "Dynamic variable reference must be exactly one variable reference"
+msgstr ""
 
 msgid "Edit command specific completions"
 msgstr "コマンド固有の補完を編集"
@@ -1555,6 +1561,9 @@ msgstr "配列のインデックスは 0 ではなく 1 から始まります"
 
 msgid "autoloading"
 msgstr "オートロード中"
+
+msgid "begin accepts at most two quoted options"
+msgstr ""
 
 msgid "builtin history delete --exact requires --case-sensitive"
 msgstr "組み込みコマンド history delete --exact には --case-sensitive が必要です"

@@ -43,6 +43,20 @@ $fish -c 'begin -qq -q echo 1; end'
 begin -q echo (printf x); end
 # CHECK: echo x
 
+begin -q echo (printf 'a\nb\n')[2]; end
+# CHECK: echo b
+
+begin -qq echo foo\; ; end
+# CHECK: echo foo\;
+
+begin -q $$(printf 'x[1]\n'); end
+# CHECK: $x[1]
+
+$fish -c 'begin -q $$(printf "x\ny\n"); end'
+# CHECKERR: fish: Dynamic variable reference must be exactly one variable reference
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+
 begin -q echo pre(printf 'a\nb')post; end
 # CHECK: echo preapost prebpost
 

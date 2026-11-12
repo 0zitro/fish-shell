@@ -471,6 +471,9 @@ msgstr "Befehl nicht ausführbar"
 msgid "Command not valid at an interactive prompt"
 msgstr "Kann nicht am Prompt verwendet werden"
 
+msgid "Command substitution failed"
+msgstr ""
+
 msgid "Commandname was invalid"
 msgstr "Befehlsname war ungültig"
 
@@ -540,6 +543,9 @@ msgstr "Meintest du `set %s %s`?"
 
 msgid "Division by zero"
 msgstr "Teilung durch Null"
+
+msgid "Dynamic variable reference must be exactly one variable reference"
+msgstr ""
 
 msgid "Edit command specific completions"
 msgstr "Befehlsspezifische Vervollständigungen bearbeiten"
@@ -1555,6 +1561,9 @@ msgid "array indices start at 1, not 0."
 msgstr "Array-Indizes beginnen mit 1, nicht 0"
 
 msgid "autoloading"
+msgstr ""
+
+msgid "begin accepts at most two quoted options"
 msgstr ""
 
 msgid "builtin history delete --exact requires --case-sensitive"

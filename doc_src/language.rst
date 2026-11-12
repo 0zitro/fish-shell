@@ -1092,10 +1092,11 @@ additional ``$`` before it adds one dereference::
 ``$$(...)`` therefore has one dereference, ``$$$(...)`` two, and so on.  The
 substitution must produce exactly one variable reference: a valid name,
 optionally followed by one slice group.  Empty output, several lines, multiple
-slice groups, quotes, whitespace, or other source syntax is an expansion
-error.  The produced reference is parsed and its optional slice is applied
-before the remaining dereferences.  The form is a variable expansion and is
-allowed in command position.
+slice groups, quotes, statement separators, or other source syntax is an
+expansion error.  Slice indices are literal slice syntax; they are not
+re-expanded.  The produced reference is parsed and its optional slice is
+applied before the remaining dereferences.  The form is a variable expansion
+and is allowed in command position.
 
 .. _expand-home:
 

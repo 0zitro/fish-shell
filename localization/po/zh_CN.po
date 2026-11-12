@@ -492,6 +492,9 @@ msgstr "命令不可执行"
 msgid "Command not valid at an interactive prompt"
 msgstr "命令在交互提示符下无效"
 
+msgid "Command substitution failed"
+msgstr ""
+
 msgid "Commandname was invalid"
 msgstr "命令名称无效"
 
@@ -561,6 +564,9 @@ msgstr "您是否想输入 `set %s %s`？"
 
 msgid "Division by zero"
 msgstr "除以零"
+
+msgid "Dynamic variable reference must be exactly one variable reference"
+msgstr ""
 
 msgid "Edit command specific completions"
 msgstr "编辑命令相关的补全"
@@ -1577,6 +1583,9 @@ msgstr "数组索引起始为 1，而不是 0。"
 
 msgid "autoloading"
 msgstr "自动加载"
+
+msgid "begin accepts at most two quoted options"
+msgstr ""
 
 msgid "builtin history delete --exact requires --case-sensitive"
 msgstr "内建历史删除 --exact 需要 --case-sensitive"

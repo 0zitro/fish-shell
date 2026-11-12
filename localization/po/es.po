@@ -471,6 +471,9 @@ msgstr "Comando no ejecutable"
 msgid "Command not valid at an interactive prompt"
 msgstr "comando no válido en un prompt interactivo"
 
+msgid "Command substitution failed"
+msgstr ""
+
 msgid "Commandname was invalid"
 msgstr "El nombre del comando era inválido"
 
@@ -540,6 +543,9 @@ msgstr "¿Quiso decir `set %s %s`?"
 
 msgid "Division by zero"
 msgstr "División por cero"
+
+msgid "Dynamic variable reference must be exactly one variable reference"
+msgstr ""
 
 msgid "Edit command specific completions"
 msgstr "Editar autocompletados específicos del comando"
@@ -1556,6 +1562,9 @@ msgstr "los índices del array empiezan en 1, no en 0."
 
 msgid "autoloading"
 msgstr "carga automática"
+
+msgid "begin accepts at most two quoted options"
+msgstr ""
 
 msgid "builtin history delete --exact requires --case-sensitive"
 msgstr ""

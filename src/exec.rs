@@ -782,11 +782,11 @@ fn fork_child_for_process(
     Ok(())
 }
 
-/// Return an newly allocated output stream for the given fd, which is typically stdout or stderr.
+/// Return a newly allocated output stream for the given fd, which is typically stdout or stderr.
 /// This inspects the io_chain and decides what sort of output stream to return.
 /// If `piped_output_needs_buffering` is set, and if the output is going to a pipe, then the other
 /// end then synchronously writing to the pipe risks deadlock, so we must buffer it.
-pub(crate) fn create_output_stream_for_builtin(
+pub(crate) fn create_output_stream_for_fd(
     fd: RawFd,
     io_chain: &IoChain,
     piped_output_needs_buffering: bool,
@@ -1193,9 +1193,9 @@ fn exec_builtin_process(
 ) -> LaunchResult {
     assert!(p.is_builtin(), "Process is not a builtin");
     let mut out =
-        create_output_stream_for_builtin(STDOUT_FILENO, io_chain, piped_output_needs_buffering);
+        create_output_stream_for_fd(STDOUT_FILENO, io_chain, piped_output_needs_buffering);
     let mut err =
-        create_output_stream_for_builtin(STDERR_FILENO, io_chain, piped_output_needs_buffering);
+        create_output_stream_for_fd(STDERR_FILENO, io_chain, piped_output_needs_buffering);
 
     let performer = get_performer_for_builtin(p, j, io_chain);
     let status = performer(parser, Some(&mut out), Some(&mut err));

@@ -518,6 +518,14 @@ localizable_consts!(
     pub ERROR_NOT_PID
     "$$ is not the pid. In fish, please use $fish_pid."
 
+    /// Error issued when begin has too many quoted options.
+    pub ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS
+    "begin accepts at most two quoted options"
+
+    /// Error issued when a dynamic variable reference is malformed.
+    pub ERROR_DYNAMIC_VARIABLE_REFERENCE
+    "Dynamic variable reference must be exactly one variable reference"
+
     /// Error issued on $#.
     pub ERROR_NOT_ARGV_COUNT
     "$# is not supported. In fish, please use 'count $argv'."

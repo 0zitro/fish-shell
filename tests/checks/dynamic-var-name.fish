@@ -34,6 +34,9 @@ echo $$$(echo x)
 echo $$$$(echo x)
 # CHECK: 123
 
+echo "$$$(echo x)"
+# CHECK: z
+
 set x a b c
 echo $$(printf 'x[1]\n')
 # CHECK: a
@@ -44,9 +47,8 @@ set a A
 echo $$$(printf 'x[1]\n')
 # CHECK: A
 
-set i 2
-echo $$(printf 'x[$i]\n')
-# CHECK: b
+echo $$(printf 'x[1 ]\n')
+# CHECK: a
 
 $fish -c 'set n x; set x 123; echo $$(printf "")'
 # CHECKERR: fish: Dynamic variable reference must be exactly one variable reference
