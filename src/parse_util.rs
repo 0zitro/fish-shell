@@ -10,11 +10,11 @@ use crate::{
     operation_context::OperationContext,
     parse_constants::{
         ERROR_BAD_VAR_CHAR1, ERROR_BRACKETED_VARIABLE_QUOTED1, ERROR_BRACKETED_VARIABLE1,
-        ERROR_NO_VAR_NAME, ERROR_NOT_ARGV_AT, ERROR_NOT_ARGV_COUNT, ERROR_NOT_ARGV_STAR,
-        ERROR_NOT_PID, ERROR_NOT_STATUS, INVALID_BREAK_ERR_MSG, INVALID_CONTINUE_ERR_MSG,
-        INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseIssue,
-        ParseKeyword, ParseTokenType, ParseTreeFlags, PipelinePosition, SourceRange,
-        StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
+        ERROR_MISMATCHED_PARENTHESIS, ERROR_NO_VAR_NAME, ERROR_NOT_ARGV_AT, ERROR_NOT_ARGV_COUNT,
+        ERROR_NOT_ARGV_STAR, ERROR_NOT_PID, ERROR_NOT_STATUS, INVALID_BREAK_ERR_MSG,
+        INVALID_CONTINUE_ERR_MSG, INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode,
+        ParseErrorList, ParseIssue, ParseKeyword, ParseTokenType, ParseTreeFlags, PipelinePosition,
+        SourceRange, StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
     },
     prelude::*,
     tokenizer::{Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end},
@@ -1417,7 +1417,13 @@ pub fn detect_errors_in_argument(
         ) {
             Err(()) => {
                 issue.error = true;
-                append_syntax_error!(out_errors, source_start, 1, "Mismatched parenthesis");
+                append_syntax_error!(
+                    out_errors,
+                    source_start,
+                    1,
+                    "%s",
+                    wgettext!(ERROR_MISMATCHED_PARENTHESIS)
+                );
                 return Err(issue);
             }
             Ok(None) => {
@@ -1565,6 +1571,18 @@ fn detect_errors_in_backgrounded_job(
 
 /// Given a source buffer `buff_src` and decorated statement `dst` within it, return true if there
 /// is an error and false if not.
+pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
+    let mut start = opening;
+    while start > 0 {
+        let c = input.as_char_slice()[start - 1];
+        if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
+            break;
+        }
+        start -= 1;
+    }
+    opening - start
+}
+
 fn mask_dynamic_cmdsubst(input: &wstr) -> WString {
     let mut out = WString::new();
     let mut cursor = 0;
@@ -1583,17 +1601,11 @@ fn mask_dynamic_cmdsubst(input: &wstr) -> WString {
             _ => break,
         };
         let opening = cmdsub.opening_paren_offset();
-        let mut start = opening;
-        while start > 0 {
-            let c = input.as_char_slice()[start - 1];
-            if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
-                break;
-            }
-            start -= 1;
-        }
-        if opening - start >= 2 {
+        let dollar_count = cmdsub_dollar_run(input, opening);
+        if dollar_count >= 2 {
+            let start = opening - dollar_count;
             out.push_utfstr(&input[last..start]);
-            out.push_utfstr(L!("$__dynamic"));
+            out.push_utfstr(L!("__fish_dynamic_command"));
             last = cmdsub.end();
         }
     }

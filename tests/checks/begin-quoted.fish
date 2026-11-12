@@ -85,5 +85,8 @@ end
 begin -q echo {a,b} ~; end
 # CHECK: echo {a,b} ~
 
+begin -q echo {pre(printf 'a,b')}; end
+# CHECK: echo {pre'a,b'}
+
 begin -q echo 1 > (printf out); end
 # CHECK: echo 1 > out

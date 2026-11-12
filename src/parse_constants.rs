@@ -526,6 +526,22 @@ localizable_consts!(
     pub ERROR_DYNAMIC_VARIABLE_REFERENCE
     "Dynamic variable reference must be exactly one variable reference"
 
+    /// Error issued for mismatched command-substitution parentheses.
+    pub ERROR_MISMATCHED_PARENTHESIS
+    "Mismatched parenthesis"
+
+    /// Error issued when a command substitution cannot be evaluated.
+    pub ERROR_COMMAND_SUBSTITUTION_FAILED
+    "Command substitution failed"
+
+    /// Error issued for a zero slice index.
+    pub ERROR_SLICE_ZERO_INDEX
+    "array indices start at 1, not 0."
+
+    /// Error issued for an invalid slice index.
+    pub ERROR_SLICE_INVALID_INDEX
+    "Invalid index value"
+
     /// Error issued on $#.
     pub ERROR_NOT_ARGV_COUNT
     "$# is not supported. In fish, please use 'count $argv'."

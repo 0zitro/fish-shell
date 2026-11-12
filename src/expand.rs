@@ -18,10 +18,11 @@ use crate::{
     history::{History, history_id},
     operation_context::OperationContext,
     parse_constants::{
-        ERROR_DYNAMIC_VARIABLE_REFERENCE, ParseError, ParseErrorCode, ParseErrorList,
+        ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_MISMATCHED_PARENTHESIS, ERROR_SLICE_INVALID_INDEX,
+        ERROR_SLICE_ZERO_INDEX, ParseError, ParseErrorCode, ParseErrorList,
         SOURCE_LOCATION_UNKNOWN,
     },
-    parse_util::{expand_variable_error, locate_cmdsubst_range},
+    parse_util::{cmdsub_dollar_run, expand_variable_error, locate_cmdsubst_range},
     path::path_apply_working_directory,
     prelude::*,
     wildcard::{WildcardResult, wildcard_expand_string, wildcard_has_internal},
@@ -725,11 +726,17 @@ fn expand_variables(
                         append_syntax_error!(
                             errors,
                             slice_start + bad_pos,
-                            "array indices start at 1, not 0."
+                            "%s",
+                            wgettext!(ERROR_SLICE_ZERO_INDEX)
                         );
                     }
                     ParseSliceError::InvalidIndex => {
-                        append_syntax_error!(errors, slice_start + bad_pos, "Invalid index value");
+                        append_syntax_error!(
+                            errors,
+                            slice_start + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_INVALID_INDEX)
+                        );
                     }
                 }
                 return ExpandResult::make_error(STATUS_EXPAND_ERROR);
@@ -967,8 +974,10 @@ fn expand_braces(
     ExpandResult::ok()
 }
 
-/// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
-/// `out_list`, or any errors into `errors`. Return an expand result.
+/// Apply a slice to command-substitution output lines.
+///
+/// `lines` is replaced by the selected lines. Returns the number of characters
+/// consumed from `slice`, which must start at `[`.
 pub(crate) fn apply_cmdsubst_slice(
     slice: &wstr,
     lines: &mut Vec<WString>,
@@ -986,16 +995,28 @@ pub(crate) fn apply_cmdsubst_slice(
     Ok(offset)
 }
 
-pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
-    let mut start = opening;
-    while start > 0 {
-        let c = input.as_char_slice()[start - 1];
-        if c != '$' && c != VARIABLE_EXPAND && c != VARIABLE_EXPAND_SINGLE {
-            break;
-        }
-        start -= 1;
+pub(crate) fn escape_unquoted_cmdsubst(output: &wstr) -> WString {
+    escape_string(
+        output,
+        EscapeStringStyle::Script(EscapeFlags {
+            comma: true,
+            ..Default::default()
+        }),
+    )
+}
+
+pub(crate) fn escape_quoted_cmdsubst(lines: &[WString]) -> WString {
+    let mut joined = WString::new();
+    for line in lines {
+        joined.push_utfstr(&escape_string_for_double_quotes(line));
+        joined.push('\n');
     }
-    opening - start
+    let mut len = joined.len();
+    while len > 0 && joined.as_char_slice()[len - 1] == '\n' {
+        len -= 1;
+    }
+    joined.truncate(len);
+    joined
 }
 
 pub(crate) fn dynamic_variable_reference(operand: &wstr) -> bool {
@@ -1012,6 +1033,8 @@ pub(crate) fn dynamic_variable_reference(operand: &wstr) -> bool {
     }
 }
 
+/// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
+/// `out`, or any errors into `errors`. Return an expand result.
 pub fn expand_cmdsubst(
     input: WString,
     ctx: &mut OperationContext,
@@ -1029,7 +1052,12 @@ pub fn expand_cmdsubst(
         Some(&mut has_dollar),
     ) {
         Err(()) => {
-            append_syntax_error!(errors, SOURCE_LOCATION_UNKNOWN, "Mismatched parenthesis");
+            append_syntax_error!(
+                errors,
+                SOURCE_LOCATION_UNKNOWN,
+                "%s",
+                wgettext!(ERROR_MISMATCHED_PARENTHESIS)
+            );
             return ExpandResult::make_error(STATUS_EXPAND_ERROR);
         }
         Ok(None) => {
@@ -1133,11 +1161,17 @@ pub fn expand_cmdsubst(
                         append_syntax_error!(
                             errors,
                             slice_begin + bad_pos,
-                            "array indices start at 1, not 0."
+                            "%s",
+                            wgettext!(ERROR_SLICE_ZERO_INDEX)
                         );
                     }
                     ParseSliceError::InvalidIndex => {
-                        append_syntax_error!(errors, slice_begin + bad_pos, "Invalid index value");
+                        append_syntax_error!(
+                            errors,
+                            slice_begin + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_INVALID_INDEX)
+                        );
                     }
                 }
                 return ExpandResult::make_error(STATUS_EXPAND_ERROR);
@@ -1163,21 +1197,7 @@ pub fn expand_cmdsubst(
 
     if is_quoted {
         // Awkwardly reconstruct the command output.
-        let approx_size = sub_res.iter().map(|sub_item| sub_item.len() + 1).sum();
-        let mut sub_res_joined = WString::new();
-        sub_res_joined.reserve(approx_size);
-        for line in sub_res {
-            sub_res_joined.push_utfstr(&escape_string_for_double_quotes(&line));
-            sub_res_joined.push('\n');
-        }
-        // Mimic POSIX shells by stripping all trailing newlines.
-        if !sub_res_joined.is_empty() {
-            let mut i = sub_res_joined.len();
-            while i > 0 && sub_res_joined.as_char_slice()[i - 1] == '\n' {
-                i -= 1;
-            }
-            sub_res_joined.truncate(i);
-        }
+        let sub_res_joined = escape_quoted_cmdsubst(&sub_res);
         // Instead of performing cartesian product expansion, we directly insert the command
         // substitution output into the current expansion results.
         for tail_item in tail_expand {
@@ -1205,13 +1225,7 @@ pub fn expand_cmdsubst(
     }
 
     for sub_item in sub_res {
-        let sub_item2 = escape_string(
-            &sub_item,
-            EscapeStringStyle::Script(EscapeFlags {
-                comma: true,
-                ..Default::default()
-            }),
-        );
+        let sub_item2 = escape_unquoted_cmdsubst(&sub_item);
         for tail_item in &*tail_expand {
             let mut whole_item = WString::new();
             whole_item.reserve(

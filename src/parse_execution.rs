@@ -15,25 +15,30 @@ use crate::{
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::{create_output_stream_for_fd, exec_job, exec_subshell_for_expand},
+    exec::{exec_job, exec_subshell_for_expand},
     expand::{
         self, ExpandFlags, ExpandResultCode, ParseSliceError, apply_cmdsubst_slice,
-        cmdsub_dollar_run, dynamic_variable_reference, expand_one, expand_string,
-        expand_to_command_and_args,
+        dynamic_variable_reference, escape_quoted_cmdsubst, escape_unquoted_cmdsubst, expand_one,
+        expand_string, expand_to_command_and_args,
     },
     flog::flog,
     function,
-    io::{FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream},
+    io::{
+        FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream,
+        create_output_stream_for_fd,
+    },
     job_group::JobGroup,
     operation_context::OperationContext,
     parse_constants::{
-        CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_TIME_BACKGROUND,
-        FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG, ILLEGAL_FD_ERR_MSG,
-        INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
-        ParseTokenType, StatementDecoration, parse_error_offset_source_start,
+        CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_COMMAND_SUBSTITUTION_FAILED,
+        ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_MISMATCHED_PARENTHESIS, ERROR_SLICE_INVALID_INDEX,
+        ERROR_SLICE_ZERO_INDEX, ERROR_TIME_BACKGROUND, FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG,
+        ILLEGAL_FD_ERR_MSG, INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode,
+        ParseErrorList, ParseKeyword, ParseTokenType, StatementDecoration,
+        parse_error_offset_source_start,
     },
     parse_tree::{NodeRef, ParsedSourceRef},
-    parse_util::{locate_cmdsubst_range, unescape_wildcards},
+    parse_util::{cmdsub_dollar_run, locate_cmdsubst_range, unescape_wildcards},
     parser::{
         Block, BlockData, BlockId, BlockType, LoopStatus, Parser, ParserEnvSetMode, ProfileItem,
     },
@@ -54,9 +59,7 @@ use crate::{
     trace::{trace_if_enabled, trace_if_enabled_with_args},
     wildcard::wildcard_match,
 };
-use fish_common::{
-    ScopeGuard, escape, escape_string_for_double_quotes, help_section, truncate_at_nul,
-};
+use fish_common::{ScopeGuard, escape, help_section, truncate_at_nul};
 use fish_widestring::WExt as _;
 use libc::{EXIT_SUCCESS, STDERR_FILENO, STDOUT_FILENO, c_int};
 use nix::errno::Errno;
@@ -122,7 +125,7 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
     .cmd(command)
 }
 
-fn trim_begin_body(text: &wstr) -> &wstr {
+fn trim_begin_body(text: &wstr) -> Result<&wstr, WString> {
     let flags = TokFlags {
         show_comments: true,
         ..Default::default()
@@ -131,7 +134,7 @@ fn trim_begin_body(text: &wstr) -> &wstr {
     let mut last = 0;
     for token in Tokenizer::new(text, flags) {
         if token.error != TokenizerError::None || token.type_ == TokenType::Error {
-            return text;
+            return Err(WString::from(token.error));
         }
         if token.type_ == TokenType::End {
             continue;
@@ -140,7 +143,7 @@ fn trim_begin_body(text: &wstr) -> &wstr {
         first.get_or_insert(start);
         last = start + token.length as usize;
     }
-    first.map_or(L!(""), |start| &text[start..last])
+    Ok(first.map_or(L!(""), |start| &text[start..last]))
 }
 
 struct BeginSerializationError {
@@ -154,8 +157,8 @@ fn serialization_error(status: i32, message: WString) -> BeginSerializationError
 
 fn slice_error_message(error: ParseSliceError) -> WString {
     match error {
-        ParseSliceError::ZeroIndex => wgettext!("array indices start at 1, not 0.").into(),
-        ParseSliceError::InvalidIndex => wgettext!("Invalid index value").into(),
+        ParseSliceError::ZeroIndex => wgettext!(ERROR_SLICE_ZERO_INDEX).into(),
+        ParseSliceError::InvalidIndex => wgettext!(ERROR_SLICE_INVALID_INDEX).into(),
     }
 }
 
@@ -979,7 +982,7 @@ impl ExecutionContext {
                 Err(()) => {
                     return Err(serialization_error(
                         STATUS_EXPAND_ERROR,
-                        wgettext!("Mismatched parenthesis").to_owned(),
+                        wgettext!(ERROR_MISMATCHED_PARENTHESIS).to_owned(),
                     ));
                 }
             };
@@ -995,7 +998,10 @@ impl ExecutionContext {
                 &mut lines,
             )
             .map_err(|status| {
-                serialization_error(status, wgettext!("Command substitution failed").to_owned())
+                serialization_error(
+                    status,
+                    wgettext!(ERROR_COMMAND_SUBSTITUTION_FAILED).to_owned(),
+                )
             })?;
 
             if dollar_count >= 2 {
@@ -1040,17 +1046,7 @@ impl ExecutionContext {
             }
 
             if is_quoted {
-                let mut joined = WString::new();
-                for line in &lines {
-                    joined.push_utfstr(line);
-                    joined.push('\n');
-                }
-                let mut len = joined.len();
-                while len > 0 && joined.as_char_slice()[len - 1] == '\n' {
-                    len -= 1;
-                }
-                joined.truncate(len);
-                let escaped = escape_string_for_double_quotes(&joined);
+                let escaped = escape_quoted_cmdsubst(&lines);
                 for variant in &mut variants {
                     variant.push_utfstr(&escaped);
                 }
@@ -1062,7 +1058,7 @@ impl ExecutionContext {
                 for variant in &variants {
                     for line in &lines {
                         let mut branch = variant.clone();
-                        branch.push_utfstr(&escape(line));
+                        branch.push_utfstr(&escape_unquoted_cmdsubst(line));
                         next.push(branch);
                     }
                 }
@@ -1129,7 +1125,12 @@ impl ExecutionContext {
                 return report_error!(self, ctx, error.status, statement, "%s", error.message);
             }
         };
-        let body = trim_begin_body(&serialized);
+        let body = match trim_begin_body(&serialized) {
+            Ok(body) => body,
+            Err(message) => {
+                return report_error!(self, ctx, STATUS_EXPAND_ERROR, statement, "%s", message);
+            }
+        };
         self.emit_begin_body(ctx, body)
     }
 
@@ -1141,7 +1142,12 @@ impl ExecutionContext {
         let Some(body) = self.begin_body_source(statement) else {
             return EndExecutionReason::Ok;
         };
-        let body = trim_begin_body(&body);
+        let body = match trim_begin_body(&body) {
+            Ok(body) => body,
+            Err(message) => {
+                return report_error!(self, ctx, STATUS_EXPAND_ERROR, statement, "%s", message);
+            }
+        };
         self.emit_begin_body(ctx, body)
     }
 

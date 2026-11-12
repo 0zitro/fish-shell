@@ -34,6 +34,12 @@ echo $$$(echo x)
 echo $$$$(echo x)
 # CHECK: 123
 
+echo $$(echo $$(echo x))
+# CHECK: z
+
+echo "$$(echo $$(echo x))"
+# CHECK: z
+
 echo "$$$(echo x)"
 # CHECK: z
 

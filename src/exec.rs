@@ -25,8 +25,8 @@ use crate::fork_exec::{
 };
 use crate::function::FunctionProperties;
 use crate::io::{
-    BufferedOutputStream, FdOutputStream, IoBufferfill, IoChain, IoClose, IoMode, IoPipe,
-    IoStreams, OutputStream, SeparatedBuffer, StringOutputStream,
+    IoBufferfill, IoChain, IoClose, IoMode, IoPipe, IoStreams, OutputStream, SeparatedBuffer,
+    create_output_stream_for_fd,
 };
 use crate::nix::isatty;
 use crate::null_terminated_array::OwningNullTerminatedArray;
@@ -780,51 +780,6 @@ fn fork_child_for_process(
         p.argv0().unwrap()
     );
     Ok(())
-}
-
-/// Return a newly allocated output stream for the given fd, which is typically stdout or stderr.
-/// This inspects the io_chain and decides what sort of output stream to return.
-/// If `piped_output_needs_buffering` is set, and if the output is going to a pipe, then the other
-/// end then synchronously writing to the pipe risks deadlock, so we must buffer it.
-pub(crate) fn create_output_stream_for_fd(
-    fd: RawFd,
-    io_chain: &IoChain,
-    piped_output_needs_buffering: bool,
-) -> OutputStream {
-    let Some(io) = io_chain.io_for_fd(fd) else {
-        // Common case of no redirections.
-        // Just write to the fd directly.
-        return OutputStream::Fd(FdOutputStream::new(fd));
-    };
-    match io.io_mode() {
-        IoMode::BufferFill => {
-            // Our IO redirection is to an internal buffer, e.g. a command substitution.
-            // We will write directly to it.
-            let buffer = io.as_bufferfill().unwrap().buffer();
-            OutputStream::Buffered(BufferedOutputStream::new(buffer.clone()))
-        }
-        IoMode::Close => {
-            // Like 'echo foo >&-'
-            OutputStream::Null
-        }
-        IoMode::File => {
-            // Output is to a file which has been opened.
-            OutputStream::Fd(FdOutputStream::new(io.source_fd()))
-        }
-        IoMode::Pipe => {
-            // Output is to a pipe. We may need to buffer.
-            if piped_output_needs_buffering {
-                OutputStream::String(StringOutputStream::new())
-            } else {
-                OutputStream::Fd(FdOutputStream::new(io.source_fd()))
-            }
-        }
-        IoMode::Fd => {
-            // This is a case like 'echo foo >&5'
-            // It's uncommon and unclear what should happen.
-            OutputStream::String(StringOutputStream::new())
-        }
-    }
 }
 
 /// Handle output from a builtin, by printing the contents of builtin_io_streams to the redirections
