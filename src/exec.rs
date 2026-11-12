@@ -786,7 +786,7 @@ fn fork_child_for_process(
 /// This inspects the io_chain and decides what sort of output stream to return.
 /// If `piped_output_needs_buffering` is set, and if the output is going to a pipe, then the other
 /// end then synchronously writing to the pipe risks deadlock, so we must buffer it.
-fn create_output_stream_for_builtin(
+pub(crate) fn create_output_stream_for_builtin(
     fd: RawFd,
     io_chain: &IoChain,
     piped_output_needs_buffering: bool,

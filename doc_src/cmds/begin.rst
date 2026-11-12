@@ -7,6 +7,9 @@ Synopsis
 .. synopsis::
 
     begin; [COMMANDS ...]; end
+    begin -qq; [COMMANDS ...]; end
+    begin -q -q; [COMMANDS ...]; end
+    begin --quoted --quoted; [COMMANDS ...]; end
     { [COMMANDS ...] }
 
 Description
@@ -23,6 +26,37 @@ The block is unconditionally executed. ``begin; ...; end`` is equivalent to ``if
 Some other shells only support the ``{ [COMMANDS ...] ; }`` notation.
 
 The **-h** or **--help** option displays help about using this command.
+
+Quoted blocks
+-------------
+
+Two quoted options make ``begin`` emit its body as source text instead of
+executing it.  ``begin -qq``, ``begin -q -q``, and
+``begin --quoted --quoted`` are equivalent spellings.
+
+::
+
+    begin -qq
+        echo (date)
+    end
+
+This writes the two lines ``echo (date)`` without running ``date`` or expanding
+anything else in the body.  The body is still parsed so that nested blocks and
+the matching ``end`` are found, but its commands, variables, braces, globs, and
+command substitutions remain literal source.
+
+The emitted text can be captured or redirected like any other command output:
+
+::
+
+    set -l code "$(begin -qq
+        echo $x
+    end)"
+    eval $code
+
+A redirection or pipeline applied to the construct itself applies to the
+emitted text.  Redirections inside the body remain part of the emitted source.
+More than two quoted options is an error.
 
 Example
 -------

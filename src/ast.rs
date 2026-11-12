@@ -836,9 +836,31 @@ pub struct FunctionHeader {
     pub semi_nl: SemiNl,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum BeginQuoteMode {
+    #[default]
+    Plain,
+    RawSource,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct BeginQuote {
+    pub mode: BeginQuoteMode,
+    pub options: Option<SourceRange>,
+}
+
+impl VisitableField for BeginQuote {
+    fn do_visit<'a>(&'a self, _visitor: &mut dyn NodeVisitor<'a>) {}
+
+    fn do_visit_mut<V: NodeVisitorMut>(&mut self, _visitor: &mut V) -> VisitResult {
+        VisitResult::Continue(())
+    }
+}
+
 #[derive(Default, Debug, Node!, Acceptor!)]
 pub struct BeginHeader {
     pub kw_begin: KeywordBegin,
+    pub quote: BeginQuote,
     /// Note that 'begin' does NOT require a semi or nl afterwards.
     /// This is valid: begin echo hi; end
     pub semi_nl: Option<SemiNl>,
@@ -1803,7 +1825,7 @@ impl<'s> NodeVisitorMut for Populator<'s> {
             KM::ForHeader(node) => node.accept_mut(self),
             KM::WhileHeader(node) => node.accept_mut(self),
             KM::FunctionHeader(node) => node.accept_mut(self),
-            KM::BeginHeader(node) => node.accept_mut(self),
+            KM::BeginHeader(node) => return self.visit_begin_header(node),
             KM::BlockStatement(node) => node.accept_mut(self),
             KM::BraceStatement(node) => node.accept_mut(self),
             KM::IfClause(node) => node.accept_mut(self),
@@ -2623,6 +2645,76 @@ impl<'s> Populator<'s> {
             );
         }
     }
+    fn begin_quote_option_weight_at(&mut self, idx: usize) -> Option<usize> {
+        let token = *self.peek_token(idx);
+        if token.typ != ParseTokenType::String {
+            return None;
+        }
+        let start = token.source_start();
+        let text = &self.tokens.src[start..start + token.source_length()];
+        if text == L!("-q") || text == L!("--quoted") {
+            Some(1)
+        } else if text == L!("-qq") {
+            Some(2)
+        } else {
+            None
+        }
+    }
+
+    fn visit_begin_header(&mut self, node: &mut BeginHeader) -> VisitResult {
+        node.kw_begin = self.allocate_visit::<KeywordBegin>();
+
+        let mut lookahead = 0;
+        let mut idx = 0;
+        while let Some(weight) = self.begin_quote_option_weight_at(idx) {
+            lookahead += weight;
+            idx += 1;
+            if lookahead >= 2 {
+                break;
+            }
+        }
+
+        let mut count = 0;
+        let mut options_start = None;
+        let mut options_end = 0;
+        let mut too_many = None;
+        if lookahead >= 2 {
+            while let Some(weight) = self.begin_quote_option_weight_at(0) {
+                let token = self.consume_any_token();
+                let range = token.range();
+                if options_start.is_none() {
+                    options_start = Some(range.start());
+                }
+                options_end = range.end();
+                count += weight;
+                if count > 2 && too_many.is_none() {
+                    too_many = Some(token);
+                }
+            }
+        }
+        if let Some(token) = too_many {
+            parse_error!(
+                self,
+                token,
+                ParseErrorCode::Generic,
+                "begin accepts at most two quoted options"
+            );
+        }
+
+        let mode = if count == 0 {
+            BeginQuoteMode::Plain
+        } else {
+            BeginQuoteMode::RawSource
+        };
+        node.quote = BeginQuote {
+            mode,
+            options: options_start.map(|start| SourceRange::new(start, options_end - start)),
+        };
+
+        node.semi_nl = self.try_parse::<SemiNl>();
+        VisitResult::Continue(())
+    }
+
     fn visit_block_statement_header(&mut self, node: &mut BlockStatementHeader) {
         *node = self.allocate_populate_block_header();
     }

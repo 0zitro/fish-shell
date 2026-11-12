@@ -15,7 +15,7 @@ use crate::{
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::exec_job,
+    exec::{create_output_stream_for_builtin, exec_job},
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
     },
@@ -891,8 +891,49 @@ impl ExecutionContext {
                 self.run_while_statement(ctx, wh, contents, associated_block)
             }
             BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
-            BlockStatementHeader::Begin(_bh) => self.run_begin_statement(ctx, contents),
+            BlockStatementHeader::Begin(bh) => match bh.quote.mode {
+                ast::BeginQuoteMode::Plain => self.run_begin_statement(ctx, contents),
+                ast::BeginQuoteMode::RawSource => self.run_quoted_begin_statement(ctx, statement),
+            },
         }
+    }
+
+    fn run_quoted_begin_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        statement: &ast::BlockStatement,
+    ) -> EndExecutionReason {
+        let ast::BlockStatementHeader::Begin(header) = &statement.header else {
+            unreachable!("quoted begin statement has a begin header");
+        };
+        let Some(end_range) = statement.end.try_source_range() else {
+            return EndExecutionReason::Ok;
+        };
+        let body_start = header
+            .quote
+            .options
+            .map_or_else(|| header.kw_begin.source_range().end(), |r| r.end());
+        let raw = &self.pstree().src[body_start..end_range.start()];
+        let chars = raw.as_char_slice();
+        let mut start = 0;
+        while start < chars.len() && (chars[start].is_whitespace() || chars[start] == ';') {
+            start += 1;
+        }
+        let mut end = chars.len();
+        while end > start && (chars[end - 1].is_whitespace() || chars[end - 1] == ';') {
+            end -= 1;
+        }
+        let body = &raw[start..end];
+
+        let mut out = create_output_stream_for_builtin(STDOUT_FILENO, &self.block_io, false);
+        if !body.is_empty() {
+            out.append(body.chars());
+            out.append('\n');
+        }
+        let status = out.flush_and_check_error();
+        ctx.parser().libdata_mut().status_count += 1;
+        ctx.parser().set_last_statuses(Statuses::just(status));
+        EndExecutionReason::Ok
     }
 
     fn run_for_statement(
