@@ -1548,6 +1548,49 @@ fn detect_errors_in_backgrounded_job(
     errored
 }
 
+/// Return the effective source character before `pos`, skipping line
+/// continuations (`\` followed by a newline) as unescaping does.
+pub(crate) fn source_char_before(input: &wstr, mut pos: usize) -> Option<(usize, char)> {
+    let chars = input.as_char_slice();
+    loop {
+        if pos == 0 {
+            return None;
+        }
+        if pos >= 2 && chars[pos - 1] == '\n' && chars[pos - 2] == '\\' {
+            pos -= 2;
+            continue;
+        }
+        return Some((pos - 1, chars[pos - 1]));
+    }
+}
+
+/// Return the byte offset of the `$` opening a variable reference that is still
+/// open at the end of `input`, or `None` when the input ends outside one.
+///
+/// Line continuations are transparent: `$fo\\\no` is the reference `$foo`.
+pub(crate) fn variable_reference_start(input: &wstr) -> Option<usize> {
+    let mut start = input.len();
+    loop {
+        match source_char_before(input, start) {
+            Some((pos, c)) if valid_var_name_char(c) => start = pos,
+            Some((pos, '$')) if count_preceding_backslashes(input, pos) % 2 == 0 => {
+                return Some(pos);
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Return the first source character, skipping leading line continuations.
+pub(crate) fn first_source_char(input: &wstr) -> Option<char> {
+    let chars = input.as_char_slice();
+    let mut pos = 0;
+    while pos + 1 < chars.len() && chars[pos] == '\\' && chars[pos + 1] == '\n' {
+        pos += 2;
+    }
+    chars.get(pos).copied()
+}
+
 /// Return how many unescaped `$` characters run immediately before the command
 /// substitution opening parenthesis at `opening`.
 ///

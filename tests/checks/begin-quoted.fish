@@ -116,6 +116,19 @@ set x 123
 eval (begin -q echo $$(echo n)post; end)
 # CHECK: xpost
 
+# Line continuations are transparent to the captured value boundary.
+set foo 1
+set code (begin -q echo $foo\
+(printf bar); end | string collect)
+eval $code
+# CHECK: 1bar
+
+# A later substitution reports its own span, not the token start.
+$fish -c "begin -q echo (printf a)(printf b)[0]; end"
+# CHECKERR: fish: array indices start at 1, not 0.
+# CHECKERR: {{^}}begin -q echo (printf a)(printf b)[0]; end
+# CHECKERR: {{^}}                                   ^
+
 # An eager-serialisation error points at the substitution that failed.
 $fish -c "begin -q echo (printf 'a')[0]; end"
 # CHECKERR: fish: array indices start at 1, not 0.

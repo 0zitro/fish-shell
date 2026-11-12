@@ -898,10 +898,6 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
                     self.visit_begin_header(node);
                     self.traversal.skip_children(node);
                 }
-                Kind::BeginQuote(_) => {
-                    self.emit_node_text(node);
-                    self.traversal.skip_children(node);
-                }
                 _ => {
                     // Default is to visit children. We expect all leaves to have been handled above.
                     assert!(

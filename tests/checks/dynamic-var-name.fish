@@ -98,3 +98,10 @@ $fish -c 'echo $$'
 # CHECKERR: fish: $$ is not the pid. In fish, please use $fish_pid.
 # CHECKERR: {{.*}}
 # CHECKERR: {{.*}}
+
+# A continuation before the suffix does not merge into the produced reference.
+set n x
+set x 123
+echo $$(echo n)\
+post
+# CHECK: xpost

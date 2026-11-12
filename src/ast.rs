@@ -859,7 +859,21 @@ pub enum BeginQuoteMode {
 #[derive(Default, Debug, Node!, Leaf!)]
 pub struct BeginQuote {
     range: Option<SourceRange>,
-    pub mode: BeginQuoteMode,
+    weight: u8,
+}
+
+impl BeginQuote {
+    /// The expansion mode selected by the number of quoted options written.
+    ///
+    /// A visitor-populated node always carries a nonzero weight; zero is only
+    /// the allocation placeholder and no parsed node exposes it.
+    pub fn mode(&self) -> BeginQuoteMode {
+        match self.weight {
+            1 => BeginQuoteMode::EagerSubstitutions,
+            2.. => BeginQuoteMode::RawSource,
+            0 => unreachable!("BeginQuote was never populated"),
+        }
+    }
 }
 
 impl CheckParse for BeginQuote {
@@ -887,6 +901,25 @@ pub struct BlockStatement {
     pub end: KeywordEnd,
     /// Arguments and redirections associated with the block.
     pub args_or_redirs: ArgumentOrRedirectionList,
+}
+
+impl BlockStatement {
+    /// The source range between the header and the closing `end` keyword.
+    ///
+    /// This is the body source a block command consumes without executing its
+    /// jobs, including comments and framing separators.
+    pub fn body_range(&self) -> Option<SourceRange> {
+        let BlockStatementHeader::Begin(header) = &self.header else {
+            return None;
+        };
+        let start = header
+            .quote
+            .as_ref()
+            .and_then(|quote| quote.range())
+            .map_or_else(|| header.kw_begin.source_range().end(), |range| range.end());
+        let end = self.end.try_source_range()?;
+        Some(SourceRange::new(start, end.start() - start))
+    }
 }
 
 #[derive(Default, Debug, Node!, Acceptor!)]
@@ -2673,12 +2706,9 @@ impl<'s> Populator<'s> {
         if text == L!("--quoted") {
             return Some(1);
         }
-        let qs = text.strip_prefix('-')?;
-        if !qs.is_empty() && qs.chars().all(|c| c == 'q') {
-            Some(qs.len())
-        } else {
-            None
-        }
+        text.strip_prefix('-')
+            .filter(|qs| !qs.is_empty() && qs.chars().all(|c| c == 'q'))
+            .map(|qs| qs.len())
     }
 
     fn visit_begin_header(&mut self, node: &mut BeginHeader) -> VisitResult {
@@ -2695,10 +2725,7 @@ impl<'s> Populator<'s> {
         while let Some(weight) = self.begin_quote_option_weight_at(0) {
             let token = self.consume_any_token();
             let token_range = token.range();
-            range = Some(match range {
-                Some(range) => range.combine(token_range),
-                None => token_range,
-            });
+            range = Some(range.map_or(token_range, |range| range.combine(token_range)));
             count += weight;
             if count > 2 && too_many.is_none() {
                 too_many = Some(token);
@@ -2713,10 +2740,7 @@ impl<'s> Populator<'s> {
                 wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
             );
         }
-        node.mode = match count {
-            1 => BeginQuoteMode::EagerSubstitutions,
-            _ => BeginQuoteMode::RawSource,
-        };
+        node.weight = count as u8;
         *node.range_mut() = range;
         VisitResult::Continue(())
     }
