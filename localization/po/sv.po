@@ -468,9 +468,6 @@ msgstr ""
 msgid "Command not valid at an interactive prompt"
 msgstr ""
 
-msgid "Command substitution failed"
-msgstr ""
-
 msgid "Commandname was invalid"
 msgstr ""
 

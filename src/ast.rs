@@ -859,21 +859,7 @@ pub enum BeginQuoteMode {
 #[derive(Default, Debug, Node!, Leaf!)]
 pub struct BeginQuote {
     range: Option<SourceRange>,
-    weight: u8,
-}
-
-impl BeginQuote {
-    /// The expansion mode selected by the number of quoted options written.
-    ///
-    /// A visitor-populated node always carries a nonzero weight; zero is only
-    /// the allocation placeholder and no parsed node exposes it.
-    pub fn mode(&self) -> BeginQuoteMode {
-        match self.weight {
-            1 => BeginQuoteMode::EagerSubstitutions,
-            2.. => BeginQuoteMode::RawSource,
-            0 => unreachable!("BeginQuote was never populated"),
-        }
-    }
+    pub mode: BeginQuoteMode,
 }
 
 impl CheckParse for BeginQuote {
@@ -2740,7 +2726,11 @@ impl<'s> Populator<'s> {
                 wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
             );
         }
-        node.weight = count as u8;
+        node.mode = match count {
+            1 => BeginQuoteMode::EagerSubstitutions,
+            2.. => BeginQuoteMode::RawSource,
+            0 => unreachable!("a BeginQuote requires at least one option"),
+        };
         *node.range_mut() = range;
         VisitResult::Continue(())
     }

@@ -8,10 +8,7 @@ Synopsis
 
     begin; [COMMANDS ...]; end
     begin -q; [COMMANDS ...]; end
-    begin --quoted; [COMMANDS ...]; end
     begin -qq; [COMMANDS ...]; end
-    begin -q -q; [COMMANDS ...]; end
-    begin --quoted --quoted; [COMMANDS ...]; end
     { [COMMANDS ...] }
 
 Description

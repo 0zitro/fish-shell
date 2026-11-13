@@ -471,9 +471,6 @@ msgstr "Befehl nicht ausführbar"
 msgid "Command not valid at an interactive prompt"
 msgstr "Kann nicht am Prompt verwendet werden"
 
-msgid "Command substitution failed"
-msgstr ""
-
 msgid "Commandname was invalid"
 msgstr "Befehlsname war ungültig"
 

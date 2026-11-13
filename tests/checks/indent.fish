@@ -717,16 +717,6 @@ echo 'begin -qq echo 1; end' | $fish_indent
 # CHECK: {{^}}    echo 1
 # CHECK: {{^}}end
 
-echo 'begin -q -q echo 1; end' | $fish_indent
-# CHECK: {{^}}begin -q -q
-# CHECK: {{^}}    echo 1
-# CHECK: {{^}}end
-
-echo 'begin --quoted echo 1; end' | $fish_indent
-# CHECK: {{^}}begin --quoted
-# CHECK: {{^}}    echo 1
-# CHECK: {{^}}end
-
 echo 'begin -q; echo 1; end' | $fish_indent
 # CHECK: {{^}}begin -q
 # CHECK: {{^}}    echo 1

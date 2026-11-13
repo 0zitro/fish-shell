@@ -471,9 +471,6 @@ msgstr "Comando no ejecutable"
 msgid "Command not valid at an interactive prompt"
 msgstr "comando no válido en un prompt interactivo"
 
-msgid "Command substitution failed"
-msgstr ""
-
 msgid "Commandname was invalid"
 msgstr "El nombre del comando era inválido"
 

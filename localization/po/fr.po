@@ -600,9 +600,6 @@ msgstr ""
 msgid "Command not valid at an interactive prompt"
 msgstr "Commande invalide dans une invite interactive"
 
-msgid "Command substitution failed"
-msgstr ""
-
 msgid "Commandname was invalid"
 msgstr ""
 

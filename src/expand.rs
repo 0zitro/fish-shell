@@ -23,8 +23,8 @@ use crate::{
         SOURCE_LOCATION_UNKNOWN,
     },
     parse_util::{
-        cmdsub_dollar_run, expand_variable_error, first_source_char, locate_cmdsubst_range,
-        variable_reference_start,
+        cmdsub_dollar_run, ends_in_open_variable_reference, expand_variable_error,
+        first_source_char, locate_cmdsubst_range,
     },
     path::path_apply_working_directory,
     prelude::*,
@@ -1367,7 +1367,7 @@ pub(crate) fn completion_to_source(completion: &wstr) -> WString {
     let mut escaped = false;
     for c in completion.chars() {
         if c == INTERNAL_SEPARATOR {
-            if variable_reference_start(&source).is_some() {
+            if ends_in_open_variable_reference(&source) {
                 debug_assert_ne!(
                     quote,
                     Some('\''),

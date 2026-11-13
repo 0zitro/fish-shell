@@ -492,9 +492,6 @@ msgstr "命令不可执行"
 msgid "Command not valid at an interactive prompt"
 msgstr "命令在交互提示符下无效"
 
-msgid "Command substitution failed"
-msgstr ""
-
 msgid "Commandname was invalid"
 msgstr "命令名称无效"
 

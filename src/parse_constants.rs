@@ -530,10 +530,6 @@ localizable_consts!(
     pub ERROR_MISMATCHED_PARENTHESIS
     "Mismatched parenthesis"
 
-    /// Error issued when a command substitution cannot be evaluated.
-    pub ERROR_COMMAND_SUBSTITUTION_FAILED
-    "Command substitution failed"
-
     /// Error issued for a zero slice index.
     pub ERROR_SLICE_ZERO_INDEX
     "array indices start at 1, not 0."

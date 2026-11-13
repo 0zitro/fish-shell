@@ -470,9 +470,6 @@ msgstr "コマンドが実行可能ではありません"
 msgid "Command not valid at an interactive prompt"
 msgstr "インタラクティブプロンプトでは無効なコマンドです"
 
-msgid "Command substitution failed"
-msgstr ""
-
 msgid "Commandname was invalid"
 msgstr "コマンド名が無効でした"
 

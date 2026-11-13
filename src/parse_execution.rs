@@ -964,7 +964,7 @@ impl ExecutionContext {
                 self.run_while_statement(ctx, wh, contents, associated_block)
             }
             BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
-            BlockStatementHeader::Begin(bh) => match bh.quote.as_ref().map(|quote| quote.mode()) {
+            BlockStatementHeader::Begin(bh) => match bh.quote.as_ref().map(|quote| quote.mode) {
                 None => self.run_begin_statement(ctx, contents),
                 Some(ast::BeginQuoteMode::EagerSubstitutions) => {
                     self.run_eager_begin_statement(ctx, statement)
