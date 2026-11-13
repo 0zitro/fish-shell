@@ -556,11 +556,12 @@ pub fn complete(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]
                     // The input data is meant to be something like you would have on the command
                     // line, e.g. includes backslashes. The output should be raw, i.e. unescaped. So
                     // we need to unescape the command line. See #1127.
-                    faux_cmdline_with_completion = unescape_string(
+                    if let Some(unescaped) = unescape_string(
                         &faux_cmdline_with_completion,
                         UnescapeStringStyle::Script(UnescapeFlags::default()),
-                    )
-                    .expect("Unescaping commandline to complete failed");
+                    ) {
+                        faux_cmdline_with_completion = unescaped;
+                    }
                 }
 
                 // Append any description.
