@@ -138,6 +138,8 @@ completions#where-to-put-completions
 contributing
 contributing#adding-translations-for-a-new-language
 contributing#ai-contributions-policy
+contributing#building
+contributing#cmake-builds
 contributing#code-style
 contributing#commit-history
 contributing#configuring-your-editor-for-fish-scripts
@@ -154,6 +156,7 @@ contributing#mailing-list
 contributing#minimum-supported-rust-version-msrv-policy
 contributing#modifications-to-strings-in-source-files-gettext-only
 contributing#modifying-existing-translations
+contributing#running-the-checks
 contributing#setting-code-up-for-translations
 contributing#testing
 contributing#updating-dependencies
