@@ -191,6 +191,12 @@ commandline --line 3
 # CHECKERR: {{^}}commandline --line 3
 # CHECKERR: {{^}}^
 # CHECKERR: (Type 'help commandline' for related documentation)
+commandline --line 197001010000
+# CHECKERR: commandline: there is no line 197001010000
+# CHECKERR: {{.*}}/commandline.fish (line {{\d+}}):
+# CHECKERR: {{^}}commandline --line 197001010000
+# CHECKERR: {{^}}^
+# CHECKERR: (Type 'help commandline' for related documentation)
 
 commandline --column abc
 # CHECKERR: commandline: abc: invalid integer
