@@ -18,7 +18,9 @@ use crate::{
         maybe_set_kitty_keyboard_capability, maybe_set_scroll_content_up_capability,
     },
 };
-use fish_widestring::{WString, bytes2wcstring, encode_byte_to_char, fish_reserved_codepoint};
+use fish_widestring::{
+    WString, bytes2wcstring, encode_byte_to_char, fish_reserved_codepoint, push_reserved_codepoint,
+};
 use std::time::Duration;
 
 pub(crate) const LONG_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -774,6 +776,8 @@ pub(crate) enum InvalidPolicy {
 /// For [`InvalidPolicy::Passthrough`], [`DecodeState::Complete`] will be returned
 /// and `out_seq` will have the individual bytes of `buffer` appended to it, each encoded using our
 /// PUA encoding scheme.
+/// Valid UTF-8 codepoints in fish's reserved ranges are encoded the same way, preserving their
+/// bytes without exposing reserved characters to expansion.
 pub(crate) fn decode_utf8(
     out_seq: &mut WString,
     invalid_policy: InvalidPolicy,
@@ -783,7 +787,9 @@ pub(crate) fn decode_utf8(
     match std::str::from_utf8(buffer) {
         Ok(parsed_str) => {
             for c in parsed_str.chars() {
-                if !fish_reserved_codepoint(c) {
+                if fish_reserved_codepoint(c) {
+                    push_reserved_codepoint(out_seq, c);
+                } else {
                     out_seq.push(c);
                 }
             }
@@ -854,7 +860,7 @@ fn parse_hex_into(out: &mut [u8], hex: &[u8]) -> Option<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_hex;
+    use super::{DecodeState, InvalidPolicy, decode_utf8, parse_hex};
     use crate::{
         input::{
             CharEvent, KeyEvent, MockInputEventQueuer, QueryResponse,
@@ -862,6 +868,22 @@ mod tests {
         },
         key::{self, Key, Modifiers, alt},
     };
+    use fish_widestring::{WString, wcs2bytes};
+
+    #[test]
+    fn test_reserved_codepoints_round_trip() {
+        for codepoint in ['\u{F500}', '\u{F600}', '\u{FDD0}', '\u{FDEF}'] {
+            let bytes = codepoint.to_string().into_bytes();
+            for policy in [InvalidPolicy::Passthrough, InvalidPolicy::Error] {
+                let mut decoded = WString::new();
+                assert!(matches!(
+                    decode_utf8(&mut decoded, policy, &bytes),
+                    DecodeState::Complete
+                ));
+                assert_eq!(wcs2bytes(&decoded), bytes);
+            }
+        }
+    }
 
     #[test]
     fn test_parse_hex() {

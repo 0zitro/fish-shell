@@ -586,7 +586,16 @@ pub fn commandline(
                         .finish(streams);
                     0
                 }
-                Ok(num) => num - 1,
+                Ok(num) => match num.checked_sub(1) {
+                    Some(coord) => coord,
+                    None => {
+                        err_str!("line/column index starts at 1")
+                            .cmd(cmd)
+                            .full_trailer(parser)
+                            .finish(streams);
+                        return Err(STATUS_INVALID_ARGS);
+                    }
+                },
             };
             let Ok(new_coord) = usize::try_from(new_coord) else {
                 err_str!("line/column index starts at 1")
@@ -597,8 +606,9 @@ pub fn commandline(
             };
 
             let new_pos = if line_mode {
-                let Some(offset) =
-                    get_offset_from_line(&rstate.text, i32::try_from(new_coord).unwrap())
+                let Some(line) = i32::try_from(new_coord)
+                    .ok()
+                    .and_then(|line| get_offset_from_line(&rstate.text, line))
                 else {
                     err_fmt!("there is no line %s", arg)
                         .cmd(cmd)
@@ -606,7 +616,7 @@ pub fn commandline(
                         .finish(streams);
                     return Err(STATUS_INVALID_ARGS);
                 };
-                offset
+                line
             } else {
                 let line_index =
                     i32::try_from(lineno(&rstate.text, rstate.cursor_pos)).unwrap() - 1;
@@ -614,14 +624,21 @@ pub fn commandline(
                     get_offset_from_line(&rstate.text, line_index).unwrap_or_default();
                 let next_line_offset =
                     get_offset_from_line(&rstate.text, line_index + 1).unwrap_or(rstate.text.len());
-                if line_offset + new_coord > next_line_offset {
+                let Some(offset) = line_offset.checked_add(new_coord) else {
+                    err_fmt!("column %s exceeds line length", arg)
+                        .cmd(cmd)
+                        .full_trailer(parser)
+                        .finish(streams);
+                    return Err(STATUS_INVALID_ARGS);
+                };
+                if offset > next_line_offset {
                     err_fmt!("column %s exceeds line length", arg)
                         .cmd(cmd)
                         .full_trailer(parser)
                         .finish(streams);
                     return Err(STATUS_INVALID_ARGS);
                 }
-                line_offset + new_coord
+                offset
             };
             commandline_set_buffer(parser, None, Some(new_pos));
         } else {
@@ -784,7 +801,13 @@ pub fn commandline(
             let new_pos = std::cmp::min(
                 range
                     .start
-                    .saturating_add_signed(isize::try_from(new_pos).unwrap()),
+                    .saturating_add_signed(isize::try_from(new_pos).unwrap_or(
+                        if new_pos.is_negative() {
+                            isize::MIN
+                        } else {
+                            isize::MAX
+                        },
+                    )),
                 current_buffer.len(),
             );
             commandline_set_buffer(parser, None, Some(new_pos));
