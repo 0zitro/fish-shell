@@ -34,9 +34,13 @@ fn main() {
     rsconf::set_env_value("BUILD_HOST_TRIPLE", &env_var("HOST").unwrap());
     rsconf::set_env_value("BUILD_PROFILE", &env_var("PROFILE").unwrap());
 
-    // Per https://doc.rust-lang.org/cargo/reference/build-scripts.html#inputs-to-the-build-script,
-    // the source directory is the current working directory of the build script
-    rsconf::set_env_value("FISH_BUILD_VERSION", &get_version());
+    // The build runner supplies the version, which makes it an input cargo
+    // compares.  When cargo drives the build itself, the checkout is the source:
+    // its directory is the build script's working directory
+    // (https://doc.rust-lang.org/cargo/reference/build-scripts.html#inputs-to-the-build-script).
+    rsconf::rebuild_if_env_changed("FISH_BUILD_VERSION");
+    let version = env_var("FISH_BUILD_VERSION").unwrap_or_else(get_version);
+    rsconf::set_env_value("FISH_BUILD_VERSION", &version);
 
     fish_build_helper::rebuild_if_embedded_path_changed("share");
 
