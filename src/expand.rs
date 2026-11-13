@@ -40,8 +40,9 @@ use fish_util::wcsfilecmp_glob;
 use fish_wcstringutil::{join_strings, trim};
 use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP, BRACE_SPACE,
-    HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, SLICE_BEGIN, SLICE_END,
-    VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE, osstr2wcstring,
+    HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, QUOTED_BOUNDARY, SLICE_BEGIN,
+    SLICE_END, UNQUOTED_BOUNDARY, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
+    osstr2wcstring,
 };
 use nix::unistd::{User, getpid};
 
@@ -1172,7 +1173,11 @@ pub fn expand_cmdsubst(
         // must not extend its name.
         let tail = &input[cmdsub.end()..];
         if first_source_char(tail).is_some_and(valid_var_name_char) {
-            result.push(INTERNAL_SEPARATOR);
+            result.push(if is_quoted {
+                QUOTED_BOUNDARY
+            } else {
+                UNQUOTED_BOUNDARY
+            });
         }
         result.push_utfstr(tail);
         return expand_cmdsubst(result, ctx, out, errors);
@@ -1236,6 +1241,11 @@ pub fn expand_cmdsubst(
     // Combine the result of the current command substitution with the result of the recursive tail
     // expansion.
 
+    let value_boundary = boundary_separator(
+        &input[..cmdsub.opening_paren_offset() - usize::from(has_dollar)],
+        is_quoted,
+    );
+
     if is_quoted {
         // Awkwardly reconstruct the command output.
         let sub_res_joined = escape_quoted_cmdsubst(&sub_res);
@@ -1253,7 +1263,7 @@ pub fn expand_cmdsubst(
             whole_item.push_utfstr(
                 &input[..cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 }],
             );
-            whole_item.push(INTERNAL_SEPARATOR);
+            whole_item.push(value_boundary);
             whole_item.push_utfstr(&sub_res_joined);
             whole_item.push(INTERNAL_SEPARATOR);
             whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
@@ -1279,7 +1289,7 @@ pub fn expand_cmdsubst(
             whole_item.push_utfstr(
                 &input[..cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 }],
             );
-            whole_item.push(INTERNAL_SEPARATOR);
+            whole_item.push(value_boundary);
             whole_item.push_utfstr(&sub_item2);
             whole_item.push(INTERNAL_SEPARATOR);
             whole_item.push_utfstr(&tail_item.completion);
@@ -1349,50 +1359,36 @@ fn expand_percent_self(input: &mut WString) {
     }
 }
 
-/// Remove any internal separators.
+/// The separator that preserves a source value boundary at `source`.
+fn boundary_separator(source: &wstr, is_quoted: bool) -> char {
+    if !ends_in_open_variable_reference(source) {
+        INTERNAL_SEPARATOR
+    } else if is_quoted {
+        QUOTED_BOUNDARY
+    } else {
+        UNQUOTED_BOUNDARY
+    }
+}
+
+/// Remove every expansion-boundary marker.
 fn remove_internal_separators(s: &mut WString) {
-    s.retain(|c| c != INTERNAL_SEPARATOR);
+    s.retain(|c| !matches!(c, INTERNAL_SEPARATOR | QUOTED_BOUNDARY | UNQUOTED_BOUNDARY));
 }
 
 /// Render one eager-expansion completion as fish source.
 ///
-/// `expand_cmdsubst` brackets every substituted value with `INTERNAL_SEPARATOR`
-/// so the variable stage cannot extend a variable name across the boundary.
-/// Where the preceding source would otherwise extend a name, the emitted source
-/// keeps that boundary as an inert empty quoted word in the surrounding quote
-/// context.
+/// `expand_cmdsubst` marks every substituted value boundary; the capture path
+/// turns the boundaries that need a source quote into `""` or `''` and drops
+/// the rest.
 pub(crate) fn completion_to_source(completion: &wstr) -> WString {
     let mut source = WString::with_capacity(completion.len());
-    let mut quote = None;
-    let mut escaped = false;
     for c in completion.chars() {
-        if c == INTERNAL_SEPARATOR {
-            if ends_in_open_variable_reference(&source) {
-                debug_assert_ne!(
-                    quote,
-                    Some('\''),
-                    "no command substitution is located inside single quotes"
-                );
-                let quote_char = if quote == Some('"') { '"' } else { '\'' };
-                source.push(quote_char);
-                source.push(quote_char);
-            }
-            continue;
+        match c {
+            QUOTED_BOUNDARY => source.push_utfstr(L!("\"\"")),
+            UNQUOTED_BOUNDARY => source.push_utfstr(L!("''")),
+            INTERNAL_SEPARATOR => {}
+            _ => source.push(c),
         }
-        if escaped {
-            escaped = false;
-        } else if c == '\\' {
-            escaped = true;
-        } else if c == '"' && quote != Some('\'') {
-            quote = if quote == Some('"') { None } else { Some('"') };
-        } else if c == '\'' && quote != Some('"') {
-            quote = if quote == Some('\'') {
-                None
-            } else {
-                Some('\'')
-            };
-        }
-        source.push(c);
     }
     source
 }
