@@ -316,17 +316,27 @@ impl<'source, 'ast> PrettyPrinter<'source, 'ast> {
                 let Some(prev) = prev else {
                     continue;
                 };
-                if self.state.substr(prev.range().unwrap()) != ";" {
+                let Some(prev_range) = prev.range() else {
+                    continue;
+                };
+                if self.state.substr(prev_range) != ";" {
                     continue;
                 }
 
                 // Is there a newline between them?
-                let prev_start = prev.range().unwrap().start();
-                let decorator_range = decorator.range().unwrap();
-                assert!(prev_start <= decorator_range.start(), "Ranges out of order");
-                if !self.state.source[prev_start..decorator_range.end()].contains('\n') {
+                let Some(decorator_range) = decorator.range() else {
+                    continue;
+                };
+                if prev_range.start() > decorator_range.start() {
+                    continue;
+                }
+                let between = SourceRange::new(
+                    prev_range.start(),
+                    decorator_range.end() - prev_range.start(),
+                );
+                if !self.state.substr(between).contains('\n') {
                     // We're going to allow the previous semi_nl to be a semi.
-                    result.push(prev_start);
+                    result.push(prev_range.start());
                 }
             }
         }
@@ -449,9 +459,9 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
         })
     }
 
-    // Return a substring of source.
+    // Return a substring of source, or empty for an unsourced or out-of-range span.
     fn substr(&self, r: SourceRange) -> &wstr {
-        &self.source[r.start()..r.end()]
+        source_slice(self.source, r)
     }
 
     // Emit a space or indent as necessary, depending on the previous output.
@@ -488,7 +498,7 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
     //
     //  We do not handle errors here - instead our caller does.
     fn emit_gap_text(&mut self, range: SourceRange, flags: GapFlags) -> bool {
-        let gap_text = &self.source[range.start()..range.end()];
+        let gap_text = source_slice(self.source, range);
         // Common case: if we are only spaces, do nothing.
         if !gap_text.chars().any(|c| c != ' ') {
             return false;
@@ -619,8 +629,7 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
             // For example in: echo foo "
             // We don't want to mess with the quote.
             if self.range_contained_error(range) {
-                self.output
-                    .push_utfstr(&self.source[range.start()..range.end()]);
+                self.output.push_utfstr(source_slice(self.source, range));
             } else {
                 added_newline = self.emit_gap_text(range, flags);
             }
@@ -845,6 +854,7 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
         if added_newline && gap_range.length() > 0 && self.source.char_at(gap_range.start()) == '\n'
         {
             gap_range.start += 1;
+            gap_range.length -= 1;
         }
         self.emit_gap_text(gap_range, flags);
     }
@@ -922,6 +932,17 @@ fn parse_flags() -> ParseTreeFlags {
 /// A character is escaped if it has an odd number of backslashes.
 fn char_is_escaped(text: &wstr, idx: usize) -> bool {
     count_preceding_backslashes(text, idx) % 2 == 1
+}
+
+/// Return the source text of a range, or empty when the range is unsourced or
+/// outside the source.
+fn source_slice(source: &wstr, range: SourceRange) -> &wstr {
+    let (start, end) = (range.start(), range.end());
+    if start <= end && end <= source.len() {
+        &source[start..end]
+    } else {
+        L!("")
+    }
 }
 
 pub fn main() {

@@ -704,3 +704,10 @@ PATH=hello fish_indent --help
 printf '%s\n' '# comment \\' 'FOO= echo hi' | $fish_indent
 #CHECK: {{^}}# comment \
 #CHECK: {{^}}FOO= echo hi
+
+# Malformed input survives recovery without panicking.
+printf 'if ; and x\n' | $fish_indent
+# CHECK: {{^}}if ; and x
+
+printf 'echo | # comment\n' | $fish_indent
+# CHECK: {{^}}echo | # comment
