@@ -39,6 +39,10 @@ function __fish_help_describe -a help_item
             return
         case contributing#ai-contributions-policy
             return
+        case contributing#building
+            return
+        case contributing#cmake-builds
+            return
         case contributing#code-style
             return
         case contributing#commit-history
@@ -70,6 +74,8 @@ function __fish_help_describe -a help_item
         case contributing#modifications-to-strings-in-source-files-gettext-only
             return
         case contributing#modifying-existing-translations
+            return
+        case contributing#running-the-checks
             return
         case contributing#setting-code-up-for-translations
             return
