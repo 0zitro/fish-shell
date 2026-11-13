@@ -244,8 +244,11 @@ impl<'source, 'ast> PrettyPrinter<'source, 'ast> {
     // Return sorted list of semi-preferring semi_nl nodes.
     fn compute_preferred_semi_locations(&self) -> Vec<usize> {
         let mut result = vec![];
-        let mut mark_semi_from_input = |n: &ast::SemiNl| {
-            let Some(range) = n.range() else {
+        let mut mark_semi_from_input = |semi_nl: Option<&ast::SemiNl>| {
+            let Some(semi_nl) = semi_nl else {
+                return;
+            };
+            let Some(range) = semi_nl.range() else {
                 return;
             };
             if self.state.substr(range) == ";" {
@@ -270,10 +273,10 @@ impl<'source, 'ast> PrettyPrinter<'source, 'ast> {
 
             // If there is no and-or tail then we always use a newline.
             if !andors.is_empty() {
-                condition.map(&mut mark_semi_from_input);
+                mark_semi_from_input(condition);
                 // Mark all but last of the andor list.
                 for andor in andors.iter().take(andors.len() - 1) {
-                    mark_semi_from_input(andor.job.semi_nl.as_ref().unwrap());
+                    mark_semi_from_input(andor.job.semi_nl.as_ref());
                 }
             }
         }
@@ -290,7 +293,7 @@ impl<'source, 'ast> PrettyPrinter<'source, 'ast> {
                 .is_err()
             {
                 for job in &brace_statement.jobs {
-                    job.semi_nl.as_ref().map(&mut mark_semi_from_input);
+                    mark_semi_from_input(job.semi_nl.as_ref());
                 }
             }
         }

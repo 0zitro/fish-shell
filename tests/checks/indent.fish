@@ -711,3 +711,8 @@ printf 'if ; and x\n' | $fish_indent
 
 printf 'echo | # comment\n' | $fish_indent
 # CHECK: {{^}}echo | # comment
+
+# A malformed while and-or tail may lack a semicolon leaf for a body job.
+printf '&while false; and false& or -g\n' | $fish_indent >/dev/null
+echo $status
+# CHECK: 0
