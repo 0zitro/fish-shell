@@ -507,6 +507,18 @@ pub const fn char_offset(base: char, offset: u32) -> char {
     }
 }
 
+/// Encode one reserved codepoint's UTF-8 bytes through the PUA byte encoding.
+///
+/// Reserved codepoints cannot be stored as themselves in a [`WString`], so
+/// their bytes are encoded individually; `wcstring2bytes` reconstructs them.
+pub fn push_reserved_codepoint(output: &mut WString, c: char) {
+    debug_assert!(fish_reserved_codepoint(c));
+    let mut buffer = [0_u8; 4];
+    for byte in c.encode_utf8(&mut buffer).as_bytes() {
+        output.push(encode_byte_to_char(*byte));
+    }
+}
+
 /// Encodes the bytes in `input` into a [`WString`], encoding non-UTF-8 bytes into private-use-area
 /// code-points. Bytes which would be parsed into our reserved PUA range are encoded individually,
 /// to allow for correct round-tripping.
@@ -518,11 +530,9 @@ pub fn bytes2wcstring(mut input: &[u8]) -> WString {
     let mut result = WString::with_capacity(input.len());
 
     fn append_escaped_str(output: &mut WString, input: &str) {
-        for (i, c) in input.char_indices() {
+        for c in input.chars() {
             if fish_reserved_codepoint(c) {
-                for byte in &input.as_bytes()[i..i + c.len_utf8()] {
-                    output.push(encode_byte_to_char(*byte));
-                }
+                push_reserved_codepoint(output, c);
             } else {
                 output.push(c);
             }
@@ -954,6 +964,14 @@ impl WExt for wstr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_reserved_codepoints_round_trip() {
+        for codepoint in ['\u{F500}', '\u{F600}', '\u{FDD0}', '\u{FDEF}'] {
+            let bytes = codepoint.to_string().into_bytes();
+            assert_eq!(wcs2bytes(&bytes2wcstring(&bytes)), bytes);
+        }
+    }
 
     #[test]
     fn test_to_wstring() {
