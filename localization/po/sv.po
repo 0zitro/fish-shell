@@ -538,6 +538,9 @@ msgstr ""
 msgid "Division by zero"
 msgstr ""
 
+msgid "Dynamic variable reference must be exactly one variable reference"
+msgstr ""
+
 msgid "Edit command specific completions"
 msgstr "Redigera kommando-specifika kompletteringar"
 
@@ -1552,6 +1555,9 @@ msgid "array indices start at 1, not 0."
 msgstr ""
 
 msgid "autoloading"
+msgstr ""
+
+msgid "begin accepts at most two quoted options"
 msgstr ""
 
 msgid "builtin history delete --exact requires --case-sensitive"

@@ -11,17 +11,21 @@ use crate::{
         builtin_exists,
     },
     common::{get_program_name, valid_func_name, valid_var_name},
-    complete::CompletionList,
+    complete::{CompletionList, CompletionReceiver},
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
     exec::exec_job,
     expand::{
-        self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
+        self, ExpandFlags, ExpandResultCode, completion_to_source, expand_cmdsubst, expand_one,
+        expand_string, expand_to_command_and_args,
     },
     flog::flog,
     function,
-    io::{FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream},
+    io::{
+        FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream,
+        create_output_stream_for_fd,
+    },
     job_group::JobGroup,
     operation_context::OperationContext,
     parse_constants::{
@@ -46,7 +50,10 @@ use crate::{
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
     timer::push_timer,
-    tokenizer::{PipeOrRedir, TokenType, variable_assignment_equals_pos},
+    tokenizer::{
+        PipeOrRedir, Tok, TokFlags, TokenType, Tokenizer, TokenizerError,
+        variable_assignment_equals_pos,
+    },
     trace::{trace_if_enabled, trace_if_enabled_with_args},
     wildcard::wildcard_match,
 };
@@ -103,7 +110,7 @@ macro_rules! report_error_formatted {
         error.source_length = r.length();
         error.code = ParseErrorCode::Syntax; // hackish
         error.text = $text;
-        $self.report_errors($ctx, $status, &vec![error])
+        $self.report_errors($ctx, $status, std::slice::from_ref(&error))
     }};
 }
 
@@ -114,6 +121,72 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
         help_section!("language#shell-variable-and-function-names")
     )
     .cmd(command)
+}
+
+/// The captured source of a quoted `begin` body and its offset in the parsed
+/// source, so errors found in the body can be reported where they stand.
+struct BeginBody {
+    text: WString,
+    source_start: usize,
+}
+
+/// Tokenize a captured `begin` body, keeping comments.
+///
+/// The body was parsed as fish source before it reached the executor, so a
+/// tokenizer error here is a programmer error rather than input error.
+fn begin_body_tokens(text: &wstr) -> Vec<Tok> {
+    let flags = TokFlags {
+        show_comments: true,
+        ..Default::default()
+    };
+    let mut tokens = vec![];
+    for token in Tokenizer::new(text, flags) {
+        debug_assert!(
+            token.error == TokenizerError::None && token.type_ != TokenType::Error,
+            "captured begin body failed tokenization"
+        );
+        if token.type_ == TokenType::End {
+            continue;
+        }
+        tokens.push(token);
+    }
+    tokens
+}
+
+/// Extend an optional half-open extent by one emitted span.
+fn extend_extent(extent: &mut Option<(usize, usize)>, start: usize, end: usize) {
+    *extent = Some(match *extent {
+        Some((first, _)) => (first, end),
+        None => (start, end),
+    });
+}
+
+/// The first and one-past-last offsets a token list covers.
+fn token_extent(tokens: &[Tok]) -> Option<(usize, usize)> {
+    let mut extent = None;
+    for token in tokens {
+        extend_extent(
+            &mut extent,
+            token.offset as usize,
+            (token.offset + token.length) as usize,
+        );
+    }
+    extent
+}
+
+fn trim_begin_body(text: &wstr) -> &wstr {
+    let tokens = begin_body_tokens(text);
+    token_extent(&tokens).map_or_else(|| L!(""), |(start, end)| &text[start..end])
+}
+
+fn finish_internal_process_status(ctx: &mut OperationContext<'_>, status: c_int) {
+    ctx.parser().libdata_mut().status_count += 1;
+    ctx.parser().set_last_statuses(Statuses::just(status));
+}
+
+struct BeginSerializationError {
+    status: i32,
+    errors: ParseErrorList,
 }
 
 impl ExecutionContext {
@@ -221,7 +294,7 @@ impl ExecutionContext {
         &self,
         ctx: &mut OperationContext<'_>,
         status: c_int,
-        error_list: &ParseErrorList,
+        error_list: &[ParseError],
     ) -> EndExecutionReason {
         if !ctx.check_cancel() {
             if error_list.is_empty() {
@@ -891,8 +964,138 @@ impl ExecutionContext {
                 self.run_while_statement(ctx, wh, contents, associated_block)
             }
             BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
-            BlockStatementHeader::Begin(_bh) => self.run_begin_statement(ctx, contents),
+            BlockStatementHeader::Begin(bh) => match bh.quote.as_ref().map(|quote| quote.mode) {
+                None => self.run_begin_statement(ctx, contents),
+                Some(ast::BeginQuoteMode::EagerSubstitutions) => {
+                    self.run_eager_begin_statement(ctx, statement)
+                }
+                Some(ast::BeginQuoteMode::RawSource) => {
+                    self.run_raw_begin_statement(ctx, statement)
+                }
+            },
         }
+    }
+
+    fn begin_body_source(&self, statement: &ast::BlockStatement) -> Option<BeginBody> {
+        let range = statement.body_range()?;
+        Some(BeginBody {
+            text: self.pstree().src[range.start()..range.end()].to_owned(),
+            source_start: range.start(),
+        })
+    }
+
+    fn serialize_eager_word(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        word: &wstr,
+        source_start: usize,
+    ) -> Result<Vec<WString>, BeginSerializationError> {
+        let mut errors = ParseErrorList::new();
+        let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
+        let result = expand_cmdsubst(word.to_owned(), ctx, &mut receiver, &mut Some(&mut errors));
+        if result.failed() || !errors.is_empty() {
+            let status = if result.status != 0 {
+                result.status
+            } else {
+                STATUS_EXPAND_ERROR
+            };
+            debug_assert!(
+                !errors.is_empty(),
+                "a failed command-substitution expansion must record an error"
+            );
+            parse_error_offset_source_start(&mut errors, source_start);
+            return Err(BeginSerializationError { status, errors });
+        }
+
+        Ok(receiver
+            .take()
+            .into_iter()
+            .map(|completion| completion_to_source(&completion.completion))
+            .collect())
+    }
+
+    fn serialize_eager_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        body: &BeginBody,
+    ) -> Result<WString, BeginSerializationError> {
+        let tokens = begin_body_tokens(&body.text);
+        let mut out = WString::new();
+        let mut extent = None;
+        let mut cursor = 0;
+        for token in &tokens {
+            let offset = token.offset as usize;
+            let length = token.length as usize;
+            out.push_utfstr(&body.text[cursor..offset]);
+            if token.type_ == TokenType::String {
+                let end = offset + length;
+                let variants = self.serialize_eager_word(
+                    ctx,
+                    &body.text[offset..end],
+                    body.source_start + offset,
+                )?;
+                let start = out.len();
+                for (i, variant) in variants.iter().enumerate() {
+                    if i > 0 {
+                        out.push(' ');
+                    }
+                    out.push_utfstr(variant);
+                }
+                if !variants.is_empty() {
+                    extend_extent(&mut extent, start, out.len());
+                }
+            } else {
+                let start = out.len();
+                out.push_utfstr(&body.text[offset..offset + length]);
+                extend_extent(&mut extent, start, out.len());
+            }
+            cursor = offset + length;
+        }
+        out.push_utfstr(&body.text[cursor..]);
+        Ok(match extent {
+            Some((first, last)) => out[first..last].to_owned(),
+            None => WString::new(),
+        })
+    }
+
+    fn run_eager_begin_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        statement: &ast::BlockStatement,
+    ) -> EndExecutionReason {
+        let Some(body) = self.begin_body_source(statement) else {
+            return EndExecutionReason::Ok;
+        };
+        match self.serialize_eager_body(ctx, &body) {
+            Ok(serialized) => self.emit_begin_body(ctx, &serialized),
+            Err(error) => self.report_errors(ctx, error.status, &error.errors),
+        }
+    }
+
+    fn run_raw_begin_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        statement: &ast::BlockStatement,
+    ) -> EndExecutionReason {
+        let Some(body) = self.begin_body_source(statement) else {
+            return EndExecutionReason::Ok;
+        };
+        self.emit_begin_body(ctx, trim_begin_body(&body.text))
+    }
+
+    fn emit_begin_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        body: &wstr,
+    ) -> EndExecutionReason {
+        let mut out = create_output_stream_for_fd(STDOUT_FILENO, &self.block_io, false);
+        if !body.is_empty() {
+            out.append(body.chars());
+            out.append('\n');
+        }
+        let status = out.flush_and_check_error();
+        finish_internal_process_status(ctx, status);
+        EndExecutionReason::Ok
     }
 
     fn run_for_statement(
@@ -1329,8 +1532,7 @@ impl ExecutionContext {
         .err()
         .unwrap_or(STATUS_CMD_OK);
 
-        ctx.parser().libdata_mut().status_count += 1;
-        ctx.parser().set_last_statuses(Statuses::just(err_code));
+        finish_internal_process_status(ctx, err_code);
 
         let errtext = errs.contents();
         if !errtext.is_empty() {

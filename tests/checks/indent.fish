@@ -704,3 +704,40 @@ PATH=hello fish_indent --help
 printf '%s\n' '# comment \\' 'FOO= echo hi' | $fish_indent
 #CHECK: {{^}}# comment \
 #CHECK: {{^}}FOO= echo hi
+
+# Quoted begin options belong to the header and must survive reformatting; a
+# dropped option turns the block from a capture into a plain block.
+echo 'begin -q echo 1; end' | $fish_indent
+# CHECK: {{^}}begin -q
+# CHECK: {{^}}    echo 1
+# CHECK: {{^}}end
+
+echo 'begin -qq echo 1; end' | $fish_indent
+# CHECK: {{^}}begin -qq
+# CHECK: {{^}}    echo 1
+# CHECK: {{^}}end
+
+echo 'begin -q; echo 1; end' | $fish_indent
+# CHECK: {{^}}begin -q
+# CHECK: {{^}}    echo 1
+# CHECK: {{^}}end
+
+# A plain begin has no option leaf: its header stays bare.
+echo 'begin echo 1; end' | $fish_indent
+# CHECK: {{^}}begin
+# CHECK: {{^}}    echo 1
+# CHECK: {{^}}end
+
+# Reformatting is stable and preserves the selected mode.
+printf 'begin -q echo 1; end\n' | $fish_indent | $fish_indent --check
+echo $status
+# CHECK: 0
+
+# Evaluating the reformatted source emits the body instead of running it.
+set -l raw (printf 'begin -qq echo hi; end\n' | $fish_indent | string collect)
+eval "$raw"
+# CHECK: echo hi
+
+set -l eager (printf 'begin -q echo (printf hi); end\n' | $fish_indent | string collect)
+eval "$eager"
+# CHECK: echo hi

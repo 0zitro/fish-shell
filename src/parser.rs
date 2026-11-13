@@ -1145,7 +1145,7 @@ impl Parser {
         profile_items.clear();
     }
 
-    pub fn get_backtrace(&self, src: &wstr, errors: &ParseErrorList) -> WString {
+    pub fn get_backtrace(&self, src: &wstr, errors: &[ParseError]) -> WString {
         let Some(err) = errors.first() else {
             return WString::new();
         };

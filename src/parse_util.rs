@@ -10,18 +10,18 @@ use crate::{
     operation_context::OperationContext,
     parse_constants::{
         ERROR_BAD_VAR_CHAR1, ERROR_BRACKETED_VARIABLE_QUOTED1, ERROR_BRACKETED_VARIABLE1,
-        ERROR_NO_VAR_NAME, ERROR_NOT_ARGV_AT, ERROR_NOT_ARGV_COUNT, ERROR_NOT_ARGV_STAR,
-        ERROR_NOT_PID, ERROR_NOT_STATUS, INVALID_BREAK_ERR_MSG, INVALID_CONTINUE_ERR_MSG,
-        INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseIssue,
-        ParseKeyword, ParseTokenType, ParseTreeFlags, PipelinePosition, SourceRange,
-        StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
+        ERROR_MISMATCHED_PARENTHESIS, ERROR_NO_VAR_NAME, ERROR_NOT_ARGV_AT, ERROR_NOT_ARGV_COUNT,
+        ERROR_NOT_ARGV_STAR, ERROR_NOT_PID, ERROR_NOT_STATUS, INVALID_BREAK_ERR_MSG,
+        INVALID_CONTINUE_ERR_MSG, INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode,
+        ParseErrorList, ParseIssue, ParseKeyword, ParseTokenType, ParseTreeFlags, PipelinePosition,
+        SourceRange, StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
     },
     prelude::*,
     tokenizer::{Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end},
 };
 use fish_common::{UnescapeFlags, UnescapeStringStyle, help_section, unescape_string};
 use fish_feature_flags::{FeatureFlag, feature_test};
-use fish_wcstringutil::{count_newlines, truncate};
+use fish_wcstringutil::{count_newlines, count_preceding_backslashes, truncate};
 use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP,
     INTERNAL_SEPARATOR, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
@@ -1404,31 +1404,30 @@ pub fn detect_errors_in_argument(
     let mut checked_quoted = false;
 
     let mut do_loop = true;
+    // The quote state carries across calls: after a command substitution that
+    // closes a double-quoted region, the scan resumes inside that quote.
     let mut is_quoted = false;
     while do_loop {
-        let mut has_dollar = false;
-        match locate_cmdsubst_range(
-            arg_src,
-            &mut cursor,
-            false,
-            Some(&mut is_quoted),
-            Some(&mut has_dollar),
-        ) {
+        match locate_cmdsubst_range(arg_src, &mut cursor, false, Some(&mut is_quoted), None) {
             Err(()) => {
                 issue.error = true;
-                append_syntax_error!(out_errors, source_start, 1, "Mismatched parenthesis");
+                append_syntax_error!(
+                    out_errors,
+                    source_start,
+                    1,
+                    "%s",
+                    wgettext!(ERROR_MISMATCHED_PARENTHESIS)
+                );
                 return Err(issue);
             }
             Ok(None) => {
                 do_loop = false;
             }
             Ok(Some(cmdsub)) => {
-                issue.error |= check_subtoken(
-                    checked,
-                    cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 },
-                    checked_quoted,
-                    out_errors,
-                );
+                let opening = cmdsub.opening_paren_offset();
+                let skip_dollars = cmdsub_dollar_run(arg_src, opening);
+                issue.error |=
+                    check_subtoken(checked, opening - skip_dollars, checked_quoted, out_errors);
                 let mut subst_errors = ParseErrorList::new();
                 if let Err(e) = detect_parse_errors(
                     &arg_src[cmdsub.command_range()],
@@ -1556,8 +1555,77 @@ fn detect_errors_in_backgrounded_job(
     errored
 }
 
-/// Given a source buffer `buff_src` and decorated statement `dst` within it, return true if there
-/// is an error and false if not.
+/// Whether `input` ends inside a variable reference whose name the following
+/// source would extend.
+///
+/// Unescaping supplies the same treatment of escapes and line continuations
+/// that the variable stage sees.
+pub(crate) fn ends_in_open_variable_reference(input: &wstr) -> bool {
+    let Some(unescaped) = unescape_string(
+        input,
+        UnescapeStringStyle::Script(UnescapeFlags {
+            special: true,
+            incomplete: true,
+            ..Default::default()
+        }),
+    ) else {
+        return false;
+    };
+    let chars = unescaped.as_char_slice();
+    let mut start = chars.len();
+    while start > 0 && valid_var_name_char(chars[start - 1]) {
+        start -= 1;
+    }
+    start > 0 && matches!(chars[start - 1], VARIABLE_EXPAND | VARIABLE_EXPAND_SINGLE)
+}
+
+/// Return the first effective source character, skipping line continuations.
+pub(crate) fn first_source_char(input: &wstr) -> Option<char> {
+    unescape_string(
+        input,
+        UnescapeStringStyle::Script(UnescapeFlags {
+            special: true,
+            incomplete: true,
+            ..Default::default()
+        }),
+    )?
+    .chars()
+    .next()
+}
+
+/// Return how many unescaped `$` characters run immediately before the command
+/// substitution opening parenthesis at `opening`.
+///
+/// Every argument here is raw source: this runs before the variable stage
+/// replaces dollar signs with expansion sentinels, so a `$` preceded by an odd
+/// number of backslashes is a literal dollar and ends the run.
+pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
+    let chars = input.as_char_slice();
+    let mut start = opening;
+    while start > 0 {
+        if chars[start - 1] != '$' || count_preceding_backslashes(input, start - 1) % 2 == 1 {
+            break;
+        }
+        start -= 1;
+    }
+    opening - start
+}
+
+enum CommandSource<'a> {
+    Static(&'a wstr),
+    Dynamic,
+}
+
+fn command_source(com: &wstr) -> CommandSource<'_> {
+    let mut cursor = 0;
+    while let Ok(Some(cmdsub)) = locate_cmdsubst_range(com, &mut cursor, false, None, None) {
+        if cmdsub_dollar_run(com, cmdsub.opening_paren_offset()) >= 2 {
+            return CommandSource::Dynamic;
+        }
+    }
+    CommandSource::Static(com)
+}
+
 fn detect_errors_in_decorated_statement(
     buff_src: &wstr,
     traversal: &ast::Traversal,
@@ -1660,8 +1728,8 @@ fn detect_errors_in_decorated_statement(
         );
     }
 
-    let unexp_command = com;
-    if !unexp_command.is_empty() {
+    let source = command_source(com);
+    if let CommandSource::Static(unexp_command) = source {
         // Check that we can expand the command.
         // Make a new error list so we can fix the offset for just those, then append later.
         let mut new_errors = ParseErrorList::new();

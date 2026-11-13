@@ -12,9 +12,10 @@
 use crate::{
     flog::{flog, flogf},
     parse_constants::{
-        ERROR_BAD_COMMAND_ASSIGN_ERR_MSG, INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode,
-        ParseErrorList, ParseKeyword, ParseTokenType, ParseTreeFlags, SOURCE_OFFSET_INVALID,
-        SourceRange, StatementDecoration, token_type_user_presentable_description,
+        ERROR_BAD_COMMAND_ASSIGN_ERR_MSG, ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS,
+        INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
+        ParseTokenType, ParseTreeFlags, SOURCE_OFFSET_INVALID, SourceRange, StatementDecoration,
+        token_type_user_presentable_description,
     },
     parse_tree::ParseToken,
     prelude::*,
@@ -151,6 +152,7 @@ pub trait Node: Acceptor + AsNode + std::fmt::Debug {
             Kind::VariableAssignment(n) => Some(n),
             Kind::MaybeNewlines(n) => Some(n),
             Kind::Argument(n) => Some(n),
+            Kind::BeginQuote(n) => Some(n),
             _ => None,
         }
     }
@@ -279,6 +281,7 @@ pub enum Kind<'a> {
     WhileHeader(&'a WhileHeader),
     FunctionHeader(&'a FunctionHeader),
     BeginHeader(&'a BeginHeader),
+    BeginQuote(&'a BeginQuote),
     BlockStatement(&'a BlockStatement),
     BraceStatement(&'a BraceStatement),
     IfClause(&'a IfClause),
@@ -322,6 +325,7 @@ pub enum KindMut<'a> {
     WhileHeader(&'a mut WhileHeader),
     FunctionHeader(&'a mut FunctionHeader),
     BeginHeader(&'a mut BeginHeader),
+    BeginQuote(&'a mut BeginQuote),
     BlockStatement(&'a mut BlockStatement),
     BraceStatement(&'a mut BraceStatement),
     IfClause(&'a mut IfClause),
@@ -836,9 +840,38 @@ pub struct FunctionHeader {
     pub semi_nl: SemiNl,
 }
 
+/// The expansion mode selected by the number of quoted options in a `begin`
+/// header: one option evaluates command substitutions eagerly and leaves every
+/// other expansion for later; two options expand nothing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum BeginQuoteMode {
+    #[default]
+    EagerSubstitutions,
+    RawSource,
+}
+
+/// The literal quoted-option tokens written in a `begin` header.
+///
+/// A plain `begin` holds no `BeginQuote`: absence is the plain mode, so no leaf
+/// stands for options that were not written. A header that writes the tokens
+/// sources them as one contiguous range; a parse that cannot source leaves
+/// allocates no leaf.
+#[derive(Default, Debug, Node!, Leaf!)]
+pub struct BeginQuote {
+    range: Option<SourceRange>,
+    pub mode: BeginQuoteMode,
+}
+
+impl CheckParse for BeginQuote {
+    fn can_be_parsed(pop: &mut Populator<'_>) -> bool {
+        !pop.unsource_leaves() && pop.begin_quote_option_weight_at(0).is_some()
+    }
+}
+
 #[derive(Default, Debug, Node!, Acceptor!)]
 pub struct BeginHeader {
     pub kw_begin: KeywordBegin,
+    pub quote: Option<BeginQuote>,
     /// Note that 'begin' does NOT require a semi or nl afterwards.
     /// This is valid: begin echo hi; end
     pub semi_nl: Option<SemiNl>,
@@ -854,6 +887,25 @@ pub struct BlockStatement {
     pub end: KeywordEnd,
     /// Arguments and redirections associated with the block.
     pub args_or_redirs: ArgumentOrRedirectionList,
+}
+
+impl BlockStatement {
+    /// The source range between the header and the closing `end` keyword.
+    ///
+    /// This is the body source a block command consumes without executing its
+    /// jobs, including comments and framing separators.
+    pub fn body_range(&self) -> Option<SourceRange> {
+        let BlockStatementHeader::Begin(header) = &self.header else {
+            return None;
+        };
+        let start = header
+            .quote
+            .as_ref()
+            .and_then(|quote| quote.range())
+            .map_or_else(|| header.kw_begin.source_range().end(), |range| range.end());
+        let end = self.end.try_source_range()?;
+        Some(SourceRange::new(start, end.start() - start))
+    }
 }
 
 #[derive(Default, Debug, Node!, Acceptor!)]
@@ -1250,6 +1302,7 @@ pub fn ast_kind_to_string(k: Kind<'_>) -> &'static wstr {
         Kind::WhileHeader(_) => L!("while_header"),
         Kind::FunctionHeader(_) => L!("function_header"),
         Kind::BeginHeader(_) => L!("begin_header"),
+        Kind::BeginQuote(_) => L!("begin_quote"),
         Kind::BlockStatement(_) => L!("block_statement"),
         Kind::BraceStatement(_) => L!("brace_statement"),
         Kind::IfClause(_) => L!("if_clause"),
@@ -1803,7 +1856,8 @@ impl<'s> NodeVisitorMut for Populator<'s> {
             KM::ForHeader(node) => node.accept_mut(self),
             KM::WhileHeader(node) => node.accept_mut(self),
             KM::FunctionHeader(node) => node.accept_mut(self),
-            KM::BeginHeader(node) => node.accept_mut(self),
+            KM::BeginHeader(node) => return self.visit_begin_header(node),
+            KM::BeginQuote(node) => return self.visit_begin_quote(node),
             KM::BlockStatement(node) => node.accept_mut(self),
             KM::BraceStatement(node) => node.accept_mut(self),
             KM::IfClause(node) => node.accept_mut(self),
@@ -2623,6 +2677,64 @@ impl<'s> Populator<'s> {
             );
         }
     }
+    /// Return the number of quoted options the literal header token at `idx`
+    /// spells, or `None` when the token is not a quoted option.
+    ///
+    /// `--quoted` is one option, and `-q` followed by a run of `q` counts its
+    /// q's.
+    fn begin_quote_option_weight_at(&mut self, idx: usize) -> Option<usize> {
+        let token = *self.peek_token(idx);
+        if token.typ != ParseTokenType::String {
+            return None;
+        }
+        let start = token.source_start();
+        let text = &self.tokens.src[start..start + token.source_length()];
+        if text == L!("--quoted") {
+            return Some(1);
+        }
+        text.strip_prefix('-')
+            .filter(|qs| !qs.is_empty() && qs.chars().all(|c| c == 'q'))
+            .map(|qs| qs.len())
+    }
+
+    fn visit_begin_header(&mut self, node: &mut BeginHeader) -> VisitResult {
+        node.kw_begin = self.allocate_visit::<KeywordBegin>();
+        node.quote = self.try_parse::<BeginQuote>();
+        node.semi_nl = self.try_parse::<SemiNl>();
+        VisitResult::Continue(())
+    }
+
+    fn visit_begin_quote(&mut self, node: &mut BeginQuote) -> VisitResult {
+        let mut range: Option<SourceRange> = None;
+        let mut count = 0;
+        let mut too_many = None;
+        while let Some(weight) = self.begin_quote_option_weight_at(0) {
+            let token = self.consume_any_token();
+            let token_range = token.range();
+            range = Some(range.map_or(token_range, |range| range.combine(token_range)));
+            count += weight;
+            if count > 2 && too_many.is_none() {
+                too_many = Some(token);
+            }
+        }
+        if let Some(token) = too_many {
+            parse_error!(
+                self,
+                token,
+                ParseErrorCode::Generic,
+                "%s",
+                wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
+            );
+        }
+        node.mode = match count {
+            1 => BeginQuoteMode::EagerSubstitutions,
+            2.. => BeginQuoteMode::RawSource,
+            0 => unreachable!("a BeginQuote requires at least one option"),
+        };
+        *node.range_mut() = range;
+        VisitResult::Continue(())
+    }
+
     fn visit_block_statement_header(&mut self, node: &mut BlockStatementHeader) {
         *node = self.allocate_populate_block_header();
     }

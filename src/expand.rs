@@ -11,14 +11,21 @@ use crate::{
         STATUS_INVALID_ARGS, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
         STATUS_UNMATCHED_WILDCARD,
     },
-    common::valid_var_name_char,
+    common::{valid_var_name, valid_var_name_char},
     complete::{Completion, CompletionList, CompletionReceiver},
     env::{EnvVar, Environment},
     exec::exec_subshell_for_expand,
     history::{History, history_id},
     operation_context::OperationContext,
-    parse_constants::{ParseError, ParseErrorCode, ParseErrorList, SOURCE_LOCATION_UNKNOWN},
-    parse_util::{expand_variable_error, locate_cmdsubst_range},
+    parse_constants::{
+        ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_MISMATCHED_PARENTHESIS, ERROR_SLICE_INVALID_INDEX,
+        ERROR_SLICE_ZERO_INDEX, ParseError, ParseErrorCode, ParseErrorList,
+        SOURCE_LOCATION_UNKNOWN,
+    },
+    parse_util::{
+        cmdsub_dollar_run, ends_in_open_variable_reference, expand_variable_error,
+        first_source_char, locate_cmdsubst_range,
+    },
     path::path_apply_working_directory,
     prelude::*,
     wildcard::{WildcardResult, wildcard_expand_string, wildcard_has_internal},
@@ -33,8 +40,9 @@ use fish_util::wcsfilecmp_glob;
 use fish_wcstringutil::{join_strings, trim};
 use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP, BRACE_SPACE,
-    HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, SLICE_BEGIN, SLICE_END,
-    VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE, osstr2wcstring,
+    HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, QUOTED_BOUNDARY, SLICE_BEGIN,
+    SLICE_END, UNQUOTED_BOUNDARY, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
+    osstr2wcstring,
 };
 use nix::unistd::{User, getpid};
 
@@ -469,16 +477,24 @@ enum ParseSliceError {
     InvalidIndex,
 }
 
-/// Parse an array slicing specification Returns 0 on success. If a parse error occurs, returns the
-/// index of the bad token. Note that 0 can never be a bad index because the string always starts
-/// with [.
+enum SliceMode {
+    Extent,
+    Resolve(usize),
+}
+
+/// Parse the slice at the start of `input`, returning the number of characters
+/// it consumes and, in `SliceMode::Resolve`, the indices it selects against that
+/// array size.
 fn parse_slice(
     input: &wstr,
-    idx: &mut Vec<i64>,
-    array_size: usize,
+    mode: SliceMode,
     unescaped: bool,
-) -> Result<usize, (usize, ParseSliceError)> {
-    let size = i64::try_from(array_size).unwrap();
+) -> Result<(usize, Vec<i64>), (usize, ParseSliceError)> {
+    let size = match mode {
+        SliceMode::Extent => None,
+        SliceMode::Resolve(size) => Some(i64::try_from(size).unwrap()),
+    };
+    let mut idx = vec![];
     let mut pos = 1; // skip past the opening square bracket
     let end_char = if unescaped { SLICE_END } else { ']' };
 
@@ -523,7 +539,7 @@ fn parse_slice(
             }
         };
 
-        let mut i1 = if tmp > -1 { tmp } else { size + tmp + 1 };
+        let i1 = size.map(|size| if tmp > -1 { tmp } else { size + tmp + 1 });
         while input.char_at(pos) == INTERNAL_SEPARATOR {
             pos += 1;
         }
@@ -561,6 +577,10 @@ fn parse_slice(
                 }
             };
 
+            let Some(size) = size else {
+                continue;
+            };
+            let mut i1 = i1.unwrap();
             let mut i2 = if tmp1 > -1 { tmp1 } else { size + tmp1 + 1 };
             // Skip sequences that are entirely outside.
             // This means "17..18" expands to nothing if there are less than 17 elements.
@@ -587,10 +607,12 @@ fn parse_slice(
             continue;
         }
 
-        idx.push(i1);
+        if let Some(i1) = i1 {
+            idx.push(i1);
+        }
     }
 
-    Ok(pos)
+    Ok((pos, idx))
 }
 
 /// Expand all environment variables in the string *ptr.
@@ -709,11 +731,11 @@ fn expand_variables(
         }
         match parse_slice(
             &instr[slice_start..],
-            &mut var_idx_list,
-            effective_val_count,
+            SliceMode::Resolve(effective_val_count),
             true,
         ) {
-            Ok(offset) => {
+            Ok((offset, indices)) => {
+                var_idx_list = indices;
                 var_name_and_slice_stop = slice_start + offset;
             }
             Err((bad_pos, error)) => {
@@ -722,11 +744,17 @@ fn expand_variables(
                         append_syntax_error!(
                             errors,
                             slice_start + bad_pos,
-                            "array indices start at 1, not 0."
+                            "%s",
+                            wgettext!(ERROR_SLICE_ZERO_INDEX)
                         );
                     }
                     ParseSliceError::InvalidIndex => {
-                        append_syntax_error!(errors, slice_start + bad_pos, "Invalid index value");
+                        append_syntax_error!(
+                            errors,
+                            slice_start + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_INVALID_INDEX)
+                        );
                     }
                 }
                 return ExpandResult::make_error(STATUS_EXPAND_ERROR);
@@ -778,15 +806,7 @@ fn expand_variables(
             }
         } else {
             let all_var_items = var.as_ref().unwrap().as_list();
-            for item_index in var_idx_list {
-                // Check that we are within array bounds. If not, skip the element. Note:
-                // Negative indices (`echo $foo[-1]`) are already converted to positive ones
-                // here, So tmp < 1 means it's definitely not in.
-                // Note we are 1-based.
-                if item_index >= 1 && item_index <= all_var_items.len() {
-                    var_item_list.push(all_var_items[item_index - 1].clone());
-                }
-            }
+            var_item_list = select_slice(all_var_items, var_idx_list);
         }
     }
 
@@ -964,8 +984,81 @@ fn expand_braces(
     ExpandResult::ok()
 }
 
+/// Select 1-based indices from `items`, skipping out-of-range entries.
+fn select_slice<T: Clone, I>(items: &[T], indices: I) -> Vec<T>
+where
+    I: IntoIterator<Item = usize>,
+{
+    indices
+        .into_iter()
+        .filter_map(|index| items.get(index.checked_sub(1)?).cloned())
+        .collect()
+}
+
+/// Apply a slice to command-substitution output lines.
+///
+/// `lines` is replaced by the selected lines. Returns the number of characters
+/// consumed from `slice`, which must start at `[`.
+fn apply_cmdsubst_slice(
+    slice: &wstr,
+    lines: &mut Vec<WString>,
+) -> Result<usize, (usize, ParseSliceError)> {
+    let (offset, indices) = parse_slice(slice, SliceMode::Resolve(lines.len()), false)?;
+    *lines = select_slice(
+        lines,
+        indices
+            .into_iter()
+            .filter_map(|index| usize::try_from(index).ok()),
+    );
+    Ok(offset)
+}
+
+/// The number of characters the slice syntax at the start of `slice` consumes.
+///
+/// This is the grammar check without an array to resolve against.
+fn slice_consumed_len(slice: &wstr) -> Result<usize, (usize, ParseSliceError)> {
+    parse_slice(slice, SliceMode::Extent, false).map(|(offset, _)| offset)
+}
+
+fn escape_unquoted_cmdsubst(output: &wstr) -> WString {
+    escape_string(
+        output,
+        EscapeStringStyle::Script(EscapeFlags {
+            comma: true,
+            ..Default::default()
+        }),
+    )
+}
+
+fn escape_quoted_cmdsubst(lines: &[WString]) -> WString {
+    let mut joined = WString::new();
+    for line in lines {
+        joined.push_utfstr(&escape_string_for_double_quotes(line));
+        joined.push('\n');
+    }
+    let mut len = joined.len();
+    while len > 0 && joined.as_char_slice()[len - 1] == '\n' {
+        len -= 1;
+    }
+    joined.truncate(len);
+    joined
+}
+
+fn dynamic_variable_reference(operand: &wstr) -> bool {
+    let Some(bracket) = operand.chars().position(|c| c == '[') else {
+        return valid_var_name(operand);
+    };
+    if !valid_var_name(&operand[..bracket]) {
+        return false;
+    }
+    match slice_consumed_len(&operand[bracket..]) {
+        Ok(offset) => bracket + offset == operand.len(),
+        Err(_) => false,
+    }
+}
+
 /// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
-/// `out_list`, or any errors into `errors`. Return an expand result.
+/// `out`, or any errors into `errors`. Return an expand result.
 pub fn expand_cmdsubst(
     input: WString,
     ctx: &mut OperationContext,
@@ -983,7 +1076,12 @@ pub fn expand_cmdsubst(
         Some(&mut has_dollar),
     ) {
         Err(()) => {
-            append_syntax_error!(errors, SOURCE_LOCATION_UNKNOWN, "Mismatched parenthesis");
+            append_syntax_error!(
+                errors,
+                SOURCE_LOCATION_UNKNOWN,
+                "%s",
+                wgettext!(ERROR_MISMATCHED_PARENTHESIS)
+            );
             return ExpandResult::make_error(STATUS_EXPAND_ERROR);
         }
         Ok(None) => {
@@ -1053,45 +1151,66 @@ pub fn expand_cmdsubst(
         return ExpandResult::make_error(subshell_status);
     }
 
+    let opening = cmdsub.opening_paren_offset();
+    let dollar_count = cmdsub_dollar_run(&input, opening);
+    if dollar_count >= 2 {
+        let valid = sub_res.len() == 1 && dynamic_variable_reference(&sub_res[0]);
+        if !valid {
+            append_syntax_error!(
+                errors,
+                opening,
+                "%s",
+                wgettext!(ERROR_DYNAMIC_VARIABLE_REFERENCE)
+            );
+            return ExpandResult::make_error(STATUS_EXPAND_ERROR);
+        }
+        let mut result = input[..opening - dollar_count].to_owned();
+        for _ in 1..dollar_count {
+            result.push('$');
+        }
+        result.push_utfstr(&sub_res[0]);
+        // The produced operand is a complete variable reference; following source
+        // must not extend its name.
+        let tail = &input[cmdsub.end()..];
+        if first_source_char(tail).is_some_and(valid_var_name_char) {
+            result.push(if is_quoted {
+                QUOTED_BOUNDARY
+            } else {
+                UNQUOTED_BOUNDARY
+            });
+        }
+        result.push_utfstr(tail);
+        return expand_cmdsubst(result, ctx, out, errors);
+    }
+
     // Expand slices like (cat /var/words)[1]
     let mut tail_begin = cmdsub.end();
     if input.as_char_slice().get(tail_begin) == Some(&'[') {
-        let mut slice_idx = vec![];
         let slice_begin = tail_begin;
-        let slice_end =
-            match parse_slice(&input[slice_begin..], &mut slice_idx, sub_res.len(), false) {
-                Ok(offset) => slice_begin + offset,
-                Err((bad_pos, error)) => {
-                    match error {
-                        ParseSliceError::ZeroIndex => {
-                            append_syntax_error!(
-                                errors,
-                                slice_begin + bad_pos,
-                                "array indices start at 1, not 0."
-                            );
-                        }
-                        ParseSliceError::InvalidIndex => {
-                            append_syntax_error!(
-                                errors,
-                                slice_begin + bad_pos,
-                                "Invalid index value"
-                            );
-                        }
+        match apply_cmdsubst_slice(&input[slice_begin..], &mut sub_res) {
+            Ok(offset) => tail_begin = slice_begin + offset,
+            Err((bad_pos, error)) => {
+                match error {
+                    ParseSliceError::ZeroIndex => {
+                        append_syntax_error!(
+                            errors,
+                            slice_begin + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_ZERO_INDEX)
+                        );
                     }
-                    return ExpandResult::make_error(STATUS_EXPAND_ERROR);
+                    ParseSliceError::InvalidIndex => {
+                        append_syntax_error!(
+                            errors,
+                            slice_begin + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_INVALID_INDEX)
+                        );
+                    }
                 }
-            };
-
-        let mut sub_res2 = vec![];
-        tail_begin = slice_end;
-        for idx in slice_idx {
-            if idx as usize > sub_res.len() || idx < 1 {
-                continue;
+                return ExpandResult::make_error(STATUS_EXPAND_ERROR);
             }
-            // -1 to convert from 1-based slice index to 0-based vector index.
-            sub_res2.push(sub_res[idx as usize - 1].clone());
         }
-        sub_res = sub_res2;
     }
 
     // Recursively call ourselves to expand any remaining command substitutions. The result of this
@@ -1104,29 +1223,32 @@ pub fn expand_cmdsubst(
         tail.insert(0, '"');
     }
 
-    _ = expand_cmdsubst(tail, ctx, &mut tail_expand_recv, errors); // TODO: offset error locations
+    let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+    let tail_result = expand_cmdsubst(tail, ctx, &mut tail_expand_recv, errors);
+    if let Some(errors) = errors.as_mut() {
+        let shift = tail_begin.saturating_sub(usize::from(is_quoted));
+        for error in errors.iter_mut().skip(prior_errors) {
+            if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                error.source_start += shift;
+            }
+        }
+    }
+    if tail_result.failed() {
+        return tail_result;
+    }
     let tail_expand = tail_expand_recv.take();
 
     // Combine the result of the current command substitution with the result of the recursive tail
     // expansion.
 
+    let value_boundary = boundary_separator(
+        &input[..cmdsub.opening_paren_offset() - usize::from(has_dollar)],
+        is_quoted,
+    );
+
     if is_quoted {
         // Awkwardly reconstruct the command output.
-        let approx_size = sub_res.iter().map(|sub_item| sub_item.len() + 1).sum();
-        let mut sub_res_joined = WString::new();
-        sub_res_joined.reserve(approx_size);
-        for line in sub_res {
-            sub_res_joined.push_utfstr(&escape_string_for_double_quotes(&line));
-            sub_res_joined.push('\n');
-        }
-        // Mimic POSIX shells by stripping all trailing newlines.
-        if !sub_res_joined.is_empty() {
-            let mut i = sub_res_joined.len();
-            while i > 0 && sub_res_joined.as_char_slice()[i - 1] == '\n' {
-                i -= 1;
-            }
-            sub_res_joined.truncate(i);
-        }
+        let sub_res_joined = escape_quoted_cmdsubst(&sub_res);
         // Instead of performing cartesian product expansion, we directly insert the command
         // substitution output into the current expansion results.
         for tail_item in tail_expand {
@@ -1141,7 +1263,7 @@ pub fn expand_cmdsubst(
             whole_item.push_utfstr(
                 &input[..cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 }],
             );
-            whole_item.push(INTERNAL_SEPARATOR);
+            whole_item.push(value_boundary);
             whole_item.push_utfstr(&sub_res_joined);
             whole_item.push(INTERNAL_SEPARATOR);
             whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
@@ -1154,13 +1276,7 @@ pub fn expand_cmdsubst(
     }
 
     for sub_item in sub_res {
-        let sub_item2 = escape_string(
-            &sub_item,
-            EscapeStringStyle::Script(EscapeFlags {
-                comma: true,
-                ..Default::default()
-            }),
-        );
+        let sub_item2 = escape_unquoted_cmdsubst(&sub_item);
         for tail_item in &*tail_expand {
             let mut whole_item = WString::new();
             whole_item.reserve(
@@ -1173,7 +1289,7 @@ pub fn expand_cmdsubst(
             whole_item.push_utfstr(
                 &input[..cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 }],
             );
-            whole_item.push(INTERNAL_SEPARATOR);
+            whole_item.push(value_boundary);
             whole_item.push_utfstr(&sub_item2);
             whole_item.push(INTERNAL_SEPARATOR);
             whole_item.push_utfstr(&tail_item.completion);
@@ -1243,11 +1359,44 @@ fn expand_percent_self(input: &mut WString) {
     }
 }
 
+/// The separator that preserves a source value boundary at `source`.
+fn boundary_separator(source: &wstr, is_quoted: bool) -> char {
+    if !ends_in_open_variable_reference(source) {
+        INTERNAL_SEPARATOR
+    } else if is_quoted {
+        QUOTED_BOUNDARY
+    } else {
+        UNQUOTED_BOUNDARY
+    }
+}
+
+/// Remove every expansion-boundary marker.
+fn remove_internal_separators(s: &mut WString) {
+    s.retain(|c| !matches!(c, INTERNAL_SEPARATOR | QUOTED_BOUNDARY | UNQUOTED_BOUNDARY));
+}
+
+/// Render one eager-expansion completion as fish source.
+///
+/// `expand_cmdsubst` marks every substituted value boundary; the capture path
+/// turns the boundaries that need a source quote into `""` or `''` and drops
+/// the rest.
+pub(crate) fn completion_to_source(completion: &wstr) -> WString {
+    let mut source = WString::with_capacity(completion.len());
+    for c in completion.chars() {
+        match c {
+            QUOTED_BOUNDARY => source.push_utfstr(L!("\"\"")),
+            UNQUOTED_BOUNDARY => source.push_utfstr(L!("''")),
+            INTERNAL_SEPARATOR => {}
+            _ => source.push(c),
+        }
+    }
+    source
+}
+
 /// Remove any internal separators. Also optionally convert wildcard characters to regular
 /// equivalents. This is done to support skip_wildcards.
 fn remove_internal_separator(s: &mut WString, conv: bool) {
-    // Remove all instances of INTERNAL_SEPARATOR.
-    s.retain(|c| c != INTERNAL_SEPARATOR);
+    remove_internal_separators(s);
 
     // If conv is true, replace all instances of ANY_STRING with '*',
     // ANY_STRING_RECURSIVE with '*'.

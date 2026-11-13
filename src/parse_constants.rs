@@ -518,6 +518,26 @@ localizable_consts!(
     pub ERROR_NOT_PID
     "$$ is not the pid. In fish, please use $fish_pid."
 
+    /// Error issued when begin has too many quoted options.
+    pub ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS
+    "begin accepts at most two quoted options"
+
+    /// Error issued when a dynamic variable reference is malformed.
+    pub ERROR_DYNAMIC_VARIABLE_REFERENCE
+    "Dynamic variable reference must be exactly one variable reference"
+
+    /// Error issued for mismatched command-substitution parentheses.
+    pub ERROR_MISMATCHED_PARENTHESIS
+    "Mismatched parenthesis"
+
+    /// Error issued for a zero slice index.
+    pub ERROR_SLICE_ZERO_INDEX
+    "array indices start at 1, not 0."
+
+    /// Error issued for an invalid slice index.
+    pub ERROR_SLICE_INVALID_INDEX
+    "Invalid index value"
+
     /// Error issued on $#.
     pub ERROR_NOT_ARGV_COUNT
     "$# is not supported. In fish, please use 'count $argv'."
