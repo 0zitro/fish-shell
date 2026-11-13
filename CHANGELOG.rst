@@ -31,6 +31,7 @@ Regression fixes:
 Other improvements
 ------------------
 - Building with CMake now records the version it embeds as a build input, so ``fish --version`` no longer keeps a revision from before a checkout when Cargo considers the sources unchanged.
+- Version generation now considers only tags that spell a release version and builds the version from the commit count and abbreviated commit, so a tag used for another purpose cannot change the shape of ``fish --version``.
 
 fish 4.9.3 (released September 08, 2026)
 ========================================

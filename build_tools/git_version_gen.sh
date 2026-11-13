@@ -9,13 +9,37 @@ FISH_BASE_DIR="$( cd "$( dirname "$( dirname "$0" )" )" && pwd )"
 version=$(
     awk <"$FISH_BASE_DIR/Cargo.toml" -F'"' '$1 == "version = " { print $2 }'
 )
-if git_version=$(
+
+# The version names the commit.  `git describe` spells the tag it picked, and a
+# tag outside the release scheme would put its name into the version, so only
+# tags that spell a release version are considered and the string is built from
+# the commit count and the abbreviated commit.
+if describe=$(
     GIT_CEILING_DIRECTORIES=$FISH_BASE_DIR/.. \
-        git -C "$FISH_BASE_DIR" describe --always --dirty 2>/dev/null); then
-    if [ "$git_version" = "${git_version#"$version"}" ]; then
-        version=$version-g$git_version
+        git -C "$FISH_BASE_DIR" describe --always --long --dirty \
+            --match '[0-9]*.[0-9]*.[0-9]*' 2>/dev/null); then
+    dirty=
+    case "$describe" in
+        *-dirty)
+            dirty=-dirty
+            describe=${describe%-dirty}
+            ;;
+    esac
+
+    hash=${describe##*-g}
+    if [ "$hash" = "$describe" ]; then
+        # No tag matched, so describe printed the abbreviated commit.
+        version=$version-g$hash$dirty
     else
-        version=$git_version
+        rest=${describe%-g"$hash"}
+        count=${rest##*-}
+        tag=${rest%-"$count"}
+        if [ "$tag" = "$version" ] && [ "$count" = 0 ] && [ -z "$dirty" ]; then
+            # The commit is the release tag itself.
+            :
+        else
+            version=$version-$count-g$hash$dirty
+        fi
     fi
 fi
 
