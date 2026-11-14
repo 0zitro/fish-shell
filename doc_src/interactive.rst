@@ -146,6 +146,13 @@ Variable                                              Meaning
 .. envvar:: fish_color_comment                        comments like '# important'
 .. envvar:: fish_color_selection                      selected text in vi visual mode
 .. envvar:: fish_color_operator                       parameter expansion operators like ``*`` and ``~``
+.. envvar:: fish_color_operator_glob                  ``*``, and ``?`` where a question mark globs
+.. envvar:: fish_color_operator_brace                 the ``{``, ``}`` and ``,`` of a brace expansion
+.. envvar:: fish_color_operator_parenthesis           ``(`` and ``)``
+.. envvar:: fish_color_operator_tilde                 ``~`` at the start of a word
+.. envvar:: fish_color_operator_dollar                the ``$`` of ``$(command)``
+.. envvar:: fish_color_operator_logical               ``&&`` and ``||``
+.. envvar:: fish_color_operator_assignment            the ``=`` that separates a name from its value
 .. envvar:: fish_color_escape                         character escapes like ``\n`` and ``\x70``
 .. envvar:: fish_color_escape_unicode                 a ``\u``, ``\U``, ``\x`` or ``\X`` escape
 .. envvar:: fish_color_escape_octal                   a ``\`` and the octal digits after it
