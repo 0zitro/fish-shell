@@ -132,6 +132,25 @@ Variable                                              Meaning
 .. envvar:: fish_color_builtin                        builtin commands like cd and set - this falls back on the command color if unset
 .. envvar:: fish_color_function                       user-defined functions - this falls back on the command color if unset
 .. envvar:: fish_color_keyword                        keywords like if - this falls back on the command color if unset
+.. envvar:: fish_color_keyword_begin                  the ``begin`` keyword
+.. envvar:: fish_color_keyword_builtin                the ``builtin`` decorator
+.. envvar:: fish_color_keyword_case                   the ``case`` keyword
+.. envvar:: fish_color_keyword_command                the ``command`` decorator
+.. envvar:: fish_color_keyword_else                   the ``else`` keyword
+.. envvar:: fish_color_keyword_end                    the ``end`` keyword
+.. envvar:: fish_color_keyword_exec                   the ``exec`` decorator
+.. envvar:: fish_color_keyword_for                    the ``for`` keyword
+.. envvar:: fish_color_keyword_function               the ``function`` keyword
+.. envvar:: fish_color_keyword_if                     the ``if`` keyword
+.. envvar:: fish_color_keyword_in                     the ``in`` keyword
+.. envvar:: fish_color_keyword_switch                 the ``switch`` keyword
+.. envvar:: fish_color_keyword_while                  the ``while`` keyword
+.. envvar:: fish_color_keyword_modifier               ``and``, ``or``, ``not``, ``!`` and ``time``, as a group
+.. envvar:: fish_color_keyword_and                    the ``and`` keyword
+.. envvar:: fish_color_keyword_or                     the ``or`` keyword
+.. envvar:: fish_color_keyword_not                    the ``not`` keyword
+.. envvar:: fish_color_keyword_exclam                 the ``!`` keyword
+.. envvar:: fish_color_keyword_time                   the ``time`` decorator
 .. envvar:: fish_color_quote                          quoted text like ``"abc"``
 .. envvar:: fish_color_quote_single                   the text of a single-quoted run
 .. envvar:: fish_color_quote_single_delimiter         the ``'`` marks of a single-quoted run
