@@ -79,7 +79,7 @@ use crate::{
         print_exit_warning_for_jobs, proc_update_jiffies,
     },
     reader::word_motion::bigword_class,
-    screen::{CharOffset, Screen, is_dumb, screen_force_clear_to_end},
+    screen::{CharOffset, HighlightScreen, is_dumb, screen_force_clear_to_end},
     signal::{
         signal_check_cancel, signal_clear_cancel, signal_reset_handlers, signal_set_handlers,
         signal_set_handlers_once,
@@ -694,7 +694,7 @@ pub struct ReaderData {
     flash_autosuggestion: bool,
 
     /// The representation of the current screen contents.
-    screen: Screen,
+    screen: HighlightScreen,
 
     /// Data associated with input events.
     /// This is made public so that InputEventQueuer can be implemented on us.
@@ -1399,7 +1399,7 @@ impl ReaderData {
             first_prompt: true,
             last_flash: Default::default(),
             flash_autosuggestion: false,
-            screen: Screen::default(),
+            screen: HighlightScreen::default(),
             input_data,
             queued_repaint: false,
             history,

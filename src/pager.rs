@@ -6,7 +6,9 @@ use crate::{
     highlight::{HighlightClassification, highlight_shell},
     operation_context::OperationContext,
     prelude::*,
-    screen::{CharOffset, Line, ScreenData, wcswidth_rendered, wcwidth_rendered},
+    screen::{
+        CharOffset, HighlightLine, HighlightScreenContent, wcswidth_rendered, wcwidth_rendered,
+    },
     termsize::Termsize,
 };
 use fish_common::{EscapeFlags, EscapeStringStyle, escape_string};
@@ -68,7 +70,7 @@ pub struct PageRendering {
     pub row_start: usize,
     pub row_end: usize,
     pub selected_completion_idx: Option<usize>,
-    pub screen_data: ScreenData,
+    pub screen_data: HighlightScreenContent,
 
     pub remaining_to_disclose: usize,
 
@@ -516,9 +518,9 @@ impl Pager {
         col: Column,
         secondary: bool,
         selected: bool,
-    ) -> Line {
+    ) -> HighlightLine {
         let mut comp_width;
-        let mut line_data = Line::new();
+        let mut line_data = HighlightLine::new();
 
         if c.preferred_width() <= col.width {
             // The entry fits, we give it as much space as it wants.
@@ -1177,7 +1179,7 @@ fn print_max_impl(
     classification_of_character: impl Fn(usize) -> HighlightClassification,
     max: usize,
     has_more: bool,
-    line: &mut Line,
+    line: &mut HighlightLine,
 ) -> usize {
     let mut chars = chars.into_iter().peekable();
     let mut remaining = max;
@@ -1215,7 +1217,7 @@ fn print_max(
     classification: HighlightClassification,
     max: usize,
     has_more: bool,
-    line: &mut Line,
+    line: &mut HighlightLine,
 ) -> usize {
     print_max_impl(
         offset_in_cmdline,
