@@ -28,7 +28,7 @@ use crate::{
 };
 use fish_color::Color;
 use fish_feature_flags::{FeatureFlag, feature_test};
-use fish_token_scope::{HighlightAttribute, TokenScopeId};
+use fish_token_scope::{EnclosingScopeSet, HighlightAttribute, TokenScopeId};
 use fish_wcstringutil::string_prefixes_string;
 use fish_widestring::{
     ASCII_MAX, EXPAND_RESERVED_BASE, EXPAND_RESERVED_END, L, PROCESS_EXPAND_SELF_STR, WExt as _,
@@ -666,6 +666,40 @@ fn option_shape(word: &wstr, options_allowed: bool) -> OptionShape {
     }
 }
 
+/// The enclosing set that holds this one construct scope.
+fn enclosing_of(scope: TokenScopeId) -> EnclosingScopeSet {
+    EnclosingScopeSet::default().with_scope(scope)
+}
+
+/// The enclosing set that holds both of these construct scopes.
+fn enclosing_of_both(first: TokenScopeId, second: TokenScopeId) -> EnclosingScopeSet {
+    enclosing_of(first).with_scope(second)
+}
+
+/// The enclosing set a block statement's body is inside, by the header that opens it.
+fn body_enclosing(
+    header: &BlockStatementHeader,
+    function_parameters: Option<&FunctionParameterList>,
+) -> EnclosingScopeSet {
+    match header {
+        BlockStatementHeader::Function(_) => {
+            let mut scopes = enclosing_of(TokenScopeId::META_FUNCTION);
+            if function_parameters.is_some_and(|parameters| parameters.whether_no_scope_shadowing())
+            {
+                scopes = scopes.with_scope(TokenScopeId::META_FUNCTION_NO_SHADOWING);
+            }
+            scopes
+        }
+        BlockStatementHeader::Begin(_) => enclosing_of(TokenScopeId::META_BLOCK),
+        BlockStatementHeader::For(_) => {
+            enclosing_of_both(TokenScopeId::META_LOOP, TokenScopeId::META_LOOP_FOR)
+        }
+        BlockStatementHeader::While(_) => {
+            enclosing_of_both(TokenScopeId::META_LOOP, TokenScopeId::META_LOOP_WHILE)
+        }
+    }
+}
+
 /// The parse tree's visitor: every character is classified as the traversal
 /// reaches it.
 struct HighlightVisitor<'src, 'wd, 'ctx> {
@@ -687,6 +721,9 @@ struct HighlightVisitor<'src, 'wd, 'ctx> {
     /// The parameter lists of the function definitions this buffer is inside, innermost
     /// last.
     enclosing_function_parameters: Vec<FunctionParameterList>,
+    /// The enclosing scopes of the region the traversal is inside, inherited by the
+    /// buffers this visit descends into.
+    enclosing_scopes: EnclosingScopeSet,
     done: bool,
 }
 
@@ -698,6 +735,26 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         working_directory: &'wd wstr,
         can_do_io: bool,
     ) -> Self {
+        Self::inside(
+            buff,
+            cursor,
+            ctx,
+            working_directory,
+            can_do_io,
+            EnclosingScopeSet::default(),
+        )
+    }
+
+    /// A visitor for a region that lies inside `inherited`: the enclosing scopes of
+    /// the buffer this visit descends from become every character's.
+    fn inside(
+        buff: &'src wstr,
+        cursor: Option<usize>,
+        ctx: &'ctx mut OperationContext<'src>,
+        working_directory: &'wd wstr,
+        can_do_io: bool,
+        inherited: EnclosingScopeSet,
+    ) -> Self {
         let file_tester = FileTester::new(working_directory, ctx);
         Self {
             buff,
@@ -708,6 +765,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             classifications: vec![],
             pending_variable_names: vec![],
             enclosing_function_parameters: vec![],
+            enclosing_scopes: inherited,
             done: false,
         }
     }
@@ -777,7 +835,16 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
     /// The classification one scope denotes.
     fn classification_of(&self, scope: TokenScopeId) -> HighlightClassification {
-        HighlightClassification::from(scope)
+        HighlightClassification::from(scope).with_enclosing(self.enclosing_scopes)
+    }
+
+    /// Visit a region whose characters are inside `scopes` in addition to the ones the
+    /// traversal is already inside.
+    fn visit_inside(&mut self, scopes: EnclosingScopeSet, region: impl FnOnce(&mut Self)) {
+        let enclosing = self.enclosing_scopes;
+        self.enclosing_scopes = enclosing | scopes;
+        region(self);
+        self.enclosing_scopes = enclosing;
     }
 
     // Classify a command word.
@@ -867,12 +934,14 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 .cursor
                 .map(|c| c.wrapping_sub(arg_start + cmdsub.opening_paren_offset()));
             let cmdsub_contents = &arg_str[cmdsub.command_range()];
-            let mut cmdsub_visitor = HighlightVisitor::new(
+            let mut cmdsub_visitor = HighlightVisitor::inside(
                 cmdsub_contents,
                 arg_cursor,
                 self.file_tester.ctx,
                 self.working_directory,
                 self.whether_io_permitted(),
+                self.enclosing_scopes
+                    .with_scope(TokenScopeId::META_COMMAND_SUBSTITUTION),
             );
             let sub_classifications = cmdsub_visitor.classify();
 
@@ -1183,7 +1252,8 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
             self.classify_node(&fh.var_name, definition);
         }
-        self.visit(&block.jobs);
+        let body_scopes = body_enclosing(&block.header, self.enclosing_function_parameters.last());
+        self.visit_inside(body_scopes, |visitor| visitor.visit(&block.jobs));
         self.visit(&block.end);
         if has_parameters {
             self.enclosing_function_parameters.pop();
@@ -1195,7 +1265,9 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
     fn visit_brace_statement(&mut self, brace_statement: &BraceStatement) {
         self.visit(&brace_statement.left_brace);
         self.visit(&brace_statement.args_or_redirs);
-        self.visit(&brace_statement.jobs);
+        self.visit_inside(enclosing_of(TokenScopeId::META_BLOCK), |visitor| {
+            visitor.visit(&brace_statement.jobs);
+        });
         self.visit(&brace_statement.right_brace);
     }
 }
@@ -1278,6 +1350,43 @@ impl<'src, 'wd, 'ctx, 'a> NodeVisitor<'a> for HighlightVisitor<'src, 'wd, 'ctx> 
             }
             Kind::BlockStatement(node) => self.visit_block_statement(node),
             Kind::BraceStatement(node) => self.visit_brace_statement(node),
+            Kind::IfClause(node) => {
+                self.visit(&node.kw_if);
+                self.visit(&node.condition);
+                self.visit(&node.andor_tail);
+                self.visit_inside(enclosing_of(TokenScopeId::META_IF), |visitor| {
+                    visitor.visit(&node.body);
+                });
+            }
+            Kind::ElseClause(node) => {
+                self.visit(&node.kw_else);
+                if let Some(semi_nl) = &node.semi_nl {
+                    self.visit(semi_nl);
+                }
+                self.visit_inside(enclosing_of(TokenScopeId::META_IF), |visitor| {
+                    visitor.visit(&node.body);
+                });
+            }
+            Kind::CaseItem(node) => {
+                self.visit(&node.kw_case);
+                self.visit(&node.arguments);
+                self.visit(&node.semi_nl);
+                self.visit_inside(enclosing_of(TokenScopeId::META_CASE), |visitor| {
+                    visitor.visit(&node.body);
+                });
+            }
+            Kind::JobPipeline(node) if !node.continuation.is_empty() => {
+                self.visit_inside(enclosing_of(TokenScopeId::META_PIPELINE), |visitor| {
+                    visitor.visit_children(node);
+                });
+            }
+            Kind::JobConjunction(node)
+                if node.decorator.is_some() || !node.continuations.is_empty() =>
+            {
+                self.visit_inside(enclosing_of(TokenScopeId::META_AND_OR), |visitor| {
+                    visitor.visit_children(node);
+                });
+            }
             // Default implementation is to just visit children.
             _ => self.visit_children(node),
         }
@@ -1309,14 +1418,14 @@ fn statement_get_expanded_command(
 #[cfg(test)]
 mod tests {
     use super::highlight_shell;
-    use crate::env::{EnvMode, EnvSetMode};
+    use crate::env::{EnvMode, EnvSetMode, Environment};
     use crate::highlight::HighlightClassification;
     use crate::operation_context::{EXPANSION_LIMIT_BACKGROUND, OperationContext};
     use crate::prelude::*;
     use crate::tests::prelude::*;
     use fish_common::ScopeGuard;
     use fish_feature_flags::{FeatureFlag, with_overridden_feature};
-    use fish_token_scope::{HighlightAttribute, TokenScopeId};
+    use fish_token_scope::{EnclosingScopeSet, HighlightAttribute, TokenScopeId};
     use libc::PATH_MAX;
 
     // Helper to return a string whose length greatly exceeds PATH_MAX.
@@ -1408,8 +1517,19 @@ mod tests {
                         continue;
                     }
 
+                    // The component states the scope, the style fields and the attributes it
+                    // sees; the enclosing scopes a region adds are asserted by their own test.
                     assert_eq!(
-                        classifications[i], expected_classifications[i],
+                        (
+                            classifications[i].foreground(),
+                            classifications[i].background(),
+                            classifications[i].attributes(),
+                        ),
+                        (
+                            expected_classifications[i].foreground(),
+                            expected_classifications[i].background(),
+                            expected_classifications[i].attributes(),
+                        ),
                         "Failed at position {i}, char {c}, of {text:?}"
                     );
                 }
@@ -1954,5 +2074,93 @@ mod tests {
                 ("echo", fg(TokenScopeId::ERROR)),
             );
         });
+    }
+
+    /// The enclosing scopes the character that starts `needle` is inside.
+    fn enclosing_scopes_of(
+        vars: &dyn Environment,
+        text: &wstr,
+        needle: &wstr,
+    ) -> EnclosingScopeSet {
+        let mut classifications = vec![];
+        highlight_shell(
+            text,
+            &mut classifications,
+            &mut OperationContext::background(vars, EXPANSION_LIMIT_BACKGROUND),
+            true, /* io_ok */
+            Some(text.len()),
+        );
+
+        let offset = text
+            .as_char_slice()
+            .windows(needle.len())
+            .position(|window| window == needle.as_char_slice())
+            .expect("the needle is in the text");
+        classifications[offset].enclosing()
+    }
+
+    #[test]
+    #[serial]
+    fn test_enclosing_scopes() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        let only = |scope| EnclosingScopeSet::default().with_scope(scope);
+        let block = only(TokenScopeId::META_BLOCK);
+        let r#if = only(TokenScopeId::META_IF);
+        let case = only(TokenScopeId::META_CASE);
+        let function = only(TokenScopeId::META_FUNCTION);
+        let no_shadowing = function.with_scope(TokenScopeId::META_FUNCTION_NO_SHADOWING);
+        let loop_for = only(TokenScopeId::META_LOOP).with_scope(TokenScopeId::META_LOOP_FOR);
+        let loop_while = only(TokenScopeId::META_LOOP).with_scope(TokenScopeId::META_LOOP_WHILE);
+        let pipeline = only(TokenScopeId::META_PIPELINE);
+        let and_or = only(TokenScopeId::META_AND_OR);
+        let command_substitution = only(TokenScopeId::META_COMMAND_SUBSTITUTION);
+
+        let cases: &[(&wstr, &wstr, EnclosingScopeSet)] = &[
+            // The construct that owns the region marks it, not the keyword that opens it.
+            (
+                L!("begin echo a; end"),
+                L!("begin"),
+                EnclosingScopeSet::default(),
+            ),
+            (L!("begin echo a; end"), L!("echo"), block),
+            // A body nests inside what encloses it.
+            (
+                L!("function f; begin echo a; end; end"),
+                L!("echo"),
+                function | block,
+            ),
+            (
+                L!("if true; echo b; end"),
+                L!("true"),
+                EnclosingScopeSet::default(),
+            ),
+            (L!("if true; echo b; end"), L!("echo"), r#if),
+            (L!("switch x; case a; echo b; end"), L!("echo"), case),
+            (L!("for x in a; echo b; end"), L!("echo"), loop_for),
+            (L!("while true; echo b; end"), L!("echo"), loop_while),
+            (L!("function f; echo b; end"), L!("echo"), function),
+            (L!("function f -S; echo b; end"), L!("echo"), no_shadowing),
+            (L!("echo a | cat"), L!("cat"), pipeline),
+            (L!("true; and false"), L!("false"), and_or),
+            // An and-or list with no conjunction and a pipeline with no pipe own no region.
+            (
+                L!("true; and false"),
+                L!("true"),
+                EnclosingScopeSet::default(),
+            ),
+            (L!("echo a"), L!("echo"), EnclosingScopeSet::default()),
+            (L!("echo $(true)"), L!("true"), command_substitution),
+        ];
+
+        for (text, needle, expected) in cases {
+            assert_eq!(
+                enclosing_scopes_of(vars, text, needle),
+                *expected,
+                "the enclosing scopes of `{needle}` in `{text}`"
+            );
+        }
     }
 }
