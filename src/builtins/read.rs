@@ -2,9 +2,11 @@
 
 use super::prelude::*;
 use crate::{
-    builtins::{Error, set::set_export_mode},
+    builtins::Error,
     common::valid_var_name,
-    env::{EnvMode, EnvVar, Environment as _, READ_BYTE_LIMIT},
+    env::{
+        ENV_MODE_FLAGS, EnvMode, EnvModeField, EnvVar, Environment as _, READ_BYTE_LIMIT, flag_of,
+    },
     err_fmt, err_str,
     history::{HistoryId, MemoryHistoryId},
     input::{DecodeState, InvalidPolicy, decode_utf8},
@@ -64,18 +66,24 @@ impl Options {
     }
 }
 
-const SHORT_OPTIONS: &wstr = L!("ac:d:fghLln:p:sStuxzP:UR:L");
-const LONG_OPTIONS: &[WOption] = &[
+/// The definition flags `read` accepts: it declares no path status.
+const READ_MODE_FIELDS: &[EnvModeField] = &[
+    EnvModeField::Local,
+    EnvModeField::Function,
+    EnvModeField::Global,
+    EnvModeField::Universal,
+    EnvModeField::Export,
+    EnvModeField::Unexport,
+];
+
+/// The options `read` declares itself; the definition flags come from their own table.
+static OWN_OPTIONS: &[WOption] = &[
     wopt(L!("array"), ArgType::NoArgument, 'a'),
     wopt(L!("command"), ArgType::RequiredArgument, 'c'),
     wopt(L!("delimiter"), ArgType::RequiredArgument, 'd'),
-    wopt(L!("export"), ArgType::NoArgument, 'x'),
-    wopt(L!("function"), ArgType::NoArgument, 'f'),
-    wopt(L!("global"), ArgType::NoArgument, 'g'),
     wopt(L!("help"), ArgType::NoArgument, 'h'),
     wopt(L!("line"), ArgType::NoArgument, 'L'),
     wopt(L!("list"), ArgType::NoArgument, 'a'),
-    wopt(L!("local"), ArgType::NoArgument, 'l'),
     wopt(L!("nchars"), ArgType::RequiredArgument, 'n'),
     wopt(L!("null"), ArgType::NoArgument, 'z'),
     wopt(L!("prompt"), ArgType::RequiredArgument, 'p'),
@@ -85,9 +93,19 @@ const LONG_OPTIONS: &[WOption] = &[
     wopt(L!("silent"), ArgType::NoArgument, 's'),
     wopt(L!("tokenize"), ArgType::NoArgument, 't'),
     wopt(L!("tokenize-raw"), ArgType::NoArgument, '\x01'),
-    wopt(L!("unexport"), ArgType::NoArgument, 'u'),
-    wopt(L!("universal"), ArgType::NoArgument, 'U'),
 ];
+
+/// The `wgetopt` short-option string the given options spell.
+fn short_options(options: &[WOption]) -> WString {
+    let mut short = WString::new();
+    for option in options {
+        short.push(option.val);
+        if option.arg_type == ArgType::RequiredArgument {
+            short.push(':');
+        }
+    }
+    short
+}
 
 fn tokenize_flag(token_mode: TokenOutputMode) -> &'static wstr {
     match token_mode {
@@ -104,8 +122,19 @@ fn parse_cmd_opts(
 ) -> Result<(Options, usize), ErrorCode> {
     let cmd = args[0];
     let mut opts = Options::new();
-    let mut w = WGetopter::new(SHORT_OPTIONS, LONG_OPTIONS, args);
+    let mut long_options: Vec<WOption> = ENV_MODE_FLAGS
+        .iter()
+        .filter(|flag| READ_MODE_FIELDS.contains(&flag.sets))
+        .map(|flag| flag.option())
+        .collect();
+    long_options.extend_from_slice(OWN_OPTIONS);
+    let short_options = short_options(&long_options);
+    let mut w = WGetopter::new(&short_options, &long_options, args);
     while let Some(opt) = w.next_opt() {
+        if let Some(flag) = flag_of(opt) {
+            apply_definition_flag(parser, streams, cmd, &mut opts.set_mode.mode, flag.sets)?;
+            continue;
+        }
         match opt {
             'a' => {
                 opts.array = true;
@@ -116,20 +145,11 @@ fn parse_cmd_opts(
             'd' => {
                 opts.delimiter = Some(w.woptarg.unwrap().to_owned());
             }
-            'f' => {
-                opts.set_mode.mode.function = true;
-            }
-            'g' => {
-                opts.set_mode.mode.global = true;
-            }
             'h' => {
                 opts.print_help = true;
             }
             'L' => {
                 opts.one_line = true;
-            }
-            'l' => {
-                opts.set_mode.mode.local = true;
             }
             'n' => {
                 opts.nchars = match fish_wcstoi(w.woptarg.unwrap()) {
@@ -188,15 +208,6 @@ fn parse_cmd_opts(
                     }
                 }
                 opts.token_mode = Some(new_mode);
-            }
-            'U' => {
-                opts.set_mode.mode.universal = true;
-            }
-            'u' => {
-                set_export_mode(parser, streams, cmd, &mut opts.set_mode.mode.export, false)?;
-            }
-            'x' => {
-                set_export_mode(parser, streams, cmd, &mut opts.set_mode.mode.export, true)?;
             }
             'z' => {
                 opts.split_null = true;
@@ -468,12 +479,7 @@ fn validate_read_args(
     }
 
     let mode = opts.set_mode.mode;
-    if [mode.local, mode.function, mode.global, mode.universal]
-        .into_iter()
-        .filter(|selected| *selected)
-        .count()
-        > 1
-    {
+    if mode.whether_multiple_scopes() {
         err_str!(Error::MULTIPLE_SCOPES)
             .cmd(cmd)
             .full_trailer(parser)
