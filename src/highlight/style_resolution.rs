@@ -590,6 +590,80 @@ mod tests {
 
     #[test]
     #[serial]
+    fn the_sigil_and_its_dereferences_split_from_the_name() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_variable"), &[L!("green")]);
+
+        // echo $$x — both dollars resolve through the variable family first.
+        let classifications = colors.classify(L!("echo $$x"));
+        for (index, classification) in classifications.iter().enumerate().take(8).skip(5) {
+            assert_eq!(
+                colors.style_of(*classification).fg,
+                color(L!("green")),
+                "the reference at {index}"
+            );
+        }
+
+        // The sigil splits the dollars off the name.
+        colors.set(L!("fish_color_variable_sigil"), &[L!("brblue")]);
+        let classifications = colors.classify(L!("echo $$x"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(
+            style(5).fg,
+            color(L!("brblue")),
+            "a dereferencing dollar falls back on the sigil"
+        );
+        assert_eq!(style(6).fg, color(L!("brblue")), "the sigil");
+        assert_eq!(style(7).fg, color(L!("green")), "the name is untouched");
+
+        // The dereference splits only the dollars that dereference.
+        colors.set(L!("fish_color_variable_sigil_dereference"), &[L!("yellow")]);
+        let classifications = colors.classify(L!("echo $$x"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(5).fg, color(L!("yellow")));
+        assert_eq!(style(6).fg, color(L!("brblue")));
+    }
+
+    #[test]
+    #[serial]
+    fn a_parameter_resolves_against_the_definitions_header() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_variable"), &[L!("green")]);
+        colors.set(L!("fish_color_variable_parameter"), &[L!("brblue")]);
+
+        // function f -a x; echo $x $argv $y; end
+        let classifications = colors.classify(L!("function f -a x; echo $x $argv $y; end"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(23).fg, color(L!("brblue")), "the declared name");
+        assert_eq!(style(26).fg, color(L!("brblue")), "argv");
+        assert_eq!(
+            style(32).fg,
+            color(L!("green")),
+            "a name the header does not declare"
+        );
+
+        // Outside a definition's body the same name is no parameter.
+        let classifications = colors.classify(L!("echo $x"));
+        assert_eq!(colors.style_of(classifications[6]).fg, color(L!("green")));
+
+        // A nested definition resolves against the innermost list.
+        let classifications =
+            colors.classify(L!("function f -a x; function g -a y; echo $x $y; end; end"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(
+            style(40).fg,
+            color(L!("green")),
+            "the outer definition's name is not a parameter of the inner one"
+        );
+        assert_eq!(
+            style(43).fg,
+            color(L!("brblue")),
+            "the inner definition's name"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);
