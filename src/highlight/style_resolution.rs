@@ -269,6 +269,19 @@ mod tests {
         fn style_of(&self, classification: HighlightClassification) -> TextStyle {
             HighlightStyleResolver::new().style_of(classification, self.vars())
         }
+
+        /// The classification of every character of `text`.
+        fn classify(&self, text: &wstr) -> Vec<HighlightClassification> {
+            let mut classifications = vec![];
+            highlight_shell(
+                text,
+                &mut classifications,
+                &mut OperationContext::background(self.vars(), EXPANSION_LIMIT_BACKGROUND),
+                true, /* io_ok */
+                Some(text.len()),
+            );
+            classifications
+        }
     }
 
     /// The named colour a `set_color` word denotes.
@@ -440,6 +453,85 @@ mod tests {
             style.flags.underline_style(),
             ResettableStyle::On(UnderlineStyle::Single)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn a_quote_style_colours_its_run_and_its_delimiters() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_quote"), &[L!("yellow")]);
+        colors.set(L!("fish_color_quote_single"), &[L!("green")]);
+
+        // echo 'ab' "cd"
+        let classifications = colors.classify(L!("echo 'ab' \"cd\""));
+        let style = |index: usize| colors.style_of(classifications[index]);
+
+        assert_eq!(
+            style(5).fg,
+            color(L!("green")),
+            "the single run's opening mark"
+        );
+        assert_eq!(style(6).fg, color(L!("green")), "the single run's content");
+        assert_eq!(
+            style(8).fg,
+            color(L!("green")),
+            "the single run's closing mark"
+        );
+        assert_eq!(
+            style(10).fg,
+            color(L!("yellow")),
+            "the double run keeps the family's colour"
+        );
+
+        // Setting the delimiter stem alone splits the marks off the content.
+        colors.set(L!("fish_color_quote_single_delimiter"), &[L!("brred")]);
+        let classifications = colors.classify(L!("echo 'ab' \"cd\""));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(5).fg, color(L!("brred")), "the opening mark");
+        assert_eq!(style(6).fg, color(L!("green")), "the content is untouched");
+    }
+
+    #[test]
+    #[serial]
+    fn a_quoted_run_does_not_inherit_the_arguments_colour() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_param"), &[L!("red")]);
+
+        // echo x 'ab'
+        let classifications = colors.classify(L!("echo x 'ab'"));
+        let terminal_default = TextStyle::terminal_default();
+
+        assert_eq!(
+            colors.style_of(classifications[5]).fg,
+            color(L!("red")),
+            "the argument is coloured"
+        );
+        assert_eq!(
+            colors.style_of(classifications[8]).fg,
+            terminal_default.fg,
+            "the quoted content reaches the root without the argument family"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_escape_resolves_at_the_escape_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_quote_double"), &[L!("green")]);
+        colors.set(L!("fish_color_escape"), &[L!("brblue")]);
+
+        // echo "a\\b" — a backslash is escape only before the characters the quotes
+        // keep special, and `\\` is one of them.
+        let classifications = colors.classify(L!("echo \"a\\\\b\""));
+        let style = |index: usize| colors.style_of(classifications[index]);
+
+        assert_eq!(style(6).fg, color(L!("green")), "the quoted content");
+        assert_eq!(style(7).fg, color(L!("brblue")), "the backslash");
+        assert_eq!(style(8).fg, color(L!("brblue")), "the escaped character");
+
+        // An escape class is a refinement of the family, so it reaches it.
+        let classifications = colors.classify(L!("echo \\u1234"));
+        assert_eq!(colors.style_of(classifications[5]).fg, color(L!("brblue")));
     }
 
     #[test]
