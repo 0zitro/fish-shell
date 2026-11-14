@@ -9,6 +9,7 @@
 use crate::prelude::*;
 use crate::terminal::{self, get_color_support};
 use fish_color::Color;
+use fish_token_scope::{StyleField, StyleFieldSet};
 use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
 
 pub(crate) trait StyleSet {
@@ -63,7 +64,7 @@ pub(crate) enum UnderlineStyle {
 /// while the rest are a three-valued decision, because a style may state that an
 /// underline is off, and that is not the absence of a decision.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) struct TextStyleFlags {
+pub struct TextStyleFlags {
     pub(crate) bold: bool,
     pub(crate) underline_style: ResettableStyle<UnderlineStyle>,
     pub(crate) italics: ResettableStyle,
@@ -136,29 +137,29 @@ impl TextStyleFlags {
     }
 
     /// Returns whether the text style is bold.
-    pub const fn is_bold(self) -> bool {
+    pub(crate) const fn is_bold(self) -> bool {
         self.bold
     }
 
     #[cfg(test)]
-    pub const fn underline_style(self) -> ResettableStyle<UnderlineStyle> {
+    pub(crate) const fn underline_style(self) -> ResettableStyle<UnderlineStyle> {
         self.underline_style
     }
 
     /// Set the given underline style.
-    pub fn inject_underline(&mut self, underline: ResettableStyle<UnderlineStyle>) {
+    pub(crate) fn inject_underline(&mut self, underline: ResettableStyle<UnderlineStyle>) {
         self.underline_style = underline;
     }
 
     /// Returns whether the text style is dim.
-    pub const fn is_dim(self) -> bool {
+    pub(crate) const fn is_dim(self) -> bool {
         self.dim
     }
 }
 
 /// The style one span of text is drawn in: its three colors and its flags.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TextStyle {
+pub struct TextStyle {
     pub(crate) fg: Color,
     pub(crate) bg: Color,
     pub(crate) underline_color: Color,
@@ -166,7 +167,7 @@ pub(crate) struct TextStyle {
 }
 
 impl TextStyle {
-    pub const fn terminal_default() -> Self {
+    pub(crate) const fn terminal_default() -> Self {
         Self {
             fg: Color::Normal,
             bg: Color::Normal,
@@ -175,7 +176,7 @@ impl TextStyle {
         }
     }
 
-    pub const fn unknown() -> Self {
+    pub(crate) const fn unknown() -> Self {
         Self {
             fg: Color::None,
             bg: Color::None,
@@ -184,12 +185,76 @@ impl TextStyle {
         }
     }
 
-    pub fn new(fg: Color, bg: Color, underline_color: Color, flags: TextStyleFlags) -> Self {
+    pub(crate) fn new(fg: Color, bg: Color, underline_color: Color, flags: TextStyleFlags) -> Self {
         Self {
             fg,
             bg,
             underline_color,
             flags,
+        }
+    }
+
+    /// This style with `other`'s fields written over it.
+    ///
+    /// A field [`Color::None`] names is absent, so it does not speak for that field:
+    /// this is how a composition keeps the value a less specific variable gave it,
+    /// and how a channel contributes only the fields it composes.
+    pub(crate) fn union_prefer_right(self, other: Self) -> Self {
+        Self {
+            fg: prefer_right(self.fg, other.fg),
+            bg: prefer_right(self.bg, other.bg),
+            underline_color: prefer_right(self.underline_color, other.underline_color),
+            flags: self.flags.union_prefer_right(other.flags),
+        }
+    }
+
+    /// This style with every field it leaves absent taken from the terminal default.
+    pub(crate) fn with_terminal_defaults(self) -> Self {
+        let default = Self::terminal_default();
+        let or_default = |value: Color, fallback: Color| {
+            if value.is_none() { fallback } else { value }
+        };
+        Self {
+            fg: or_default(self.fg, default.fg),
+            bg: or_default(self.bg, default.bg),
+            underline_color: or_default(self.underline_color, default.underline_color),
+            // A flag group is one field: a flag the style names stands, and one it leaves
+            // unchanged takes the default.
+            flags: default.flags.union_prefer_right(self.flags),
+        }
+    }
+
+    /// This style with the fields in `fields` cleared.
+    pub(crate) fn without(self, fields: StyleFieldSet) -> Self {
+        Self {
+            fg: cleared(self.fg, fields.has_field(StyleField::Foreground)),
+            bg: cleared(self.bg, fields.has_field(StyleField::Background)),
+            underline_color: cleared(
+                self.underline_color,
+                fields.has_field(StyleField::UnderlineColor),
+            ),
+            flags: if fields.has_field(StyleField::Flags) {
+                TextStyleFlags::unknown()
+            } else {
+                self.flags
+            },
+        }
+    }
+
+    /// This style with every field outside `fields` cleared.
+    pub(crate) fn restrict(self, fields: StyleFieldSet) -> Self {
+        Self {
+            fg: cleared(self.fg, !fields.has_field(StyleField::Foreground)),
+            bg: cleared(self.bg, !fields.has_field(StyleField::Background)),
+            underline_color: cleared(
+                self.underline_color,
+                !fields.has_field(StyleField::UnderlineColor),
+            ),
+            flags: if fields.has_field(StyleField::Flags) {
+                self.flags
+            } else {
+                TextStyleFlags::unknown()
+            },
         }
     }
 
@@ -200,6 +265,16 @@ impl TextStyle {
             && !self.underline_color.is_none()
             && self.flags.all_set()
     }
+}
+
+/// `right` where it names a field, `left` where it does not.
+fn prefer_right(left: Color, right: Color) -> Color {
+    if right.is_none() { left } else { right }
+}
+
+/// The color, or `Color::None` where the field is cleared.
+fn cleared(color: Color, cleared: bool) -> Color {
+    if cleared { Color::None } else { color }
 }
 
 /// The style a color variable denotes: the fields it names, and nothing else.
@@ -228,6 +303,16 @@ impl Default for SpecifiedTextStyle {
 }
 
 impl SpecifiedTextStyle {
+    /// The fields the value names, absent where it names none.
+    pub(crate) fn named_fields(&self) -> TextStyle {
+        TextStyle {
+            fg: self.fg.unwrap_or(Color::None),
+            bg: self.bg.unwrap_or(Color::None),
+            underline_color: self.underline_color.unwrap_or(Color::None),
+            flags: self.flags,
+        }
+    }
+
     /// The style this value denotes, or none when it specifies nothing.
     ///
     /// Every field it leaves unspecified takes the terminal default.
@@ -471,6 +556,8 @@ pub(crate) fn parse_text_style_and_options<'argarray, 'args>(
 #[cfg(test)]
 mod tests {
     use super::{SpecifiedTextStyle, TextStyleFlags, parse_text_style};
+    use crate::env::{EnvVar, EnvVarFlags};
+    use crate::prelude::*;
     use fish_color::{Color, Color24};
 
     #[test]
@@ -489,5 +576,39 @@ mod tests {
                 reset: false
             }
         );
+    }
+
+    /// A value every field of which is named denotes a style none of whose fields
+    /// is absent, so a composition over it needs no terminal default.
+    #[test]
+    fn test_find_style_fully_specified() {
+        let assert_all_set = |values: Vec<WString>| {
+            let var = EnvVar::new_vec(values.clone(), EnvVarFlags::default());
+            let style = parse_text_style(var.as_list()).find_style();
+            assert!(
+                style.is_some_and(|style| style.all_set()),
+                "Underspecified result for {:?}\n => {:?}",
+                values,
+                style
+            );
+        };
+
+        assert_all_set(vec![L!("--reset").into()]);
+        assert_all_set(vec![L!("normal").into()]);
+        assert_all_set(vec![L!("green").into()]);
+        assert_all_set(vec![L!("--foreground=normal").into()]);
+        assert_all_set(vec![L!("--foreground=green").into()]);
+        assert_all_set(vec![L!("--background=normal").into()]);
+        assert_all_set(vec![L!("--background=green").into()]);
+        assert_all_set(vec![L!("--underline-color=normal").into()]);
+        assert_all_set(vec![L!("--underline-color=green").into()]);
+        assert_all_set(vec![L!("--italics").into()]);
+        assert_all_set(vec![L!("--italics=off").into()]);
+        assert_all_set(vec![L!("--reverse").into()]);
+        assert_all_set(vec![L!("--reverse=off").into()]);
+        assert_all_set(vec![L!("--strikethrough").into()]);
+        assert_all_set(vec![L!("--strikethrough=off").into()]);
+        assert_all_set(vec![L!("--underline").into()]);
+        assert_all_set(vec![L!("--underline=off").into()]);
     }
 }

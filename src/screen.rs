@@ -12,7 +12,7 @@ use crate::editable_line::line_at_cursor;
 use crate::env::Environment;
 use crate::flog::{flog, flogf};
 use crate::global_safety::RelaxedAtomicBool;
-use crate::highlight::{HighlightColorResolver, HighlightRole, HighlightSpec};
+use crate::highlight::{HighlightClassification, HighlightStyleResolver};
 use crate::key::ViewportPosition;
 use crate::pager::{PAGER_MIN_HEIGHT, PageRendering, Pager};
 use crate::prelude::*;
@@ -26,6 +26,7 @@ use crate::termsize::Termsize;
 use crate::wutil::fstat;
 use fish_common::write_loop;
 use fish_fallback::{fish_wcswidth_canonicalizing, fish_wcwidth};
+use fish_token_scope::HighlightAttribute;
 use fish_wcstringutil::{fish_wcwidth_visible, string_prefixes_string};
 use fish_widestring::{ELLIPSIS_CHAR, wcs2bytes};
 use libc::{STDERR_FILENO, STDOUT_FILENO};
@@ -50,7 +51,7 @@ pub enum CharOffset {
 
 #[derive(Clone, Default)]
 pub struct HighlightedChar {
-    highlight: HighlightSpec,
+    classification: HighlightClassification,
     character: char,
     // Logical offset within the command line.
     offset_in_cmdline: CharOffset,
@@ -59,7 +60,7 @@ pub struct HighlightedChar {
 /// A class representing a single line of a screen.
 #[derive(Clone, Default)]
 pub struct Line {
-    /// A pair of a character, and the color with which to draw it.
+    /// A pair of a character, and the classification with which to draw it.
     pub text: Vec<HighlightedChar>,
     pub is_soft_wrapped: bool,
     pub indentation: usize,
@@ -75,29 +76,29 @@ impl Line {
         self.text.clear();
     }
 
-    /// Append a single character `txt` to the line with color `c`.
+    /// Append a single character `character` to the line with this classification.
     pub fn append(
         &mut self,
         character: char,
-        highlight: HighlightSpec,
+        classification: HighlightClassification,
         offset_in_cmdline: CharOffset,
     ) {
         self.text.push(HighlightedChar {
-            highlight,
+            classification,
             character: rendered_character(character),
             offset_in_cmdline,
         });
     }
 
-    /// Append a nul-terminated string `txt` to the line, giving each character `color`.
+    /// Append a string to the line, giving every character this classification.
     pub fn append_str(
         &mut self,
         txt: &wstr,
-        highlight: HighlightSpec,
+        classification: HighlightClassification,
         offset_in_cmdline: CharOffset,
     ) {
         for c in txt.chars() {
-            self.append(c, highlight, offset_in_cmdline);
+            self.append(c, classification, offset_in_cmdline);
         }
     }
 
@@ -111,9 +112,9 @@ impl Line {
         self.text[idx].character
     }
 
-    /// Return the color at a char index.
-    pub fn color_at(&self, idx: usize) -> HighlightSpec {
-        self.text[idx].highlight
+    /// Return the classification at a char index.
+    pub fn classification_at(&self, idx: usize) -> HighlightClassification {
+        self.text[idx].classification
     }
 
     /// Return the logical offset corresponding to this cell
@@ -275,9 +276,8 @@ impl Screen {
     /// \param left_prompt the prompt to prepend to the command line
     /// \param right_prompt the right prompt, or NULL if none
     /// \param commandline the command line
-    /// \param explicit_len the number of characters of the "explicit" (non-autosuggestion) portion
-    /// of the command line \param colors the colors to use for the commanad line \param indent the
-    /// indent to use for the command line \param cursor_pos where the cursor is \param pager the
+    /// \param classifications the classification of every character of the command line \param indent
+    /// the indent to use for the command line \param cursor_pos where the cursor is \param pager the
     /// pager to render below the command line \param page_rendering to cache the current pager view
     #[allow(clippy::too_many_arguments)]
     pub fn write(
@@ -287,7 +287,7 @@ impl Screen {
         right_prompt: &wstr,
         commandline: &wstr,
         autosuggested_range: Range<usize>,
-        mut colors: Vec<HighlightSpec>,
+        mut classifications: Vec<HighlightClassification>,
         mut indent: Vec<i32>,
         cursor_pos: usize,
         pager_search_field_position: Option<usize>,
@@ -344,7 +344,7 @@ impl Screen {
             left_prompt,
             right_prompt,
             explicit_before_suggestion,
-            &mut colors,
+            &mut classifications,
             &mut indent,
             autosuggestion,
         );
@@ -372,7 +372,7 @@ impl Screen {
                 prompt_offset,
                 usize::MAX,
                 ' ',
-                HighlightSpec::new(),
+                HighlightClassification::default(),
                 0,
                 layout.left_prompt_space,
                 1,
@@ -440,7 +440,7 @@ impl Screen {
                     })
                 },
                 effective_commandline.as_char_slice()[i],
-                colors[i],
+                classifications[i],
                 usize::try_from(indent[i]).unwrap(),
                 commandline_indent,
                 wcwidth_rendered_min_0(effective_commandline.as_char_slice()[i]),
@@ -464,9 +464,9 @@ impl Screen {
                 && self.desired.cursor.y.checked_sub(1).is_some_and(|y| {
                     self.desired.line_datas[y].is_soft_wrapped
                         && self.desired.line_datas[y]
-                            .color_at(self.desired.line_datas[y].len() - 1)
-                            .foreground
-                            == HighlightRole::Autosuggestion
+                            .classification_at(self.desired.line_datas[y].len() - 1)
+                            .attributes()
+                            .has_attribute(HighlightAttribute::Autosuggestion)
                 })
             {
                 1
@@ -750,7 +750,7 @@ impl Screen {
         offset_in_cmdline: CharOffset,
         max_y: usize,
         b: char,
-        c: HighlightSpec,
+        c: HighlightClassification,
         indent: usize,
         prompt_width: usize,
         bwidth: usize,
@@ -776,7 +776,7 @@ impl Screen {
                     offset_in_cmdline,
                     max_y,
                     ' ',
-                    HighlightSpec::default(),
+                    HighlightClassification::default(),
                     indent,
                     prompt_width,
                     1,
@@ -1006,12 +1006,12 @@ impl Screen {
 
     /// Update the screen to match the desired output.
     fn update(&mut self, vars: &dyn Environment, left_prompt: &wstr, right_prompt: &wstr) {
-        // Helper function to set a resolved color, using the caching resolver.
-        let mut color_resolver = HighlightColorResolver::new();
-        let mut set_color = |zelf: &mut Self, c| {
+        // Helper function to set a resolved style, using the caching resolver.
+        let mut style_resolver = HighlightStyleResolver::new();
+        let mut set_style = |zelf: &mut Self, classification| {
             zelf.outp
                 .borrow_mut()
-                .set_text_style(color_resolver.resolve_spec(&c, vars));
+                .set_text_style(style_resolver.style_of(classification, vars));
         };
 
         let mut cached_layouts = LAYOUT_CACHE_SHARED.lock().unwrap();
@@ -1162,7 +1162,7 @@ impl Screen {
                     && (o_line(self, i).indentation > s_line(self, i).indentation
                         || previously_prompt_line)
                 {
-                    set_color(self, HighlightSpec::new());
+                    set_style(self, HighlightClassification::default());
                     self.r#move(start_pos, i);
                     self.write_command(if should_clear_screen_this_line {
                         ClearToEndOfScreen
@@ -1229,7 +1229,7 @@ impl Screen {
                             current_width + wcwidth_rendered_min_0(o_line(self, i).char_at(j)) >= sw
                         }))
                 {
-                    set_color(self, HighlightSpec::new());
+                    set_style(self, HighlightClassification::default());
                     self.r#move(current_width, i);
                     self.write_command(ClearToEndOfScreen);
                     if i == 0 && current_width == 0 {
@@ -1244,8 +1244,8 @@ impl Screen {
 
                 self.handle_soft_wrap(current_width, i);
                 self.r#move(current_width, i);
-                let color = o_line(self, i).color_at(j);
-                set_color(self, color);
+                let color = o_line(self, i).classification_at(j);
+                set_style(self, color);
                 let ch = o_line(self, i).char_at(j);
                 let width = wcwidth_rendered_min_0(ch);
                 self.with_buffered_output(|zelf| zelf.write_char(ch, width));
@@ -1278,7 +1278,7 @@ impl Screen {
             // We unset the color even if we don't clear the line.
             // This means that we switch background correctly on the next,
             // including our weird implicit bolding.
-            set_color(self, HighlightSpec::new());
+            set_style(self, HighlightClassification::default());
             if clear_remainder {
                 self.r#move(current_width, i);
                 self.write_command(ClearToEndOfLine);
@@ -1290,7 +1290,7 @@ impl Screen {
                 // This helps prevent staircase effects if fish and the terminal disagree.
                 self.r#move(0, i);
                 self.r#move(screen_width.unwrap() - right_prompt_width, i);
-                set_color(self, HighlightSpec::new());
+                set_style(self, HighlightClassification::default());
                 self.write_str(right_prompt);
                 self.actual.cursor.x += right_prompt_width;
 
@@ -1319,7 +1319,7 @@ impl Screen {
 
         // Clear remaining lines (if any) if we haven't cleared the screen.
         if !has_cleared_screen && need_clear_screen {
-            set_color(self, HighlightSpec::new());
+            set_style(self, HighlightClassification::default());
             for i in self.desired.line_count()..lines_with_stuff {
                 self.r#move(0, i);
                 self.write_command(ClearToEndOfLine);
@@ -1328,7 +1328,7 @@ impl Screen {
 
         let Cursor { x, y } = self.desired.cursor;
         self.r#move(x, y);
-        set_color(self, HighlightSpec::new());
+        set_style(self, HighlightClassification::default());
 
         // We have now synced our actual screen against our desired screen. Note that this is a big
         // assignment!
@@ -1779,8 +1779,8 @@ fn truncate_run(
 }
 
 /// Returns the length of the "shared prefix" of the two lines, which is the run of matching text
-/// and colors. If the prefix ends on a combining character, do not include the previous character
-/// in the prefix.
+/// and classifications. If the prefix ends on a combining character, do not include the previous
+/// character in the prefix.
 fn line_shared_prefix(a: &Line, b: &Line) -> usize {
     let mut idx = 0;
     let max = std::cmp::min(a.len(), b.len());
@@ -1788,8 +1788,8 @@ fn line_shared_prefix(a: &Line, b: &Line) -> usize {
         let ac = a.char_at(idx);
         let bc = b.char_at(idx);
 
-        // We're done if the text or colors are different.
-        if ac != bc || a.color_at(idx) != b.color_at(idx) {
+        // We're done if the text or classifications are different.
+        if ac != bc || a.classification_at(idx) != b.classification_at(idx) {
             if idx > 0 {
                 fn invisible(c: char) -> bool {
                     matches!(fish_wcwidth(c), None | Some(0))
@@ -1854,7 +1854,7 @@ fn compute_layout(
     left_untrunc_prompt: &wstr,
     right_untrunc_prompt: &wstr,
     commandline_before_suggestion: &wstr,
-    colors: &mut Vec<HighlightSpec>,
+    classifications: &mut Vec<HighlightClassification>,
     indent: &mut Vec<i32>,
     autosuggestion_str: &wstr,
 ) -> ScreenLayout {
@@ -2038,12 +2038,12 @@ fn compute_layout(
     let truncated_chars = total_autosuggestion_len.saturating_sub(displayed_len);
     if truncated_chars > 0 {
         let suggestion_end = commandline_before_suggestion.len() + displayed_len;
-        colors.drain(suggestion_end..suggestion_end + truncated_chars);
+        classifications.drain(suggestion_end..suggestion_end + truncated_chars);
         indent.drain(suggestion_end..suggestion_end + truncated_chars);
         if truncated_vertically && displayed_len > 0 {
             let suggestion_last = suggestion_end - 1;
             autosuggestion.push(ELLIPSIS_CHAR);
-            colors.insert(suggestion_end, colors[suggestion_last]);
+            classifications.insert(suggestion_end, classifications[suggestion_last]);
             indent.insert(suggestion_end, indent[suggestion_last]);
         }
     }
@@ -2077,7 +2077,7 @@ pub fn wcswidth_rendered(s: &wstr) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::highlight::HighlightSpec;
+    use crate::highlight::HighlightClassification;
     use crate::parse_util::compute_indents;
     use crate::prelude::*;
     use crate::screen::{
@@ -2346,7 +2346,8 @@ mod tests {
                 let full_commandline = L!($commandline_before_suggestion).to_owned()
                     + L!($autosuggestion_str)
                     + L!($commandline_after_suggestion);
-                let mut colors = vec![HighlightSpec::default(); full_commandline.len()];
+                let mut classifications =
+                    vec![HighlightClassification::default(); full_commandline.len()];
                 let mut indent = compute_indents(&full_commandline);
                 assert_eq!(
                     compute_layout(
@@ -2356,7 +2357,7 @@ mod tests {
                         L!($left_untrunc_prompt),
                         L!($right_untrunc_prompt),
                         L!($commandline_before_suggestion),
-                        &mut colors,
+                        &mut classifications,
                         &mut indent,
                         L!($autosuggestion_str),
                     ),

@@ -131,6 +131,7 @@ fish-gettext-extraction = { workspace = true, optional = true }
 fish-localization = { workspace = true, optional = true }
 fish-printf.workspace = true
 fish-tempfile.workspace = true
+fish-token-scope.workspace = true
 fish-util.workspace = true
 fish-wcstringutil.workspace = true
 fish-wgetopt.workspace = true
