@@ -38,7 +38,7 @@ The following options are available:
     Colorizes the output using ANSI escape sequences using the colors defined in the environment (such as :envvar:`fish_color_command`).
 
 **--html**
-    Outputs HTML, which supports syntax highlighting if the appropriate CSS is defined. The CSS class names are the same as the variable names, such as ``fish_color_command``.
+    Outputs HTML, which supports syntax highlighting if the appropriate CSS is defined. The CSS class of a piece of text is the name of the color variable that colors it: ``fish_color_param``, ``fish_color_end``. Every class is a variable name, so a stylesheet is written against the same names the configuration uses.
 
 **--dump-parse-tree**
     Dumps information about the parsed statements to standard error. This is likely to be of interest only to people working on the fish source code.

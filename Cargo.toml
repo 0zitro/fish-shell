@@ -34,6 +34,8 @@ fish-localization = { path = "crates/localization" }
 fish-localization-extraction = { path = "crates/localization-extraction" }
 fish-printf = { path = "crates/printf", features = ["widestring"] }
 fish-tempfile = { path = "crates/tempfile" }
+fish-token-scope = { path = "crates/token-scope" }
+fish-token-scope-macros = { path = "crates/token-scope-macros" }
 fish-util = { path = "crates/util" }
 fish-wcstringutil = { path = "crates/wcstringutil" }
 fish-wgetopt = { path = "crates/wgetopt" }
@@ -129,6 +131,7 @@ fish-gettext-extraction = { workspace = true, optional = true }
 fish-localization = { workspace = true, optional = true }
 fish-printf.workspace = true
 fish-tempfile.workspace = true
+fish-token-scope.workspace = true
 fish-util.workspace = true
 fish-wcstringutil.workspace = true
 fish-wgetopt.workspace = true

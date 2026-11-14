@@ -24,60 +24,56 @@ import subprocess
 # A fallback token type.
 DEFAULT = Text
 
-# Mapping from fish token types to Pygments types.
-ROLE_TO_TOKEN = {
-    "normal": Name.Variable,
-    "error": Generic.Error,
-    "command": Name.Function,
-    "keyword": Name.Function,
-    "statement_terminator": Punctuation,
-    "param": Name.Constant,
-    "option": Name.Constant,
+# Mapping from fish token-scope paths to Pygments types.
+#
+# Only a family needs to be mapped: a refinement inherits the token of the family it
+# names, so a scope the declaration adds under one of them needs no entry here.
+SCOPE_TO_TOKEN = {
+    "source": Name.Variable,
     "comment": Comment,
-    "match": DEFAULT,
-    "search_match": DEFAULT,
-    "operat": Operator,
-    "escape": String.Escape,
-    "quote": String.Single,  # note, may be changed to double dynamically
-    "redirection": Punctuation,  # ?
-    "autosuggestion": Other,  # in practice won't be generated
-    "selection": DEFAULT,
-    "pager_progress": DEFAULT,
-    "pager_background": DEFAULT,
-    "pager_prefix": DEFAULT,
-    "pager_completion": DEFAULT,
-    "pager_description": DEFAULT,
-    "pager_secondary_background": DEFAULT,
-    "pager_secondary_prefix": DEFAULT,
-    "pager_secondary_completion": DEFAULT,
-    "pager_secondary_description": DEFAULT,
-    "pager_selected_background": DEFAULT,
-    "pager_selected_prefix": DEFAULT,
-    "pager_selected_completion": DEFAULT,
-    "pager_selected_description": DEFAULT,
+    "keyword": Name.Function,
+    "command": Name.Function,
+    "argument": Name.Constant,
+    "string.quoted": String,
+    "string.quoted.single": String.Single,
+    "string.quoted.double": String.Double,
+    "string.escape": String.Escape,
+    "string.escape.invalid": Generic.Error,
+    "variable": Name.Variable,
+    "operator": Operator,
+    "redirection": Punctuation,
+    "terminator": Punctuation,
+    "invalid": Generic.Error,
 }
 
 
-def token_for_text_and_role(text, role):
-    """Return the pygments token for some input text and a fish role
+def token_for_scope(scope):
+    """Return the pygments token for a fish token-scope path.
 
-    This applies any special cases of ROLE_TO_TOKEN.
+    A scope that has no entry of its own is drawn as the family it is named under, and
+    a scope outside every mapped family is drawn as plain text.
     """
+    while scope:
+        token = SCOPE_TO_TOKEN.get(scope)
+        if token is not None:
+            return token
+        scope = scope.rpartition(".")[0]
+    return DEFAULT
+
+
+def token_for_text_and_scope(text, scope):
+    """Return the pygments token for some input text and a fish token-scope path."""
     if text.isspace():
-        # Here fish will return 'normal' or 'statement_terminator' for newline.
+        # Here fish will return the source scope or a terminator scope for newline.
         return Text.Whitespace
-    elif role == "quote":
-        # Check for single or double.
-        return String.Single if text.startswith("'") else String.Double
-    else:
-        return ROLE_TO_TOKEN[role]
+    return token_for_scope(scope)
 
 
 def tokenize_fish_command(code, offset):
     """Tokenize some fish code, offset in a parent string, by shelling
     out to fish_indent.
 
-    fish_indent will output a list of csv lines: start,end,type.
+    fish_indent will output a list of csv lines: start,end,path.
 
     This function returns a list of (start, tok, value) tuples, as
     Pygments expects.
@@ -91,10 +87,10 @@ def tokenize_fish_command(code, offset):
     stdout, _ = proc.communicate(code.encode("utf-8"))
     result = []
     for line in stdout.decode("utf-8").splitlines():
-        start, end, role = line.split(",")
+        start, end, scope = line.split(",")
         start, end = int(start), int(end)
         value = code[start:end]
-        tok = token_for_text_and_role(value, role)
+        tok = token_for_text_and_scope(value, scope)
         result.append((start + offset, tok, value))
     return result
 

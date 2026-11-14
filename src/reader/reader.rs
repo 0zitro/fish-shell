@@ -45,10 +45,7 @@ use crate::{
     flog::{flog, flogf},
     function,
     global_safety::RelaxedAtomicBool,
-    highlight::{
-        HighlightRole, HighlightSpec, autosuggest_validate_from_history, highlight_shell,
-        parse_text_face_for_highlight,
-    },
+    highlight::{HighlightClassification, autosuggest_validate_from_history, highlight_shell},
     history::{
         History, HistoryId, HistorySearch, MemoryHistoryId, PersistenceMode, SearchDirection,
         SearchFlags, SearchType, history_id, in_private_mode,
@@ -82,7 +79,7 @@ use crate::{
         print_exit_warning_for_jobs, proc_update_jiffies,
     },
     reader::word_motion::bigword_class,
-    screen::{CharOffset, Screen, is_dumb, screen_force_clear_to_end},
+    screen::{CharOffset, HighlightScreen, is_dumb, screen_force_clear_to_end},
     signal::{
         signal_check_cancel, signal_clear_cancel, signal_reset_handlers, signal_set_handlers,
         signal_set_handlers_once,
@@ -98,7 +95,7 @@ use crate::{
         },
     },
     termsize::{signal_safe_termsize_invalidate_tty, termsize_last, termsize_update},
-    text_face::{TextFace, parse_text_face},
+    text_style::{TextStyle, parse_text_style},
     threads::{assert_is_background_thread, assert_is_main_thread},
     tokenizer::{
         TokFlags, TokenType, Tokenizer, quote_end, tok_command, variable_assignment_equals_pos,
@@ -118,6 +115,7 @@ use fish_common::{
 };
 use fish_fallback::{fish_wcwidth, lowercase};
 use fish_feature_flags::FeatureFlag;
+use fish_token_scope::HighlightAttribute;
 use fish_util::perror;
 use fish_wcstringutil::{
     CaseSensitivity, IsPrefix, StringFuzzyMatch, count_preceding_backslashes, is_prefix,
@@ -428,7 +426,7 @@ pub fn reader_pop() {
             .screen
             .reset_abandoning_line(Some(termsize_last().width()));
     } else {
-        Outputter::stdoutput().borrow_mut().reset_text_face();
+        Outputter::stdoutput().borrow_mut().reset_text_style();
         *commandline_state_snapshot() = CommandlineState::new();
     }
 }
@@ -620,8 +618,8 @@ struct LayoutData {
     /// Text of the command line.
     text: WString,
 
-    /// The colors. This has the same length as 'text'.
-    colors: Vec<HighlightSpec>,
+    /// The classifications. This has the same length as 'text'.
+    classifications: Vec<HighlightClassification>,
 
     /// Position of the cursor in the command line.
     position: usize,
@@ -696,7 +694,7 @@ pub struct ReaderData {
     flash_autosuggestion: bool,
 
     /// The representation of the current screen contents.
-    screen: Screen,
+    screen: HighlightScreen,
 
     /// Data associated with input events.
     /// This is made public so that InputEventQueuer can be implemented on us.
@@ -1401,7 +1399,7 @@ impl ReaderData {
             first_prompt: true,
             last_flash: Default::default(),
             flash_autosuggestion: false,
-            screen: Screen::default(),
+            screen: HighlightScreen::default(),
             input_data,
             queued_repaint: false,
             history,
@@ -1743,9 +1741,9 @@ impl<'a> Reader<'a> {
         self.save_screen_state();
     }
 
-    /// Return true if the command line has changed and repainting is needed. If `colors` is not
-    /// null, then also return true if the colors have changed.
-    fn is_repaint_needed(&self, mcolors: Option<&[HighlightSpec]>) -> bool {
+    /// Return true if the command line has changed and repainting is needed. If `classifications`
+    /// is not null, then also return true if the classifications have changed.
+    fn is_repaint_needed(&self, mclassifications: Option<&[HighlightClassification]>) -> bool {
         // Note: this function is responsible for detecting all of the ways that the command line may
         // change, by comparing it to what is present in rendered_layout.
         // The pager is the problem child, it has its own update logic.
@@ -1762,7 +1760,8 @@ impl<'a> Reader<'a> {
         check(self.force_exec_prompt_and_repaint, "forced")
             || check(self.command_line.text() != last.text, "text")
             || check(
-                mcolors.is_some_and(|colors| colors != last.colors),
+                mclassifications
+                    .is_some_and(|classifications| classifications != last.classifications),
                 "highlight",
             )
             || check(self.selection != last.selection, "selection")
@@ -1799,13 +1798,12 @@ impl<'a> Reader<'a> {
     }
 
     /// Generate a new layout data from the current state of the world.
-    /// If `mcolors` has a value, then apply it; otherwise extend existing colors.
     fn make_layout_data(&self) -> LayoutData {
         let mut result = LayoutData::default();
         let focused_on_pager = self.active_edit_line_tag() == EditableLineTag::SearchField;
         result.text = self.command_line.text().to_owned();
-        result.colors = self.command_line.colors().to_vec();
-        assert_eq!(result.text.len(), result.colors.len());
+        result.classifications = self.command_line.classifications().to_vec();
+        assert_eq!(result.text.len(), result.classifications.len());
         result.position = self.command_line.position();
         result.pager_search_field_position = focused_on_pager.then(|| self.pager.cursor_position());
         result.selection = self.selection;
@@ -1818,7 +1816,6 @@ impl<'a> Reader<'a> {
     }
 
     /// Generate a new layout data from the current state of the world, and paint with it.
-    /// If `mcolors` has a value, then apply it; otherwise extend existing colors.
     fn layout_and_repaint(&mut self, reason: &wstr) {
         self.rendered_layout = self.make_layout_data();
         self.paint_layout(reason, false);
@@ -1861,56 +1858,47 @@ impl<'a> Reader<'a> {
         };
         let autosuggested_range = autosuggested_range.unwrap_or(full_line.len()..full_line.len());
 
-        // Copy the colors and insert the autosuggestion color.
+        // Copy the classifications and insert the autosuggestion.
         let data = &self.data.rendered_layout;
-        let mut colors = data.colors.clone();
+        let mut classifications = data.classifications.clone();
 
-        // Highlight any history search.
+        // Mark any history search. The match names the match's foreground and its
+        // background, and the fields it leaves unnamed keep what the character's own
+        // scope gave them.
         if let Some(range) = data.history_search_range {
             // TODO(MSRV>=1.88): feature(let_chains)
             if !self.conf.in_silent_mode {
                 let mut range = range.as_usize();
-                if range.end > colors.len() {
-                    range.start = range.start.min(colors.len());
-                    range.end = colors.len();
+                if range.end > classifications.len() {
+                    range.start = range.start.min(classifications.len());
+                    range.end = classifications.len();
                 }
 
-                let explicit_foreground = self
-                    .vars()
-                    .get_unless_empty(L!("fish_color_search_match"))
-                    .is_some_and(|var| parse_text_face(var.as_list()).fg.is_some());
-
-                for color in &mut colors[range] {
-                    if explicit_foreground {
-                        color.foreground = HighlightRole::SearchMatch;
-                    }
-                    color.background = HighlightRole::SearchMatch;
+                for classification in &mut classifications[range] {
+                    *classification =
+                        classification.with_attribute(HighlightAttribute::SearchMatch);
                 }
             }
         }
 
         // Apply any selection.
         if let Some(selection) = data.selection {
-            let selection_color = HighlightSpec::with_both(HighlightRole::Selection);
-            let end = std::cmp::min(selection.stop, colors.len());
-            for color in &mut colors[selection.start.min(end)..end] {
-                *color = selection_color;
+            let end = std::cmp::min(selection.stop, classifications.len());
+            for classification in &mut classifications[selection.start.min(end)..end] {
+                *classification = HighlightClassification::from(classification.foreground())
+                    .with_attribute(HighlightAttribute::Selection);
             }
         }
 
-        // Extend our colors with the autosuggestion.
+        // Extend our classifications with the autosuggestion.
         let pos = autosuggested_range.start;
-        colors.splice(
-            pos..pos,
-            vec![
-                if self.flash_autosuggestion {
-                    HighlightSpec::with_both(HighlightRole::SearchMatch)
-                } else {
-                    HighlightSpec::with_fg(HighlightRole::Autosuggestion)
-                };
-                autosuggested_range.len()
-            ],
-        );
+        let suggestion =
+            HighlightClassification::default().with_attribute(if self.flash_autosuggestion {
+                HighlightAttribute::SearchMatch
+            } else {
+                HighlightAttribute::Autosuggestion
+            });
+        classifications.splice(pos..pos, vec![suggestion; autosuggested_range.len()]);
 
         // Compute the indentation.
         let indents = compute_indents(&full_line);
@@ -1926,7 +1914,7 @@ impl<'a> Reader<'a> {
             &self.data.right_prompt_buff,
             &full_line,
             autosuggested_range,
-            colors,
+            classifications,
             indents,
             data.position,
             data.pager_search_field_position,
@@ -2677,7 +2665,7 @@ impl<'a> Reader<'a> {
                     }
                 }
             }
-            Outputter::stdoutput().borrow_mut().reset_text_face();
+            Outputter::stdoutput().borrow_mut().reset_text_style();
         }
         let result = self
             .rls()
@@ -3107,13 +3095,14 @@ impl<'a> Reader<'a> {
 
                     let mut outp = Outputter::stdoutput().borrow_mut();
                     if let Some(fish_color_cancel) = self.vars().get(L!("fish_color_cancel")) {
-                        outp.set_text_face(
-                            parse_text_face_for_highlight(&fish_color_cancel)
-                                .unwrap_or(TextFace::terminal_default()),
+                        outp.set_text_style(
+                            parse_text_style(fish_color_cancel.as_list())
+                                .find_style()
+                                .unwrap_or(TextStyle::terminal_default()),
                         );
                     }
                     outp.write_wstr(L!("^C"));
-                    outp.reset_text_face();
+                    outp.reset_text_style();
 
                     // We print a newline last so the prompt_sp hack doesn't get us.
                     outp.push(b'\n');
@@ -4651,15 +4640,14 @@ impl<'a> Reader<'a> {
 
         let mut data = self.make_layout_data();
 
-        // Save off the colors and set the background.
-        let saved_colors = data.colors.clone();
-        if flash_range.end > data.colors.len() {
-            flash_range.start = flash_range.start.min(data.colors.len());
-            flash_range.end = data.colors.len();
+        // Save off the classifications and mark the flash.
+        let saved_classifications = data.classifications.clone();
+        if flash_range.end > data.classifications.len() {
+            flash_range.start = flash_range.start.min(data.classifications.len());
+            flash_range.end = data.classifications.len();
         }
-        for color in &mut data.colors[flash_range] {
-            color.foreground = HighlightRole::SearchMatch;
-            color.background = HighlightRole::SearchMatch;
+        for classification in &mut data.classifications[flash_range] {
+            *classification = classification.with_attribute(HighlightAttribute::SearchMatch);
         }
         self.rendered_layout = data;
         self.paint_layout(L!("flash"), false);
@@ -4668,7 +4656,7 @@ impl<'a> Reader<'a> {
         std::thread::sleep(Duration::from_millis(100));
 
         // Re-render with our saved data.
-        self.rendered_layout.colors = saved_colors;
+        self.rendered_layout.classifications = saved_classifications;
         self.paint_layout(L!("unflash"), false);
 
         // Save the time we stopped flashing as the time of the most recent flash. We can't just
@@ -5130,7 +5118,7 @@ pub fn reader_write_title(
         /*default_title=*/ None,
     );
 
-    out.reset_text_face();
+    out.reset_text_style();
 
     if reset_cursor_position && written {
         // Put the cursor back at the beginning of the line (issue #2453).
@@ -5742,7 +5730,7 @@ impl<'a> Reader<'a> {
 
 #[derive(Default)]
 pub(super) struct HighlightResult {
-    colors: Vec<HighlightSpec>,
+    classifications: Vec<HighlightClassification>,
     text: WString,
 }
 
@@ -5762,9 +5750,12 @@ fn get_highlight_performer(
             return HighlightResult::default();
         }
         let ctx = &mut get_bg_context(&vars, generation_count);
-        let mut colors = vec![];
-        highlight_shell(&text, &mut colors, ctx, io_ok, Some(position));
-        HighlightResult { colors, text }
+        let mut classifications = vec![];
+        highlight_shell(&text, &mut classifications, ctx, io_ok, Some(position));
+        HighlightResult {
+            classifications,
+            text,
+        }
     }
 }
 
@@ -5773,9 +5764,10 @@ impl<'a> Reader<'a> {
         assert_is_main_thread();
         self.in_flight_highlight_request.clear();
         if result.text == self.command_line.text() {
-            assert_eq!(result.colors.len(), self.command_line.len());
-            if self.is_repaint_needed(Some(&result.colors)) {
-                self.command_line.set_colors(result.colors);
+            assert_eq!(result.classifications.len(), self.command_line.len());
+            if self.is_repaint_needed(Some(&result.classifications)) {
+                self.command_line
+                    .set_classifications(result.classifications);
                 self.layout_and_repaint(L!("highlight"));
             }
         }
@@ -6408,7 +6400,7 @@ fn reader_run_command(parser: &mut Parser, cmd: &wstr) -> EvalRes {
     reader_write_title(cmd, parser, true);
     Outputter::stdoutput()
         .borrow_mut()
-        .set_text_face(TextFace::terminal_default());
+        .set_text_style(TextStyle::terminal_default());
     term_donate(false);
 
     let time_before = Instant::now();

@@ -122,47 +122,331 @@ Example: to make errors highlighted and red, use::
     set fish_color_error red --bold
 
 
-The following variables are available to change the highlighting colors in fish:
+The following variables are available to change the highlighting colors in fish. The
+list is generated from the scopes the shell declares, so it states every variable the
+shell consults:
 
-==========================================        =====================================================================
-Variable                                          Meaning
-==========================================        =====================================================================
-.. envvar:: fish_color_normal                     default color
-.. envvar:: fish_color_command                    commands like echo
-.. envvar:: fish_color_builtin                    builtin commands like cd and set - this falls back on the command color if unset
-.. envvar:: fish_color_function                   user-defined functions - this falls back on the command color if unset
-.. envvar:: fish_color_keyword                    keywords like if - this falls back on the command color if unset
-.. envvar:: fish_color_quote                      quoted text like ``"abc"``
-.. envvar:: fish_color_redirection                IO redirections like >/dev/null
-.. envvar:: fish_color_end                        process separators like ``;`` and ``&``
-.. envvar:: fish_color_error                      syntax errors
-.. envvar:: fish_color_param                      ordinary command parameters
-.. envvar:: fish_color_valid_path                 parameters and redirection targets that are filenames (if the file exists)
-.. envvar:: fish_color_option                     options starting with "-", up to the first "--" parameter
-.. envvar:: fish_color_comment                    comments like '# important'
-.. envvar:: fish_color_selection                  selected text in vi visual mode
-.. envvar:: fish_color_operator                   parameter expansion operators like ``*`` and ``~``
-.. envvar:: fish_color_escape                     character escapes like ``\n`` and ``\x70``
-.. envvar:: fish_color_autosuggestion             autosuggestions (the proposed rest of a command)
-.. envvar:: fish_color_cwd                        the current working directory in the default prompt
-.. envvar:: fish_color_cwd_root                   the current working directory in the default prompt for the root user
-.. envvar:: fish_color_user                       the username in the default prompt
-.. envvar:: fish_color_host                       the hostname in the default prompt
-.. envvar:: fish_color_host_remote                the hostname in the default prompt for remote sessions (like ssh)
-.. envvar:: fish_color_status                     the last command's nonzero exit code in the default prompt
-.. envvar:: fish_color_cancel                     the '^C' indicator on a canceled command
-.. envvar:: fish_color_search_match               history search matches and selected pager items (background only)
-.. envvar:: fish_color_history_current            the current position in the history for commands like ``dirh`` and ``cdh``
+.. BEGIN GENERATED colour variables
+.. envvar:: fish_color_normal
+    default color
+.. envvar:: fish_color_comment
+    comments like ``# important``
+.. envvar:: fish_color_keyword
+    keywords like ``if``, ``for`` and ``end``
+.. envvar:: fish_color_keyword_begin
+    ``begin`` keyword
+.. envvar:: fish_color_keyword_builtin
+    ``builtin`` decorator
+.. envvar:: fish_color_keyword_case
+    ``case`` keyword
+.. envvar:: fish_color_keyword_command
+    ``command`` decorator
+.. envvar:: fish_color_keyword_else
+    ``else`` keyword
+.. envvar:: fish_color_keyword_end
+    ``end`` keyword
+.. envvar:: fish_color_keyword_exec
+    ``exec`` decorator
+.. envvar:: fish_color_keyword_for
+    ``for`` keyword
+.. envvar:: fish_color_keyword_function
+    ``function`` keyword
+.. envvar:: fish_color_keyword_if
+    ``if`` keyword
+.. envvar:: fish_color_keyword_in
+    ``in`` keyword
+.. envvar:: fish_color_keyword_switch
+    ``switch`` keyword
+.. envvar:: fish_color_keyword_while
+    ``while`` keyword
+.. envvar:: fish_color_keyword_modifier
+    ``and``, ``or``, ``not``, ``!`` and ``time``
+.. envvar:: fish_color_keyword_and
+    ``and``
+.. envvar:: fish_color_keyword_or
+    ``or``
+.. envvar:: fish_color_keyword_not
+    ``not``
+.. envvar:: fish_color_keyword_exclam
+    ``!``
+.. envvar:: fish_color_keyword_time
+    ``time`` decorator
+.. envvar:: fish_color_command
+    commands like ``echo``
+.. envvar:: fish_color_command_external
+    programs on the ``PATH``, like ``/bin/cat``
+.. envvar:: fish_color_builtin
+    builtins like ``cd`` and ``set``
+.. envvar:: fish_color_function
+    function calls like ``myfunc``
+.. envvar:: fish_color_command_abbreviation
+    abbreviations, like ``gco`` for ``git checkout``
+.. envvar:: fish_color_command_implicit_cd
+    directories as command words, like ``/tmp``
+.. envvar:: fish_color_param
+    ordinary command parameters
+.. envvar:: fish_color_option
+    options like ``-l`` and ``--long``
+.. envvar:: fish_color_option_short
+    one-letter options like ``-l``
+.. envvar:: fish_color_option_long
+    named options like ``--long``
+.. envvar:: fish_color_option_gnu
+    several letters after one dash, like ``-abc``
+.. envvar:: fish_color_option_numeric
+    negative numbers like ``-5``
+.. envvar:: fish_color_variable_definition
+    ``x`` in ``set x``
+.. envvar:: fish_color_variable_definition_path
+    ``x`` in ``set --path x``
+.. envvar:: fish_color_variable_definition_non_path
+    ``x`` in ``set --unpath x``
+.. envvar:: fish_color_variable_definition_exported
+    ``x`` in ``set -x x``
+.. envvar:: fish_color_variable_definition_exported_path
+    ``x`` in ``set -x --path x``
+.. envvar:: fish_color_variable_definition_exported_non_path
+    ``x`` in ``set -x --unpath x``
+.. envvar:: fish_color_variable_definition_unexported
+    ``x`` in ``set -u x``
+.. envvar:: fish_color_variable_definition_unexported_path
+    ``x`` in ``set -u --path x``
+.. envvar:: fish_color_variable_definition_unexported_non_path
+    ``x`` in ``set -u --unpath x``
+.. envvar:: fish_color_variable_definition_local
+    ``x`` in ``set -l x``
+.. envvar:: fish_color_variable_definition_local_path
+    ``x`` in ``set -l --path x``
+.. envvar:: fish_color_variable_definition_local_non_path
+    ``x`` in ``set -l --unpath x``
+.. envvar:: fish_color_variable_definition_local_exported
+    ``x`` in ``set -l -x x``
+.. envvar:: fish_color_variable_definition_local_exported_path
+    ``x`` in ``set -l -x --path x``
+.. envvar:: fish_color_variable_definition_local_exported_non_path
+    ``x`` in ``set -l -x --unpath x``
+.. envvar:: fish_color_variable_definition_local_unexported
+    ``x`` in ``set -l -u x``
+.. envvar:: fish_color_variable_definition_local_unexported_path
+    ``x`` in ``set -l -u --path x``
+.. envvar:: fish_color_variable_definition_local_unexported_non_path
+    ``x`` in ``set -l -u --unpath x``
+.. envvar:: fish_color_variable_definition_function
+    ``x`` in ``set -f x``
+.. envvar:: fish_color_variable_definition_function_path
+    ``x`` in ``set -f --path x``
+.. envvar:: fish_color_variable_definition_function_non_path
+    ``x`` in ``set -f --unpath x``
+.. envvar:: fish_color_variable_definition_function_exported
+    ``x`` in ``set -f -x x``
+.. envvar:: fish_color_variable_definition_function_exported_path
+    ``x`` in ``set -f -x --path x``
+.. envvar:: fish_color_variable_definition_function_exported_non_path
+    ``x`` in ``set -f -x --unpath x``
+.. envvar:: fish_color_variable_definition_function_unexported
+    ``x`` in ``set -f -u x``
+.. envvar:: fish_color_variable_definition_function_unexported_path
+    ``x`` in ``set -f -u --path x``
+.. envvar:: fish_color_variable_definition_function_unexported_non_path
+    ``x`` in ``set -f -u --unpath x``
+.. envvar:: fish_color_variable_definition_global
+    ``x`` in ``set -g x``
+.. envvar:: fish_color_variable_definition_global_path
+    ``x`` in ``set -g --path x``
+.. envvar:: fish_color_variable_definition_global_non_path
+    ``x`` in ``set -g --unpath x``
+.. envvar:: fish_color_variable_definition_global_exported
+    ``x`` in ``set -g -x x``
+.. envvar:: fish_color_variable_definition_global_exported_path
+    ``x`` in ``set -g -x --path x``
+.. envvar:: fish_color_variable_definition_global_exported_non_path
+    ``x`` in ``set -g -x --unpath x``
+.. envvar:: fish_color_variable_definition_global_unexported
+    ``x`` in ``set -g -u x``
+.. envvar:: fish_color_variable_definition_global_unexported_path
+    ``x`` in ``set -g -u --path x``
+.. envvar:: fish_color_variable_definition_global_unexported_non_path
+    ``x`` in ``set -g -u --unpath x``
+.. envvar:: fish_color_variable_definition_universal
+    ``x`` in ``set -U x``
+.. envvar:: fish_color_variable_definition_universal_path
+    ``x`` in ``set -U --path x``
+.. envvar:: fish_color_variable_definition_universal_non_path
+    ``x`` in ``set -U --unpath x``
+.. envvar:: fish_color_variable_definition_universal_exported
+    ``x`` in ``set -U -x x``
+.. envvar:: fish_color_variable_definition_universal_exported_path
+    ``x`` in ``set -U -x --path x``
+.. envvar:: fish_color_variable_definition_universal_exported_non_path
+    ``x`` in ``set -U -x --unpath x``
+.. envvar:: fish_color_variable_definition_universal_unexported
+    ``x`` in ``set -U -u x``
+.. envvar:: fish_color_variable_definition_universal_unexported_path
+    ``x`` in ``set -U -u --path x``
+.. envvar:: fish_color_variable_definition_universal_unexported_non_path
+    ``x`` in ``set -U -u --unpath x``
+.. envvar:: fish_color_quote
+    quoted text like ``"abc"``
+.. envvar:: fish_color_quote_single
+    text inside ``'...'``
+.. envvar:: fish_color_quote_double
+    text inside ``"..."``
+.. envvar:: fish_color_quote_single_delimiter
+    ``'`` quotes of a single-quoted run
+.. envvar:: fish_color_quote_double_delimiter
+    ``"`` quotes of a double-quoted run
+.. envvar:: fish_color_escape
+    character escapes like ``\n`` and ``\x70``
+.. envvar:: fish_color_escape_unicode
+    ``\u``, ``\U``, ``\x`` and ``\X`` escapes
+.. envvar:: fish_color_escape_octal
+    ``\`` and the octal digits after it
+.. envvar:: fish_color_escape_control
+    ``\c`` escapes
+.. envvar:: fish_color_escape_invalid
+    escapes out of range, like ``\U110000``
+.. envvar:: fish_color_variable
+    variable names like ``x`` in ``$x``
+.. envvar:: fish_color_variable_sigil
+    ``$`` before a variable name
+.. envvar:: fish_color_variable_sigil_dereference
+    ``$`` dereferencing the next one, as in ``$$x``
+.. envvar:: fish_color_variable_slice
+    slice brackets like ``[1]`` in ``$x[1]``
+.. envvar:: fish_color_variable_parameter
+    ``$x`` referring to a parameter inside ``function … end``
+.. envvar:: fish_color_variable_parameter_argv
+    ``$argv``
+.. envvar:: fish_color_variable_parameter_named
+    ``$x`` referring to a name from ``-a``
+.. envvar:: fish_color_operator
+    expansion operators like ``*`` and ``~``
+.. envvar:: fish_color_operator_glob
+    ``*``, and ``?`` where a question mark globs
+.. envvar:: fish_color_operator_brace
+    ``{``, ``}`` and the ``,`` between them
+.. envvar:: fish_color_operator_parenthesis
+    ``(`` and ``)``
+.. envvar:: fish_color_operator_tilde
+    ``~`` at the start of a word
+.. envvar:: fish_color_operator_dollar
+    ``$`` of ``$(command)``
+.. envvar:: fish_color_operator_logical
+    ``&&`` and ``||``
+.. envvar:: fish_color_operator_assignment
+    ``=`` between a name and its value
+.. envvar:: fish_color_redirection
+    redirections like ``>/dev/null``
+.. envvar:: fish_color_redirection_input
+    ``<`` and its target
+.. envvar:: fish_color_redirection_output
+    ``>`` and its target
+.. envvar:: fish_color_redirection_append
+    ``>>`` and its target
+.. envvar:: fish_color_redirection_fd
+    ``>&`` and the descriptor after it
+.. envvar:: fish_color_end
+    separators like ``;``, ``&`` and ``|``
+.. envvar:: fish_color_end_pipe
+    ``|``
+.. envvar:: fish_color_end_background
+    ``&``
+.. envvar:: fish_color_end_semicolon
+    ``;``
+.. envvar:: fish_color_end_newline
+    newline
+.. envvar:: fish_color_error
+    syntax errors
+.. envvar:: fish_color_error_command
+    unknown command words, like ``/bin/nope``
+.. envvar:: fish_color_error_path
+    non-directory ``cd`` arguments, like ``cd foo``
+.. envvar:: fish_color_error_redirection
+    unusable redirection targets, like ``> /nope/x``
+.. envvar:: fish_color_meta_function_no_shadowing
+    characters inside ``function … end -S``
+.. envvar:: fish_color_meta_function
+    characters inside ``function … end``
+.. envvar:: fish_color_meta_command_substitution
+    characters inside ``$(…)``
+.. envvar:: fish_color_meta_block
+    characters inside ``begin … end``
+.. envvar:: fish_color_meta_if
+    characters inside ``if … end``
+.. envvar:: fish_color_meta_case
+    characters inside ``case … end``
+.. envvar:: fish_color_meta_loop_for
+    characters inside ``for … end``
+.. envvar:: fish_color_meta_loop_while
+    characters inside ``while … end``
+.. envvar:: fish_color_meta_loop
+    characters inside ``for … end`` and ``while … end``
+.. envvar:: fish_color_meta_pipeline
+    characters of ``echo | cat``
+.. envvar:: fish_color_meta_and_or
+    characters of ``true && echo``
+.. envvar:: fish_color_search_match
+    history search matches and selected pager items
+.. envvar:: fish_color_selection
+    selected text in vi visual mode
+.. envvar:: fish_color_autosuggestion
+    autosuggestions, the proposed rest of a command
+.. envvar:: fish_color_valid_path
+    parameters and redirection targets naming an existing file
+.. END GENERATED colour variables
 
-==========================================        =====================================================================
+A few more ``fish_color_*`` variables colour the pieces of the default prompt and the
+directory history rather than any source text:
 
-If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options,
-fish usually tries ``$fish_color_normal``, except for:
+.. envvar:: fish_color_cwd
+    the current working directory in the default prompt
+.. envvar:: fish_color_cwd_root
+    the current working directory in the default prompt for the root user
+.. envvar:: fish_color_user
+    the username in the default prompt
+.. envvar:: fish_color_host
+    the hostname in the default prompt
+.. envvar:: fish_color_host_remote
+    the hostname in the default prompt for remote sessions (like ssh)
+.. envvar:: fish_color_status
+    the last command's nonzero exit code in the default prompt
+.. envvar:: fish_color_cancel
+    the '^C' indicator on a canceled command
+.. envvar:: fish_color_history_current
+    the current position in the history for commands like ``dirh`` and ``cdh``
 
-- ``$fish_color_builtin`` and ``$fish_color_function``, where they try ``$fish_color_command`` first.
-- ``$fish_color_keyword``, where it tries ``$fish_color_command`` first.
-- ``$fish_color_option``, where it tries ``$fish_color_param`` first.
-- ``$fish_color_valid_path`` where the effective color is the union of ``$fish_color_param`` and ``$fish_color_valid_path``.
+A definition's name takes the mode its command requests, and each factor of that mode
+extends the variable's name: the scope (``local``, ``function``, ``global``,
+``universal``), the export status (``exported``, ``unexported``), and the path status
+(``path``, ``non_path``). The factors follow ``fish_color_variable_definition`` in that
+order, so ``set -l x`` names ``fish_color_variable_definition_local``, ``set -g -x x``
+names ``fish_color_variable_definition_global_exported``, and ``set x`` names
+``fish_color_variable_definition``. ``x=1 command`` names a local, exported variable; a
+``for`` loop's variable and a ``-a`` name in a definition's header are local.
+
+If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options, it
+names nothing, and the color of a piece of text is composed from several variables at
+once. Each character belongs to a scope — the class of text it is — and the color is
+composed from the most general scope toward the most specific one: the color of a
+builtin command is composed from ``$fish_color_normal``, then ``$fish_color_command``,
+then ``$fish_color_builtin``. A construct that encloses the character contributes its
+scope between the root and the character's own: a command inside a pipeline is composed
+from ``$fish_color_normal``, then ``$fish_color_meta_pipeline``, then
+``$fish_color_command``, then the command's kind, so the enclosing scope supplies a
+field that nothing more specific names. A field that a more specific variable names
+replaces the field a less specific variable named, and a field that no variable names is
+drawn as the terminal draws it. A value that carries ``--reset`` clears what the less
+specific variables named before it.
+
+Four variables are overlays applied after that composition:
+
+- ``$fish_color_valid_path`` writes over the color of a parameter or redirection target
+  that names an existing file. It merges with what the scopes composed; ``--reset``
+  discards that first.
+- ``$fish_color_selection`` replaces the whole style of the selected text.
+- ``$fish_color_search_match`` supplies the background of a history search match, and
+  its foreground only if it names one.
+- ``$fish_color_autosuggestion`` replaces the foreground of the autosuggestion.
 
 Pager color variables
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -181,27 +465,40 @@ To have black text on alternating white and gray backgrounds::
     set fish_pager_color_background --background=white
     set fish_pager_color_secondary_background --background=brwhite
 
-Variables affecting the pager colors:
+Variables affecting the pager colors, generated from the same declaration:
 
-===================================================        ===========================================================
-Variable                                                   Meaning
-===================================================        ===========================================================
-.. envvar:: fish_pager_color_progress                      the progress bar at the bottom left corner
-.. envvar:: fish_pager_color_background                    the background color of a line
-.. envvar:: fish_pager_color_prefix                        the prefix string, i.e. the string that is to be completed
-.. envvar:: fish_pager_color_completion                    the completion itself, i.e. the proposed rest of the string
-.. envvar:: fish_pager_color_description                   the completion description
-.. envvar:: fish_pager_color_selected_background           background of the selected completion
-.. envvar:: fish_pager_color_selected_prefix               prefix of the selected completion
-.. envvar:: fish_pager_color_selected_completion           suffix of the selected completion
-.. envvar:: fish_pager_color_selected_description          description of the selected completion
-.. envvar:: fish_pager_color_secondary_background          background of every second unselected completion
-.. envvar:: fish_pager_color_secondary_prefix              prefix of every second unselected completion
-.. envvar:: fish_pager_color_secondary_completion          suffix of every second unselected completion
-.. envvar:: fish_pager_color_secondary_description         description of every second unselected completion
-===================================================        ===========================================================
+.. BEGIN GENERATED pager variables
+.. envvar:: fish_pager_color_progress
+    status line of the pager, like ``and 3 more rows``
+.. envvar:: fish_pager_color_background
+    background color of a line
+.. envvar:: fish_pager_color_prefix
+    prefix string to be completed
+.. envvar:: fish_pager_color_completion
+    completion text, i.e. the proposed rest of the string
+.. envvar:: fish_pager_color_description
+    completion description
+.. envvar:: fish_pager_color_secondary_background
+    background of every second unselected completion
+.. envvar:: fish_pager_color_secondary_prefix
+    prefix of every second unselected completion
+.. envvar:: fish_pager_color_secondary_completion
+    suffix of every second unselected completion
+.. envvar:: fish_pager_color_secondary_description
+    description of every second unselected completion
+.. envvar:: fish_pager_color_selected_background
+    background of the selected completion
+.. envvar:: fish_pager_color_selected_prefix
+    prefix of the selected completion
+.. envvar:: fish_pager_color_selected_completion
+    suffix of the selected completion
+.. envvar:: fish_pager_color_selected_description
+    description of the selected completion
+.. END GENERATED pager variables
 
-When the secondary or selected variables aren't set or are empty, the normal variables are used, except for ``$fish_pager_color_selected_background``, where the background of ``$fish_color_search_match`` is tried first.
+When the secondary or selected variables aren't set or are empty, the part falls back to
+the plain variable of the same part, and ``$fish_pager_color_selected_background`` falls
+back to ``$fish_color_search_match``.
 
 .. _abbreviations:
 

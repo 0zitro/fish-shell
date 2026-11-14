@@ -3,7 +3,7 @@ use crate::tty_handoff::{XTVERSION, konsole_version};
 use crate::{flog, prelude::*, should_flog};
 use crate::{
     screen::{is_dumb, only_grayscale},
-    text_face::{ResettableStyle, TextFace, TextStyling, UnderlineStyle},
+    text_style::{ResettableStyle, TextStyle, TextStyleFlags, UnderlineStyle},
     threads::MainThread,
 };
 use fish_color::{Color, Color24};
@@ -249,7 +249,7 @@ pub struct Outputter {
     /// Assume this corresponds to the current state of the terminal.
     /// This assumption holds if we start from the default state. Currently, builtin set_color
     /// should be the only exception.
-    last: TextFace,
+    last: TextStyle,
 }
 
 impl Outputter {
@@ -260,7 +260,7 @@ impl Outputter {
             contents: Vec::new(),
             buffer_count: 0,
             fd,
-            last: TextFace::terminal_default(),
+            last: TextStyle::terminal_default(),
         }
     }
 
@@ -271,7 +271,7 @@ impl Outputter {
 
     pub fn new_buffering_no_assume_normal() -> Self {
         let mut zelf = Self::new_buffering();
-        zelf.last = TextFace::unknown();
+        zelf.last = TextStyle::unknown();
         assert_eq!(zelf.last.underline_color, Color::None);
         zelf
     }
@@ -343,10 +343,10 @@ impl Outputter {
     }
 
     /// Unconditionally resets colors and text style.
-    /// If you're going to immediately change other TextFace attributes
-    /// prefer using `StyleWriter::reset_text_face()`
-    pub(crate) fn reset_text_face(&mut self) {
-        self.style_writer().reset_text_face();
+    /// If you're going to immediately change other `TextStyle` fields
+    /// prefer using `StyleWriter::reset_text_style()`
+    pub(crate) fn reset_text_style(&mut self) {
+        self.style_writer().reset_text_style();
     }
 
     /// Sets the fg and bg color. May be called as often as you like, since if the new color is the same
@@ -365,22 +365,22 @@ impl Outputter {
     ///
     /// - Lastly we may need to write set_a_background or set_a_foreground to set the other half of the
     ///   color pair to what it should be.
-    pub(crate) fn set_text_face(&mut self, face: TextFace) {
-        self.set_text_face_internal(face, true, false);
+    pub(crate) fn set_text_style(&mut self, style: TextStyle) {
+        self.set_text_style_internal(style, true, false);
     }
-    pub(crate) fn set_text_face_no_magic(&mut self, face: TextFace, with_reset: bool) {
-        self.set_text_face_internal(face, false, with_reset);
+    pub(crate) fn set_text_style_no_magic(&mut self, style: TextStyle, with_reset: bool) {
+        self.set_text_style_internal(style, false, with_reset);
     }
-    fn set_text_face_internal(
+    fn set_text_style_internal(
         &mut self,
-        face: TextFace,
+        style: TextStyle,
         salvage_unreadable: bool,
         with_reset: bool,
     ) {
-        let mut fg = face.fg;
-        let bg = face.bg;
-        let underline_color = face.underline_color;
-        let style = face.style;
+        let mut fg = style.fg;
+        let bg = style.bg;
+        let underline_color = style.underline_color;
+        let flags = style.flags;
 
         use SgrTerminalCommand::{
             DefaultBackgroundColor, DefaultForegroundColor, DefaultUnderlineColor, EnterBoldMode,
@@ -392,22 +392,22 @@ impl Outputter {
         let mut style_writer = self.style_writer();
 
         if with_reset {
-            style_writer.reset_text_face();
+            style_writer.reset_text_style();
         }
 
         // Removes all styles that are individually resettable.
-        let non_resettable = |mut style: TextStyling| {
-            style.italics = ResettableStyle::Unchanged;
-            style.underline_style = ResettableStyle::Unchanged;
-            style.reverse = ResettableStyle::Unchanged;
-            style.strikethrough = ResettableStyle::Unchanged;
-            style
+        let non_resettable = |mut flags: TextStyleFlags| {
+            flags.italics = ResettableStyle::Unchanged;
+            flags.underline_style = ResettableStyle::Unchanged;
+            flags.reverse = ResettableStyle::Unchanged;
+            flags.strikethrough = ResettableStyle::Unchanged;
+            flags
         };
-        let non_resettable_attributes_to_unset = non_resettable(style_writer.last().style)
-            .difference_prefer_empty(non_resettable(style));
+        let non_resettable_attributes_to_unset = non_resettable(style_writer.last().flags)
+            .difference_prefer_empty(non_resettable(flags));
         if !non_resettable_attributes_to_unset.is_empty() {
             // Only way to exit non-resettable ones is a reset of all attributes.
-            style_writer.reset_text_face();
+            style_writer.reset_text_style();
         }
         if salvage_unreadable && !bg.is_special() && fg == bg {
             fg = if bg == Color::WHITE {
@@ -447,38 +447,38 @@ impl Outputter {
         }
 
         // Lastly, we set bold, underline, italics, dim, reverse, and strikethrough modes correctly.
-        if style.is_bold()
-            && !style_writer.last().style.is_bold()
+        if flags.is_bold()
+            && !style_writer.last().flags.is_bold()
             && style_writer.write_command(EnterBoldMode)
         {
-            style_writer.last().style.bold = true;
+            style_writer.last().flags.bold = true;
         }
 
-        if style.underline_style != style_writer.last().style.underline_style {
-            match style.underline_style {
+        if flags.underline_style != style_writer.last().flags.underline_style {
+            match flags.underline_style {
                 ResettableStyle::Unchanged => {}
                 ResettableStyle::Off => {
                     if style_writer.write_command(ExitUnderlineMode) {
-                        style_writer.last().style.underline_style = ResettableStyle::Off;
+                        style_writer.last().flags.underline_style = ResettableStyle::Off;
                     }
                 }
                 ResettableStyle::On(underline_style) => {
                     if style_writer.write_command(EnterUnderlineMode(underline_style)) {
-                        style_writer.last().style.underline_style =
+                        style_writer.last().flags.underline_style =
                             ResettableStyle::On(underline_style);
                     }
                 }
             }
         }
 
-        if style.is_dim()
-            && !style_writer.last().style.is_dim()
+        if flags.is_dim()
+            && !style_writer.last().flags.is_dim()
             && style_writer.write_command(EnterDimMode)
         {
-            style_writer.last().style.dim = true;
+            style_writer.last().flags.dim = true;
         }
 
-        let mut current_style = style_writer.last().style;
+        let mut current_flags = style_writer.last().flags;
         let mut apply_resettable_style =
             |new_style: ResettableStyle,
              current_style: &mut ResettableStyle,
@@ -500,24 +500,24 @@ impl Outputter {
             };
 
         apply_resettable_style(
-            style.italics,
-            &mut current_style.italics,
+            flags.italics,
+            &mut current_flags.italics,
             EnterItalicsMode,
             ExitItalicsMode,
         );
         apply_resettable_style(
-            style.reverse,
-            &mut current_style.reverse,
+            flags.reverse,
+            &mut current_flags.reverse,
             EnterReverseMode,
             ExitReverseMode,
         );
         apply_resettable_style(
-            style.strikethrough,
-            &mut current_style.strikethrough,
+            flags.strikethrough,
+            &mut current_flags.strikethrough,
             EnterStrikethroughMode,
             ExitStrikethroughMode,
         );
-        style_writer.last().style = current_style;
+        style_writer.last().flags = current_flags;
     }
 
     /// Write a wide character to the receiver.
@@ -657,15 +657,15 @@ impl<'a> OutputterStyleWriter<'a> {
         }
     }
 
-    fn last(&mut self) -> &mut TextFace {
+    fn last(&mut self) -> &mut TextStyle {
         &mut self.out.last
     }
 
     // Unconditionally resets colors and text style.
-    pub(crate) fn reset_text_face(&mut self) {
+    pub(crate) fn reset_text_style(&mut self) {
         use SgrTerminalCommand::ExitAttributeMode;
         self.write_command(ExitAttributeMode);
-        self.out.last = TextFace::terminal_default();
+        self.out.last = TextStyle::terminal_default();
     }
 
     pub(crate) fn write_command(&mut self, cmd: SgrTerminalCommand) -> bool {
@@ -801,7 +801,7 @@ impl<'a> Drop for OutputterStyleWriter<'a> {
 mod tests {
     use fish_color::{Color, Color24};
 
-    use crate::text_face::{TextFace, TextStyling, UnderlineStyle};
+    use crate::text_style::{TextStyle, TextStyleFlags, UnderlineStyle};
 
     use super::{
         Outputter,
@@ -900,20 +900,20 @@ mod tests {
 
     #[test]
     fn resettable_style_attribute() {
-        type RS = crate::text_face::ResettableStyle<()>;
-        type RU = crate::text_face::ResettableStyle<UnderlineStyle>;
+        type RS = crate::text_style::ResettableStyle<()>;
+        type RU = crate::text_style::ResettableStyle<UnderlineStyle>;
 
         let mut outp = Outputter::new_buffering_no_assume_normal();
 
         let mut set_attr = |italics: RS, reverse: RS, strikethrough: RS, underline: RU| {
-            let mut style = TextStyling::unknown();
-            style.italics = italics;
-            style.reverse = reverse;
-            style.strikethrough = strikethrough;
-            style.underline_style = underline;
+            let mut flags = TextStyleFlags::unknown();
+            flags.italics = italics;
+            flags.reverse = reverse;
+            flags.strikethrough = strikethrough;
+            flags.underline_style = underline;
 
-            let face = TextFace::new(Color::None, Color::None, Color::None, style);
-            outp.set_text_face(face);
+            let style = TextStyle::new(Color::None, Color::None, Color::None, flags);
+            outp.set_text_style(style);
         };
 
         // TODO: feature(stmt_expr_attributes): use #[rustfmt::skip]

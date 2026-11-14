@@ -2,7 +2,10 @@ use super::prelude::*;
 use crate::{
     builtins::Error,
     common::valid_var_name,
-    env::{EnvMode, EnvStackSetResult, EnvVar, Environment, INHERITED_VARS, handle_env_return},
+    env::{
+        ENV_MODE_FLAGS, EnvMode, EnvStackSetResult, EnvVar, Environment, INHERITED_VARS, flag_of,
+        handle_env_return,
+    },
     err_fmt, err_str,
     event::{self, Event},
     expand::{expand_escape_string, expand_escape_variable},
@@ -47,44 +50,6 @@ impl Default for Options {
     }
 }
 
-pub(crate) fn set_export_mode(
-    parser: &Parser,
-    streams: &mut IoStreams,
-    cmd: &wstr,
-    export: &mut Option<bool>,
-    value: bool,
-) -> Result<(), ErrorCode> {
-    // Variables can only have one export status.
-    if *export == Some(!value) {
-        err_str!(Error::EXPORT_UNEXPORT)
-            .cmd(cmd)
-            .full_trailer(parser)
-            .finish(streams);
-        return Err(STATUS_INVALID_ARGS);
-    }
-    *export = Some(value);
-    Ok(())
-}
-
-pub(crate) fn set_pathvar_mode(
-    parser: &Parser,
-    streams: &mut IoStreams,
-    cmd: &wstr,
-    pathvar: &mut Option<bool>,
-    value: bool,
-) -> Result<(), ErrorCode> {
-    // Variables can only have one path status.
-    if *pathvar == Some(!value) {
-        err_str!(Error::PATH_UNPATH)
-            .cmd(cmd)
-            .full_trailer(parser)
-            .finish(streams);
-        return Err(STATUS_INVALID_ARGS);
-    }
-    *pathvar = Some(value);
-    Ok(())
-}
-
 impl Options {
     fn parse(
         cmd: &wstr,
@@ -92,48 +57,47 @@ impl Options {
         parser: &mut Parser,
         streams: &mut IoStreams,
     ) -> Result<Option<(Options, usize)>, ErrorCode> {
-        /// Values used for long-only options.
-        const PATH_ARG: char = 1 as char;
-        const UNPATH_ARG: char = 2 as char;
+        /// The value used for the long-only option.
         const NO_EVENT_ARG: char = 3 as char;
-        // Variables used for parsing the argument list. This command is atypical in using the "+"
-        // (REQUIRE_ORDER) option for flag parsing. This is not typical of most fish commands. It means
-        // we stop scanning for flags when the first non-flag argument is seen.
-        const SHORT_OPTS: &wstr = L!("+LSUaefghlnpqux");
-        const LONG_OPTS: &[WOption] = &[
-            wopt(L!("export"), NoArgument, 'x'),
-            wopt(L!("global"), NoArgument, 'g'),
-            wopt(L!("function"), NoArgument, 'f'),
-            wopt(L!("local"), NoArgument, 'l'),
+
+        // The definition flags and this command's own options are read together: the
+        // mode fields from the one declaration, everything else here. A leading `+` stops
+        // the scan at the first argument, so a name and its values are never read as
+        // options.
+        let mut short_opts = WString::from(L!("+"));
+        for flag in ENV_MODE_FLAGS {
+            short_opts.push(flag.short);
+        }
+        short_opts.push_utfstr(L!("LSaehnpq"));
+
+        let mut long_opts: Vec<WOption> = ENV_MODE_FLAGS.iter().map(|flag| flag.option()).collect();
+        long_opts.extend_from_slice(&[
             wopt(L!("erase"), NoArgument, 'e'),
             wopt(L!("names"), NoArgument, 'n'),
-            wopt(L!("unexport"), NoArgument, 'u'),
-            wopt(L!("universal"), NoArgument, 'U'),
             wopt(L!("long"), NoArgument, 'L'),
             wopt(L!("query"), NoArgument, 'q'),
             wopt(L!("show"), NoArgument, 'S'),
             wopt(L!("append"), NoArgument, 'a'),
             wopt(L!("prepend"), NoArgument, 'p'),
-            wopt(L!("path"), NoArgument, PATH_ARG),
-            wopt(L!("unpath"), NoArgument, UNPATH_ARG),
             wopt(L!("no-event"), NoArgument, NO_EVENT_ARG),
             wopt(L!("help"), NoArgument, 'h'),
-        ];
+        ]);
 
         let mut opts = Self::default();
 
-        let mut w = WGetopter::new(SHORT_OPTS, LONG_OPTS, args);
+        let mut w = WGetopter::new(&short_opts, &long_opts, args);
         while let Some(c) = w.next_opt() {
+            if let Some(flag) = flag_of(c) {
+                apply_definition_flag(parser, streams, cmd, &mut opts.set_mode.mode, flag.sets)?;
+                continue;
+            }
             match c {
                 'a' => opts.append = true,
                 'e' => {
                     opts.erase = true;
                     opts.preserve_failure_exit_status = false;
                 }
-                'f' => opts.set_mode.mode.function = true,
-                'g' => opts.set_mode.mode.global = true,
                 'h' => opts.print_help = true,
-                'l' => opts.set_mode.mode.local = true,
                 'n' => {
                     opts.list = true;
                     opts.preserve_failure_exit_status = false;
@@ -143,21 +107,7 @@ impl Options {
                     opts.query = true;
                     opts.preserve_failure_exit_status = false;
                 }
-                'x' => {
-                    set_export_mode(parser, streams, cmd, &mut opts.set_mode.mode.export, true)?;
-                }
-                'u' => {
-                    set_export_mode(parser, streams, cmd, &mut opts.set_mode.mode.export, false)?;
-                }
-                PATH_ARG => {
-                    set_pathvar_mode(parser, streams, cmd, &mut opts.set_mode.mode.pathvar, true)?;
-                }
-                UNPATH_ARG => {
-                    set_pathvar_mode(parser, streams, cmd, &mut opts.set_mode.mode.pathvar, false)?;
-                }
-
                 NO_EVENT_ARG => opts.no_event = true,
-                'U' => opts.set_mode.mode.universal = true,
                 'L' => opts.shorten_ok = false,
                 'S' => {
                     opts.show = true;
@@ -257,19 +207,8 @@ impl Options {
         }
 
         // Variables can only have one scope...
-        if [
-            opts.set_mode.mode.local,
-            opts.set_mode.mode.function,
-            opts.set_mode.mode.global,
-            opts.set_mode.mode.universal,
-        ]
-            .into_iter()
-            .filter(|b| *b)
-            .count()
-            > 1
-            // ..unless we are erasing a variable, in which case we can erase from several in one go.
-            && !opts.erase
-        {
+        // ..unless we are erasing a variable, in which case we can erase from several in one go.
+        if opts.set_mode.mode.whether_multiple_scopes() && !opts.erase {
             err_str!(Error::MULTIPLE_SCOPES)
                 .cmd(cmd)
                 .full_trailer(parser)

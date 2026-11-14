@@ -1,10 +1,12 @@
 pub mod config_paths;
 mod environment;
 mod r#impl;
+mod mode_flag;
 mod var;
 
 pub use environment::*;
 pub use r#impl::is_read_only;
+pub use mode_flag::*;
 pub use var::*;
 
 use fish_widestring::ToCString;

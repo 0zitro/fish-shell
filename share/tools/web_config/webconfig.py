@@ -860,6 +860,24 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             themes += [theme]
         return themes
 
+    def do_get_colour_sample(self):
+        """The colour sample, classified by the highlighting pass itself.
+
+        Each piece is a run of characters the pass gave one scope, so the page colours
+        and picks by what fish reports rather than by a second classification."""
+        sample_path = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "colour_sample.txt"
+        )
+        with open(sample_path, encoding="utf-8") as sample_file:
+            text = sample_file.read()
+        out, err = run_fish_cmd("fish_indent --pygments < " + shlex.quote(sample_path))
+        assert err == "", err
+        pieces = []
+        for line in out.splitlines():
+            start, end, path = line.split(",", 2)
+            pieces.append({"text": text[int(start) : int(end)], "path": path})
+        return pieces
+
     def do_get_functions(self):
         out, err = run_fish_cmd("functions")
         out = out.strip()
@@ -1155,6 +1173,8 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
 
         if p == "/colors/":
             output = self.do_get_colors()
+        elif p == "/colour_sample/":
+            output = self.do_get_colour_sample()
         elif p == "/functions/":
             output = self.do_get_functions()
         elif p == "/variables/":

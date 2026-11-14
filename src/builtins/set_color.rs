@@ -6,7 +6,7 @@ use crate::{
     err_fmt,
     screen::{is_dumb, only_grayscale},
     terminal::Outputter,
-    text_face::{self, PrintColorsArgs, TextFace, TextStyling, parse_text_face_and_options},
+    text_style::{self, PrintColorsArgs, TextStyle, TextStyleFlags, parse_text_style_and_options},
 };
 use fish_color::Color;
 use fish_widestring::bytes2wcstring;
@@ -14,7 +14,7 @@ use fish_widestring::bytes2wcstring;
 fn print_colors(
     streams: &mut IoStreams,
     args: &[&wstr],
-    style: TextStyling,
+    flags: TextStyleFlags,
     bg: Option<Color>,
     underline_color: Option<Color>,
 ) {
@@ -32,18 +32,18 @@ fn print_colors(
     for color_name in args {
         if streams.out_is_terminal() {
             let fg = Color::from_wstr(color_name).unwrap_or(Color::None);
-            outp.set_text_face(TextFace::new(
+            outp.set_text_style(TextStyle::new(
                 fg,
                 bg.unwrap_or(Color::None),
                 underline_color.unwrap_or(Color::None),
-                style,
+                flags,
             ));
         }
         outp.write_wstr(color_name);
         if streams.out_is_terminal() && bg.is_some() {
             // If we have a background, stop it after the color
             // or it goes to the end of the line and looks ugly.
-            outp.reset_text_face();
+            outp.reset_text_style();
         }
         outp.writech('\n');
     } // conveniently, 'normal' is always the last color so we don't need to reset here
@@ -67,17 +67,17 @@ pub fn set_color(
         return Err(STATUS_CMD_ERROR);
     }
 
-    use text_face::ParseError::*;
-    use text_face::ParsedArgs::*;
-    let specified_face = match parse_text_face_and_options(argv, /*is_builtin=*/ true) {
-        Ok(SetFace(face)) => face,
+    use text_style::ParseError::*;
+    use text_style::ParsedArgs::*;
+    let specified_style = match parse_text_style_and_options(argv, /*is_builtin=*/ true) {
+        Ok(SetStyle(style)) => style,
         Ok(PrintColors(PrintColorsArgs {
             fg_args,
             bg,
             underline_color,
-            style,
+            flags,
         })) => {
-            print_colors(streams, fg_args, style, bg, underline_color);
+            print_colors(streams, fg_args, flags, bg, underline_color);
             return Ok(SUCCESS);
         }
         Ok(PrintHelp) => {
@@ -126,22 +126,22 @@ pub fn set_color(
 
     // Note that for historical reasons "set_color normal" reset all colors/attributes. So does
     // "set_color reset" (undocumented).
-    outp.set_text_face_no_magic(
-        TextFace::new(
-            specified_face.fg.unwrap_or(Color::None),
-            specified_face.bg.unwrap_or(Color::None),
-            specified_face.underline_color.unwrap_or(Color::None),
-            specified_face.style,
+    outp.set_text_style_no_magic(
+        TextStyle::new(
+            specified_style.fg.unwrap_or(Color::None),
+            specified_style.bg.unwrap_or(Color::None),
+            specified_style.underline_color.unwrap_or(Color::None),
+            specified_style.flags,
         ),
-        specified_face.reset,
+        specified_style.reset,
     );
 
-    if specified_face.fg.is_some() && outp.contents().is_empty() {
+    if specified_style.fg.is_some() && outp.contents().is_empty() {
         assert!(is_dumb() || only_grayscale());
         // We need to do *something* or the lack of any output messes up
         // when the cartesian product here would make "foo" disappear:
         //  $ echo (set_color foo)bar
-        outp.reset_text_face();
+        outp.reset_text_style();
     }
 
     // Output the collected string.
