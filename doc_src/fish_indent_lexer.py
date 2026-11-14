@@ -73,7 +73,8 @@ def tokenize_fish_command(code, offset):
     """Tokenize some fish code, offset in a parent string, by shelling
     out to fish_indent.
 
-    fish_indent will output a list of csv lines: start,end,path.
+    fish_indent will output a list of csv lines: start,end,path,enclosing,attributes.
+    This lexer reads the range and the path; the rest states what the shell draws.
 
     This function returns a list of (start, tok, value) tuples, as
     Pygments expects.
@@ -87,7 +88,7 @@ def tokenize_fish_command(code, offset):
     stdout, _ = proc.communicate(code.encode("utf-8"))
     result = []
     for line in stdout.decode("utf-8").splitlines():
-        start, end, scope = line.split(",")
+        start, end, scope = line.split(",")[:3]
         start, end = int(start), int(end)
         value = code[start:end]
         tok = token_for_text_and_scope(value, scope)

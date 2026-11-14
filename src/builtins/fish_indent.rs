@@ -23,7 +23,7 @@ use crate::{
 };
 use assert_matches::assert_matches;
 use fish_common::{ReadExt as _, UnescapeFlags, UnescapeStringStyle, unescape_string};
-use fish_token_scope::TokenScopeId;
+use fish_token_scope::HighlightAttribute;
 use fish_wcstringutil::count_preceding_backslashes;
 use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
 use fish_widestring::{INTERNAL_SEPARATOR, bytes2wcstring, osstr2wcstring, wcs2bytes};
@@ -1020,6 +1020,8 @@ fn do_indent(
     let mut do_indent = true;
     let mut only_indent = false;
     let mut only_unindent = false;
+    // Whether the classification may resolve commands and paths, as the command line does.
+    let mut classify_with_io = false;
 
     let short_opts: &wstr = L!("+hvwic");
     let long_opts: &[WOption] = &[
@@ -1033,6 +1035,7 @@ fn do_indent(
         wopt(L!("html"), ArgType::NoArgument, '\x01'),
         wopt(L!("ansi"), ArgType::NoArgument, '\x02'),
         wopt(L!("pygments"), ArgType::NoArgument, '\x03'),
+        wopt(L!("io"), ArgType::NoArgument, '\x06'),
         wopt(L!("check"), ArgType::NoArgument, 'c'),
     ];
 
@@ -1063,6 +1066,7 @@ fn do_indent(
             '\x01' => output_type = OutputType::Html,
             '\x02' => output_type = OutputType::Ansi,
             '\x03' => output_type = OutputType::PygmentsCsv,
+            '\x06' => classify_with_io = true,
             'c' => output_type = OutputType::Check,
             ';' => {
                 err_fmt!(Error::UNEXP_OPT_ARG, w.argv[w.wopt_index - 1])
@@ -1129,7 +1133,7 @@ fn do_indent(
         }
 
         if output_type == OutputType::PygmentsCsv {
-            let output = make_pygments_csv(&src);
+            let output = make_pygments_csv(&src, classify_with_io);
             streams.out.append(&bytes2wcstring(&output));
             i += 1;
             continue;
@@ -1178,13 +1182,7 @@ fn do_indent(
         // Maybe colorize.
         let mut classifications = vec![];
         if output_type != OutputType::PlainText {
-            highlight_shell(
-                &output_wtext,
-                &mut classifications,
-                &mut OperationContext::globals(),
-                false,
-                None,
-            );
+            classifications = classify(&output_wtext, classify_with_io);
         }
 
         let mut colored_output = vec![];
@@ -1251,19 +1249,14 @@ fn read_file(mut f: impl Read) -> Result<WString, ()> {
 
 // Entry point for Pygments CSV output.
 // Our output is a newline-separated string.
-// Each line is of the form `start,end,path`
-// start and end is the half-open token range, and the path is the scope's dotted path.
+// Each line is of the form `start,end,path,enclosing,attributes`
+// start and end is the half-open token range, the path is the scope's dotted path,
+// `enclosing` is the enclosing scopes' paths most general first joined by `+`, and
+// `attributes` is the variables that the character's attributes carry joined by `+`.
 // Example:
-// 3,7,command.external
-fn make_pygments_csv(src: &wstr) -> Vec<u8> {
-    let mut classifications = vec![];
-    highlight_shell(
-        src,
-        &mut classifications,
-        &mut OperationContext::globals(),
-        false,
-        None,
-    );
+// 3,7,command.external,meta.function+meta.block,fish_color_valid_path
+fn make_pygments_csv(src: &wstr, io_ok: bool) -> Vec<u8> {
+    let classifications = classify(src, io_ok);
     assert_eq!(
         classifications.len(),
         src.len(),
@@ -1273,15 +1266,14 @@ fn make_pygments_csv(src: &wstr) -> Vec<u8> {
     struct TokenRange {
         start: usize,
         end: usize,
-        scope: TokenScopeId,
+        classification: HighlightClassification,
     }
 
     let mut token_ranges: Vec<TokenRange> = vec![];
     for (i, classification) in classifications.iter().copied().enumerate() {
-        let scope = classification.foreground();
         // See if we can extend the last range.
         if let Some(last) = token_ranges.last_mut() {
-            if last.scope == scope && last.end == i {
+            if last.classification == classification && last.end == i {
                 last.end = i + 1;
                 continue;
             }
@@ -1290,16 +1282,76 @@ fn make_pygments_csv(src: &wstr) -> Vec<u8> {
         token_ranges.push(TokenRange {
             start: i,
             end: i + 1,
-            scope,
+            classification,
         });
     }
 
     // Now render these to a string.
     let mut result = String::with_capacity(token_ranges.len() * 32);
     for range in token_ranges {
-        writeln!(result, "{},{},{}", range.start, range.end, range.scope).unwrap();
+        let classification = range.classification;
+        let enclosing: Vec<&str> = classification
+            .enclosing()
+            .scopes()
+            .rev()
+            .map(|scope| scope.entry().path)
+            .collect();
+        let attributes: Vec<String> = HighlightAttribute::entries()
+            .iter()
+            .filter(|entry| classification.attributes().has_attribute(entry.attribute))
+            .map(|entry| entry.variable_name.as_ref().to_string())
+            .collect();
+        writeln!(
+            result,
+            "{},{},{},{},{}",
+            range.start,
+            range.end,
+            classification.foreground(),
+            enclosing.join("+"),
+            attributes.join("+")
+        )
+        .unwrap();
     }
     result.into_bytes()
+}
+
+/// The classification of `text`, in the pass `io_ok` names.
+///
+/// The classifier insists on a background thread when it may do I/O, because the
+/// shell's reader must stay responsive; this process has no reader, but it runs the
+/// pass on a thread of its own all the same, so that the rule holds here too.
+fn classify(text: &wstr, io_ok: bool) -> Vec<HighlightClassification> {
+    if !io_ok {
+        let mut classifications = vec![];
+        highlight_shell(
+            text,
+            &mut classifications,
+            &mut OperationContext::globals(),
+            false,
+            None,
+        );
+        return classifications;
+    }
+
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let mut classifications = vec![];
+                highlight_shell(
+                    text,
+                    &mut classifications,
+                    &mut OperationContext::background(
+                        EnvStack::globals(),
+                        crate::operation_context::EXPANSION_LIMIT_BACKGROUND,
+                    ),
+                    true, /* io_ok */
+                    None,
+                );
+                classifications
+            })
+            .join()
+            .expect("the classification thread panics only on a bug")
+    })
 }
 
 // Entry point for prettification.

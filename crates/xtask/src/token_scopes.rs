@@ -7,7 +7,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use fish_token_scope::{HighlightAttribute, TOKEN_SCOPE_ENTRIES};
+use fish_token_scope::{
+    AttributeMode, HighlightAttribute, ResolutionChainStep, StyleField, TOKEN_SCOPE_ENTRIES,
+    TokenScopeEntry,
+};
 use fish_widestring::WExt as _;
 
 /// The documentation the generated blocks are written into.
@@ -46,6 +49,9 @@ struct Documented {
     /// for an attribute has none.
     path: Option<&'static str>,
     description: &'static str,
+    /// The variables the scope resolves through, most specific first and ending at
+    /// the root.  The page composes a character's style from them, as the shell does.
+    chain: Vec<String>,
 }
 
 /// The variables the declaration declares in one namespace, in declaration order.
@@ -57,6 +63,23 @@ fn documented_in(namespace: &str) -> Vec<Documented> {
             variable: entry.variable_name.as_ref().to_string(),
             path: Some(entry.path),
             description: entry.description,
+            chain: resolution_chain_variables(entry),
+        })
+        .collect()
+}
+
+/// The variables a scope resolves through, most specific first.
+fn resolution_chain_variables(entry: &TokenScopeEntry) -> Vec<String> {
+    entry
+        .resolution_chain
+        .into_iter()
+        .filter_map(|step| match step {
+            ResolutionChainStep::Scope(scope) => {
+                Some(scope.entry().variable_name.as_ref().to_string())
+            }
+            ResolutionChainStep::Attribute(attribute) => attribute
+                .entry()
+                .map(|entry| entry.variable_name.as_ref().to_string()),
         })
         .collect()
 }
@@ -69,6 +92,7 @@ fn documented_attributes() -> Vec<Documented> {
             variable: entry.variable_name.as_ref().to_string(),
             path: None,
             description: entry.description,
+            chain: Vec::new(),
         })
         .collect()
 }
@@ -184,13 +208,66 @@ fn colour_variables_script() -> String {
             None => "null".to_owned(),
         };
         script.push_str(&format!(
-            "    {{variable: {:?}, path: {path}, description: {:?}}},\n",
+            "    {{variable: {:?}, path: {path}, description: {:?}, chain: [{}]}},\n",
             documented.variable,
-            plain_text(documented.description)
+            plain_text(documented.description),
+            documented
+                .chain
+                .iter()
+                .map(|variable| format!("{variable:?}"))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ));
+    }
+    script.push_str("];\n");
+
+    script.push_str(
+        "\n// The attributes, generated from the declared scopes by `cargo xtask\n\
+         // token-scopes`; do not edit.\n\
+         window.__fish_highlight_attributes = [\n",
+    );
+    for entry in HighlightAttribute::entries() {
+        let (mode, fields) = match entry.mode {
+            AttributeMode::Merge(fields) => ("merge", fields),
+            AttributeMode::Replace(fields) => ("replace", fields),
+        };
+        let fields: Vec<&str> = STYLE_FIELDS
+            .iter()
+            .copied()
+            .filter(|field| fields.has_field(*field))
+            .map(style_field_name)
+            .collect();
+        script.push_str(&format!(
+            "    {{variable: {:?}, mode: {:?}, fields: [{}]}},\n",
+            entry.variable_name.as_ref().to_string(),
+            mode,
+            fields
+                .iter()
+                .map(|field| format!("{field:?}"))
+                .collect::<Vec<String>>()
+                .join(", ")
         ));
     }
     script.push_str("];\n");
     script
+}
+
+/// Every field a style has, in the order the page writes them.
+const STYLE_FIELDS: &[StyleField] = &[
+    StyleField::Foreground,
+    StyleField::Background,
+    StyleField::UnderlineColor,
+    StyleField::Flags,
+];
+
+/// The name the page's style resolver knows a field by.
+fn style_field_name(field: StyleField) -> &'static str {
+    match field {
+        StyleField::Foreground => "foreground",
+        StyleField::Background => "background",
+        StyleField::UnderlineColor => "underline_colour",
+        StyleField::Flags => "flags",
+    }
 }
 
 /// A description with its Markdown code spans marked out as plain text.
@@ -235,7 +312,8 @@ mod tests {
     #[test]
     fn the_page_lists_every_colour_variable() {
         let script = colour_variables_script();
-        let listed = script.matches("variable: ").count();
+        // Each variable's entry states the chain it resolves through; no attribute does.
+        let listed = script.matches(", chain: [").count();
         assert_eq!(listed, colour_variables().len());
     }
 

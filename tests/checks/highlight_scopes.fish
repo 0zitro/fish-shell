@@ -3,10 +3,11 @@
 # The highlighting pass gives every run of characters one scope, and this test states
 # the scope of each run a snippet is classified into: the character a run starts at,
 # then its path.  The command line, the pager rows and `fish_indent` all take their
-# tokens from this pass.
+# tokens from this pass.  A run also states the scopes that enclose it and the
+# attributes it carries; this test reads the path.
 
 function runs_of
-    $fish_indent --pygments | string split -- '\n' | string replace --regex -- '^(\d+),\d+,(.*)$' '$1 $2'
+    $fish_indent --pygments | string split -- '\n' | string replace --regex -- '^(\d+),\d+,([^,]*),.*$' '$1 $2'
 end
 
 printf '%s' 'set -gx name 1' | runs_of
