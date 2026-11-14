@@ -26,14 +26,22 @@ mod expansion;
 ///     namespace "<variable prefix>" { form* }
 ///
 ///     form :=
-///         | "<path>" [<stem>] [<steps>] [root] [enclosing] ;
-///         | sum "<family path>" [<stem>] { <variant> ... } ;
-///         | product "<path>" [<steps>] { sum { <value> ... } ... } ;
+///         | "<path>" <description> [<stem>] [<steps>] [root] [enclosing] ;
+///         | sum "<family path>" [<stem>] { <declared> ... } ;
+///         | product "<path>" [<steps>] <description> { sum { <declared> ... } ... } ;
 ///
-///     <stem>  := <identifier>
-///     <steps> := [ <step> , ... ]        <step> := "<path>" | @<Attribute>
+///     <stem>        := <identifier>
+///     <steps>       := [ <step> , ... ]      <step> := "<path>" | @<Attribute>
+///     <declared>    := <identifier> <description>
+///     <description> := the doc comment after the name, in Markdown
 /// }
 /// ```
+///
+/// **A description says what a scope is.**  It is the doc comment that follows the
+/// path, written in Markdown so that the same words are the generated
+/// documentation's line and the constant's own documentation.  Every scope states
+/// one: a sum's variants and a product's factor values each state their own, and a
+/// product's leaves compose their family's description with the values they take.
 ///
 /// **The namespace names the variable.**  Every scope is declared inside a
 /// namespace, and its variable is that namespace's prefix followed by its stem.

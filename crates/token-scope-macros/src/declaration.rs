@@ -52,6 +52,9 @@ pub enum FormKind {
     /// One scope, written as its path.
     Entry {
         path: String,
+        /// What the scope is, in the words the documentation and the constant's
+        /// own documentation state it in.
+        description: String,
         /// The stem the declaration writes, when the variable name the
         /// configuration fixed is not the path flattened.
         stem: Option<String>,
@@ -66,15 +69,24 @@ pub enum FormKind {
         family: String,
         /// The stem the variants begin with, when it is not the family's own.
         stem_prefix: Option<String>,
-        variants: Vec<String>,
+        variants: Vec<Declared>,
     },
     /// The leaves of a product of factors, each an enumeration of one name
     /// component.
     Product {
         path: String,
         chain: Option<Vec<WrittenStep>>,
-        factors: Vec<Vec<String>>,
+        /// What the family is; a leaf's description also states the values it
+        /// takes.
+        description: String,
+        factors: Vec<Vec<Declared>>,
     },
+}
+
+/// One value an enumeration declares, and what it is.
+pub struct Declared {
+    pub name: String,
+    pub description: String,
 }
 
 /// One step of a written resolution chain.
@@ -157,6 +169,7 @@ fn parse_forms(stream: TokenStream) -> Result<Vec<Form>, DeclarationError> {
 fn parse_entry(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
     let span = tokens.here();
     let path = tokens.string("a scope path")?;
+    let description = tokens.description("what the scope is")?;
     let stem = tokens.optional_stem();
     let chain = tokens.optional_steps()?;
     let root = tokens.optional_ident("root");
@@ -167,6 +180,7 @@ fn parse_entry(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
         span,
         kind: FormKind::Entry {
             path,
+            description,
             stem,
             chain,
             enclosing,
@@ -182,7 +196,7 @@ fn parse_sum(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
     let family = tokens.string("the path of the family a sum declares")?;
     let stem_prefix = tokens.optional_stem();
     let variants = tokens.group(Delimiter::Brace, "the variants of a sum")?;
-    let variants = identifiers(variants, "a sum enumerates identifiers")?;
+    let variants = declared_values(variants, "a sum enumerates values")?;
     tokens.expect_punct(';', "`;` after a sum")?;
 
     Ok(Form {
@@ -201,6 +215,7 @@ fn parse_product(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
     tokens.expect_ident("product")?;
     let path = tokens.string("the path of the family a product declares")?;
     let chain = tokens.optional_steps()?;
+    let description = tokens.description("what the family is")?;
     let body = tokens.group(Delimiter::Brace, "the factors of a product")?;
 
     let mut factors = Tokens::new(body);
@@ -208,7 +223,7 @@ fn parse_product(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
     while !factors.at_end() {
         factors.expect_ident("sum")?;
         let values = factors.group(Delimiter::Brace, "the values of one factor")?;
-        enumerations.push(identifiers(
+        enumerations.push(declared_values(
             values,
             "a factor enumerates the values of one name component",
         )?);
@@ -220,22 +235,25 @@ fn parse_product(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
         kind: FormKind::Product {
             path,
             chain,
+            description,
             factors: enumerations,
         },
     })
 }
 
-/// The identifiers of one group, in the order they are written.
-fn identifiers(stream: TokenStream, complaint: &str) -> Result<Vec<String>, DeclarationError> {
+/// The values one enumeration declares, each with what it is.
+fn declared_values(
+    stream: TokenStream,
+    complaint: &str,
+) -> Result<Vec<Declared>, DeclarationError> {
     let mut tokens = Tokens::new(stream);
-    let mut identifiers = vec![];
-    while let Some(tree) = tokens.take() {
-        match tree {
-            TokenTree::Ident(ident) => identifiers.push(ident.to_string()),
-            other => return Err(DeclarationError::at(other.span(), complaint)),
-        }
+    let mut values = vec![];
+    while !tokens.at_end() {
+        let name = tokens.ident(complaint)?;
+        let description = tokens.description(complaint)?;
+        values.push(Declared { name, description });
     }
-    Ok(identifiers)
+    Ok(values)
 }
 
 /// The steps of one written chain.
@@ -256,6 +274,28 @@ fn chain_steps(stream: TokenStream) -> Result<Vec<WrittenStep>, DeclarationError
     }
 
     Ok(steps)
+}
+
+/// The text a doc comment's escapes spell, or none when it names an escape this
+/// declaration does not read.
+fn decode(written: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(written.len());
+    let mut characters = written.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        match characters.next()? {
+            'n' => decoded.push('\n'),
+            't' => decoded.push('\t'),
+            '"' => decoded.push('"'),
+            '\'' => decoded.push('\''),
+            '\\' => decoded.push('\\'),
+            _ => return None,
+        }
+    }
+    Some(decoded)
 }
 
 /// The tokens of one declaration, read in order.
@@ -298,6 +338,19 @@ impl Tokens {
     }
 
     fn string(&mut self, what: &str) -> Result<String, DeclarationError> {
+        let span = self.here();
+        let written = self.raw_string(what)?;
+        if written.contains('\\') {
+            return Err(DeclarationError::at(
+                span,
+                format!("{what} is a plain string literal, and it names no escape"),
+            ));
+        }
+        Ok(written)
+    }
+
+    /// The body of a string literal, before its escapes are read.
+    fn raw_string(&mut self, what: &str) -> Result<String, DeclarationError> {
         let tree = self.take();
         let span = self.span_of(tree.clone());
         match tree {
@@ -307,10 +360,10 @@ impl Tokens {
                     .strip_prefix('"')
                     .and_then(|body| body.strip_suffix('"'))
                 {
-                    Some(body) if !body.contains('\\') => Ok(body.to_owned()),
-                    _ => Err(DeclarationError::at(
+                    Some(body) => Ok(body.to_owned()),
+                    None => Err(DeclarationError::at(
                         span,
-                        format!("{what} is a plain string literal, and it names no escape"),
+                        format!("{what} is a string literal"),
                     )),
                 }
             }
@@ -319,6 +372,41 @@ impl Tokens {
                 format!("{what} is a string literal"),
             )),
         }
+    }
+
+    /// The description a form writes, which is the doc comment after its name.
+    ///
+    /// A doc comment reaches a macro as the `#[doc = "..."]` attribute it stands for,
+    /// so this reads that attribute.  The words are Markdown, so the same description
+    /// reads as code spans in the generated documentation and in the constant's own
+    /// documentation.
+    fn description(&mut self, what: &str) -> Result<String, DeclarationError> {
+        let complaint = || format!("{what} is a doc comment: `/** ... */`");
+        let span = self.here();
+
+        if !self.optional_punct('#') {
+            return Err(DeclarationError::at(span, complaint()));
+        }
+        let attribute = self.group(Delimiter::Bracket, &complaint())?;
+        let mut tokens = Tokens::new(attribute);
+        tokens.expect_ident("doc")?;
+        tokens.expect_punct('=', &complaint())?;
+        let written = tokens.raw_string(what)?;
+        let text = decode(&written).ok_or_else(|| {
+            DeclarationError::at(
+                span,
+                format!("{what} names an escape other than `\\n`, `\\t`, `\\\"` and `\\\\`"),
+            )
+        })?;
+
+        let description = text.trim();
+        if description.is_empty() || description.contains('\n') {
+            return Err(DeclarationError::at(
+                span,
+                format!("{what} is one line of prose"),
+            ));
+        }
+        Ok(description.to_owned())
     }
 
     /// The stem the declaration writes, if it writes one.  A stem is an

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use proc_macro2::{Span, TokenStream};
 
-use crate::declaration::{Declaration, DeclarationError, FormKind, WrittenStep};
+use crate::declaration::{Declaration, DeclarationError, Declared, FormKind, WrittenStep};
 
 /// The declared vocabulary, as the Rust that declares it, or the failure that
 /// stops the compilation at the declaration that could not be read.
@@ -17,6 +17,8 @@ pub(crate) fn expanded(input: TokenStream) -> TokenStream {
 struct Scope {
     path: String,
     stem: String,
+    /// What the scope is, in the words the documentation states it in.
+    description: String,
     /// The namespace prefix the scope's variable begins with.
     prefix: String,
     written: Option<Vec<WrittenStep>>,
@@ -69,6 +71,7 @@ fn scopes_of(declaration: Declaration) -> Result<Vec<Scope>, DeclarationError> {
             match kind {
                 FormKind::Entry {
                     path,
+                    description,
                     stem,
                     chain,
                     enclosing,
@@ -78,6 +81,7 @@ fn scopes_of(declaration: Declaration) -> Result<Vec<Scope>, DeclarationError> {
                     scopes.push(Scope {
                         path,
                         stem,
+                        description,
                         prefix,
                         written: chain,
                         enclosing,
@@ -109,8 +113,9 @@ fn scopes_of(declaration: Declaration) -> Result<Vec<Scope>, DeclarationError> {
 
                     for variant in variants {
                         scopes.push(Scope {
-                            path: format!("{family}.{variant}"),
-                            stem: format!("{head}_{variant}"),
+                            path: format!("{family}.{}", variant.name),
+                            stem: format!("{head}_{}", variant.name),
+                            description: variant.description,
                             prefix: prefix.clone(),
                             written: None,
                             enclosing: false,
@@ -122,15 +127,21 @@ fn scopes_of(declaration: Declaration) -> Result<Vec<Scope>, DeclarationError> {
                 FormKind::Product {
                     path,
                     chain,
+                    description,
                     factors,
                 } => {
-                    for leaf in product_leaves(&path, &factors) {
+                    for leaf in product_leaves(&path, &factors, &description) {
                         // The product's chain is the family root's, and every
                         // leaf reaches it through the derivation.
-                        let written = if leaf == path { chain.clone() } else { None };
+                        let written = if leaf.path == path {
+                            chain.clone()
+                        } else {
+                            None
+                        };
                         scopes.push(Scope {
-                            stem: flattened(&leaf),
-                            path: leaf,
+                            stem: flattened(&leaf.path),
+                            path: leaf.path,
+                            description: leaf.description,
                             prefix: prefix.clone(),
                             written,
                             enclosing: false,
@@ -162,23 +173,44 @@ fn scopes_of(declaration: Declaration) -> Result<Vec<Scope>, DeclarationError> {
     Ok(scopes)
 }
 
-/// The leaves of a product: one path per tuple of factor values, the absent
-/// value included.
-fn product_leaves(path: &str, factors: &[Vec<String>]) -> Vec<String> {
-    let mut leaves = vec![path.to_owned()];
+/// One leaf of a product: its path, and what it is.
+struct Leaf {
+    path: String,
+    description: String,
+}
+
+/// The leaves of a product: one path per tuple of factor values, the absent value
+/// included.
+///
+/// A leaf's description states the family's and the values the leaf takes, so the
+/// tuple that takes no value is described by the family alone.
+fn product_leaves(path: &str, factors: &[Vec<Declared>], description: &str) -> Vec<Leaf> {
+    let mut leaves: Vec<(String, Vec<&str>)> = vec![(path.to_owned(), vec![])];
 
     for factor in factors {
         let mut next = Vec::new();
-        for leaf in &leaves {
-            next.push(leaf.clone());
+        for (leaf, values) in &leaves {
+            next.push((leaf.clone(), values.clone()));
             for value in factor {
-                next.push(format!("{leaf}.{value}"));
+                let mut taken = values.clone();
+                taken.push(value.description.as_str());
+                next.push((format!("{leaf}.{}", value.name), taken));
             }
         }
         leaves = next;
     }
 
     leaves
+        .into_iter()
+        .map(|(path, values)| Leaf {
+            path,
+            description: if values.is_empty() {
+                description.to_owned()
+            } else {
+                format!("{description}: {}", values.join(", "))
+            },
+        })
+        .collect()
 }
 
 /// Every path and its scope, and the root's.
@@ -357,7 +389,7 @@ fn render(scopes: &[Scope], chains: &[Vec<ChainStep>], enclosing: &[usize]) -> S
 
     source.line("impl crate::entries::TokenScopeId {");
     for (index, scope) in scopes.iter().enumerate() {
-        source.line(format!("    /// The `{}` scope.", scope.path));
+        source.line(format!("    /// {}", scope.description));
         source.line(format!(
             "    pub const {}: Self = Self({index});",
             constant(scope)
@@ -419,6 +451,7 @@ fn render(scopes: &[Scope], chains: &[Vec<ChainStep>], enclosing: &[usize]) -> S
             constant(scope)
         ));
         source.line(format!("        path: {:?},", scope.path));
+        source.line(format!("        description: {:?},", scope.description));
         source.line(format!(
             "        variable_name: crate::entries::ColorVariableName\
              (fish_widestring::L!({:?})),",
