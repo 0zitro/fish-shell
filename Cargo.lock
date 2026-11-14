@@ -1766,6 +1766,7 @@ dependencies = [
  "fish-build-helper",
  "fish-common",
  "fish-tempfile",
+ "fish-token-scope",
  "fish-widestring",
  "fluent-ftl-tools",
  "fluent-syntax",

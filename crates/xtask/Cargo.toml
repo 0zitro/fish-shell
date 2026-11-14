@@ -13,6 +13,7 @@ clap_complete.workspace = true
 fish-build-helper.workspace = true
 fish-common.workspace = true
 fish-tempfile.workspace = true
+fish-token-scope.workspace = true
 fish-widestring.workspace = true
 fluent-ftl-tools.workspace = true
 fluent-syntax.workspace = true
