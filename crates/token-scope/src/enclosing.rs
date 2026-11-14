@@ -43,8 +43,8 @@ impl EnclosingScopeSet {
         self.0 == 0
     }
 
-    /// The scopes of the set, in path order.
-    pub fn scopes(self) -> impl Iterator<Item = TokenScopeId> {
+    /// The scopes of the set, in the order they are consulted in.
+    pub fn scopes(self) -> impl DoubleEndedIterator<Item = TokenScopeId> {
         ENCLOSING_SCOPE_IDS
             .iter()
             .copied()

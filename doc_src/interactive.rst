@@ -156,13 +156,25 @@ Variable                                          Meaning
 
 ==========================================        =====================================================================
 
-If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options,
-fish usually tries ``$fish_color_normal``, except for:
+If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options, it
+names nothing, and the color of a piece of text is composed from several variables at
+once. Each character belongs to a scope — the class of text it is — and the color is
+composed from the most general scope toward the most specific one: the color of a
+builtin command is composed from ``$fish_color_normal``, then ``$fish_color_command``,
+then ``$fish_color_builtin``. A field that a more specific variable names replaces the
+field a less specific variable named, and a field that no variable names is drawn as the
+terminal draws it. A value that carries ``--reset`` clears what the less specific
+variables named before it.
 
-- ``$fish_color_builtin`` and ``$fish_color_function``, where they try ``$fish_color_command`` first.
-- ``$fish_color_keyword``, where it tries ``$fish_color_command`` first.
-- ``$fish_color_option``, where it tries ``$fish_color_param`` first.
-- ``$fish_color_valid_path`` where the effective color is the union of ``$fish_color_param`` and ``$fish_color_valid_path``.
+Four variables are overlays applied after that composition:
+
+- ``$fish_color_valid_path`` writes over the color of a parameter or redirection target
+  that names an existing file. It merges with what the scopes composed; ``--reset``
+  discards that first.
+- ``$fish_color_selection`` replaces the whole style of the selected text.
+- ``$fish_color_search_match`` supplies the background of a history search match, and
+  its foreground only if it names one.
+- ``$fish_color_autosuggestion`` replaces the foreground of the autosuggestion.
 
 Pager color variables
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -201,7 +213,9 @@ Variable                                                   Meaning
 .. envvar:: fish_pager_color_secondary_description         description of every second unselected completion
 ===================================================        ===========================================================
 
-When the secondary or selected variables aren't set or are empty, the normal variables are used, except for ``$fish_pager_color_selected_background``, where the background of ``$fish_color_search_match`` is tried first.
+When the secondary or selected variables aren't set or are empty, the part falls back to
+the plain variable of the same part, and ``$fish_pager_color_selected_background`` falls
+back to ``$fish_color_search_match``.
 
 .. _abbreviations:
 

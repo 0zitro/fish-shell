@@ -16,6 +16,9 @@ Interactive improvements
 - Fixed a glitch in the initial prompt when the terminal is resized during early startup (:issue:`12995`).
 - Fixed indentation when displaying a multiline command in a transient prompt (:issue:`13012`).
 - In :envvar:`fish_color_valid_path`, the ``--reset`` option can be given to completely override :envvar:`fish_color_param` rather than merging (:issue:`13042`).
+- The colour of a piece of text is now composed from the variables of the scopes it belongs to, from the most general toward the most specific, instead of taking one variable together with a fixed fallback. A field that a more specific variable names replaces the field a less specific one named, a field that no variable names is drawn as the terminal draws it, and ``--reset`` clears what the less specific variables named.
+- ``fish_indent --html`` names each span's class after the variable that colours the scope of the text in it, so every class is a real colour variable name.
+- ``fish_indent --pygments-csv`` reports each token's scope path (like ``command.external``) instead of a role name.
 - When setting :envvar:`fish_complete_path`, fish no longer forgets completions that ship with fish and that fish happened to load earlier (:issue:`13049`).
 - ``funced`` no longer saves a function copied interactively with ``functions --copy`` to the file of the original function (:issue:`12305`).
 
