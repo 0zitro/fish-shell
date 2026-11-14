@@ -796,6 +796,41 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_redirection_and_a_terminator_resolve_through_their_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_redirection"), &[L!("green")]);
+        colors.set(L!("fish_color_end"), &[L!("green")]);
+
+        let input = colors.classify(L!("true < f"));
+        let append = colors.classify(L!("true >> f"));
+        let pipe = colors.classify(L!("true | true"));
+        let semicolon = colors.classify(L!("true; true"));
+        let fg = |classifications: &[HighlightClassification], index: usize| {
+            colors.style_of(classifications[index]).fg
+        };
+        assert_eq!(fg(&input, 5), color(L!("green")), "input");
+        assert_eq!(fg(&append, 5), color(L!("green")), "append");
+        assert_eq!(fg(&pipe, 5), color(L!("green")), "pipe");
+        assert_eq!(fg(&semicolon, 4), color(L!("green")), "semicolon");
+
+        // A kind names itself.
+        colors.set(L!("fish_color_redirection_append"), &[L!("brblue")]);
+        colors.set(L!("fish_color_end_pipe"), &[L!("brblue")]);
+        let input = colors.classify(L!("true < f"));
+        let append = colors.classify(L!("true >> f"));
+        let pipe = colors.classify(L!("true | true"));
+        let semicolon = colors.classify(L!("true; true"));
+        let fg = |classifications: &[HighlightClassification], index: usize| {
+            colors.style_of(classifications[index]).fg
+        };
+        assert_eq!(fg(&input, 5), color(L!("green")), "input stays");
+        assert_eq!(fg(&append, 5), color(L!("brblue")), "append splits");
+        assert_eq!(fg(&pipe, 5), color(L!("brblue")), "pipe splits");
+        assert_eq!(fg(&semicolon, 4), color(L!("green")), "semicolon stays");
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);
