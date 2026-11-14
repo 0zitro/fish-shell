@@ -709,6 +709,38 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_command_kind_resolves_through_the_command_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_command"), &[L!("green")]);
+
+        // A builtin and an external program agree until a kind is set.
+        let builtin = colors.classify(L!("echo"));
+        let external = colors.classify(L!("/bin/cat"));
+        assert_eq!(
+            colors.style_of(builtin[0]).fg,
+            color(L!("green")),
+            "the builtin"
+        );
+        assert_eq!(
+            colors.style_of(external[0]).fg,
+            color(L!("green")),
+            "the external program"
+        );
+
+        // The external kind splits off without touching the builtin.
+        colors.set(L!("fish_color_command_external"), &[L!("brblue")]);
+        let builtin = colors.classify(L!("echo"));
+        let external = colors.classify(L!("/bin/cat"));
+        assert_eq!(colors.style_of(builtin[0]).fg, color(L!("green")));
+        assert_eq!(colors.style_of(external[0]).fg, color(L!("brblue")));
+
+        // A word that no command-position test matches takes the invalid family.
+        let classifications = colors.classify(L!("/bin/definitely_not_a_command"));
+        assert_eq!(classifications[0].foreground(), TokenScopeId::ERROR_COMMAND);
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);
