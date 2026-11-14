@@ -12,6 +12,7 @@ pub mod fluent;
 pub mod format;
 pub mod gettext;
 pub mod shellcheck;
+pub mod token_scopes;
 
 pub trait CommandExt {
     fn run(&mut self) -> Result<()>;

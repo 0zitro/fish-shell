@@ -215,7 +215,7 @@ fn parse_product(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
     tokens.expect_ident("product")?;
     let path = tokens.string("the path of the family a product declares")?;
     let chain = tokens.optional_steps()?;
-    let description = tokens.description("what the family is")?;
+    let description = tokens.description("the description of the family a product declares")?;
     let body = tokens.group(Delimiter::Brace, "the factors of a product")?;
 
     let mut factors = Tokens::new(body);
@@ -223,7 +223,7 @@ fn parse_product(tokens: &mut Tokens) -> Result<Form, DeclarationError> {
     while !factors.at_end() {
         factors.expect_ident("sum")?;
         let values = factors.group(Delimiter::Brace, "the values of one factor")?;
-        enumerations.push(declared_values(
+        enumerations.push(contributed_values(
             values,
             "a factor enumerates the values of one name component",
         )?);
@@ -251,6 +251,22 @@ fn declared_values(
     while !tokens.at_end() {
         let name = tokens.ident(complaint)?;
         let description = tokens.description(complaint)?;
+        values.push(Declared { name, description });
+    }
+    Ok(values)
+}
+
+/// The values of one product factor, each with the text it contributes to a leaf's
+/// description.
+fn contributed_values(
+    stream: TokenStream,
+    complaint: &str,
+) -> Result<Vec<Declared>, DeclarationError> {
+    let mut tokens = Tokens::new(stream);
+    let mut values = vec![];
+    while !tokens.at_end() {
+        let name = tokens.ident(complaint)?;
+        let description = tokens.string("the text a factor value contributes")?;
         values.push(Declared { name, description });
     }
     Ok(values)

@@ -67,144 +67,144 @@ pub struct TokenScopeEntry {
 
 declare_scope_entries! {
     namespace "fish_color_" {
-        "source" /** the default color */ normal root;
+        "source" /** default color */ normal root;
         "comment" /** comments like ``# important`` */;
 
-        "keyword" /** keywords, falling back on the command color */ ["command"];
+        "keyword" /** keywords like ``if``, ``for`` and ``end`` */ ["command"];
         sum "keyword" {
-            begin /** the ``begin`` keyword */
-            builtin /** the ``builtin`` decorator */
-            case /** the ``case`` keyword */
-            command /** the ``command`` decorator */
-            else /** the ``else`` keyword */
-            end /** the ``end`` keyword */
-            exec /** the ``exec`` decorator */
-            for /** the ``for`` keyword */
-            function /** the ``function`` keyword */
-            if /** the ``if`` keyword */
-            in /** the ``in`` keyword */
-            switch /** the ``switch`` keyword */
-            while /** the ``while`` keyword */
+            begin /** ``begin`` keyword */
+            builtin /** ``builtin`` decorator */
+            case /** ``case`` keyword */
+            command /** ``command`` decorator */
+            else /** ``else`` keyword */
+            end /** ``end`` keyword */
+            exec /** ``exec`` decorator */
+            for /** ``for`` keyword */
+            function /** ``function`` keyword */
+            if /** ``if`` keyword */
+            in /** ``in`` keyword */
+            switch /** ``switch`` keyword */
+            while /** ``while`` keyword */
         };
-        "keyword.modifier" /** ``and``, ``or``, ``not``, ``!`` and ``time``, as a group */ ["operator"];
+        "keyword.modifier" /** ``and``, ``or``, ``not``, ``!`` and ``time`` */ ["operator"];
         sum "keyword.modifier" keyword {
-            and /** the ``and`` keyword */
-            or /** the ``or`` keyword */
-            not /** the ``not`` keyword */
-            exclam /** the ``!`` keyword */
-            time /** the ``time`` decorator */
+            and /** ``and`` */
+            or /** ``or`` */
+            not /** ``not`` */
+            exclam /** ``!`` */
+            time /** ``time`` decorator */
         };
 
-        "command" /** commands, every kind falling back on this */;
-        "command.external" /** a command found on the ``PATH`` */;
-        "command.builtin" /** builtin commands like ``cd`` and ``set`` */ builtin;
-        "command.function" /** user-defined functions */ function;
-        "command.abbreviation" /** a command an abbreviation expands to */;
-        "command.implicit_cd" /** a directory named in command position, which changes directory */;
+        "command" /** commands like ``echo`` */;
+        "command.external" /** programs on the ``PATH``, like ``/bin/cat`` */;
+        "command.builtin" /** builtins like ``cd`` and ``set`` */ builtin;
+        "command.function" /** function calls like ``myfunc`` */ function;
+        "command.abbreviation" /** abbreviations, like ``gco`` for ``git checkout`` */;
+        "command.implicit_cd" /** directories as command words, like ``/tmp`` */;
 
         "argument" /** ordinary command parameters */ param;
-        "argument.option" /** options starting with ``-``, up to the first ``--`` */ option;
+        "argument.option" /** options like ``-l`` and ``--long`` */ option;
         sum "argument.option" {
-            short /** ``-`` and one character: ``-s`` */
-            long /** ``--`` and a name: ``--long`` */
-            gnu /** ``-`` and several characters: ``-option`` or ``-abc`` */
+            short /** one-letter options like ``-l`` */
+            long /** named options like ``--long`` */
+            gnu /** several letters after one dash, like ``-abc`` */
         };
-        "argument.option.numeric" /** ``-`` and digits, which is a negative number rather than an option: ``-5`` */ option_numeric ["argument"];
-        product "variable.definition" ["argument"] /** a name a command defines */ {
-            sum { local /** local */ function /** function */ global /** global */ universal /** universal */ }
-            sum { exported /** exported */ unexported /** unexported */ }
-            sum { path /** a path variable */ non_path /** not a path variable */ }
+        "argument.option.numeric" /** negative numbers like ``-5`` */ option_numeric ["argument"];
+        product "variable.definition" ["argument"] /** ``x`` in ``set{}{}{} x`` */ {
+            sum { local " -l" function " -f" global " -g" universal " -U" }
+            sum { exported " -x" unexported " -u" }
+            sum { path " --path" non_path " --unpath" }
         };
 
         "string.quoted" /** quoted text like ``"abc"`` */ quote;
         sum "string.quoted" {
-            single /** the text of a single-quoted run */
-            double /** the text of a double-quoted run */
+            single /** text inside ``'...'`` */
+            double /** text inside ``"..."`` */
         };
         sum "string.quoted.single" {
-            delimiter /** the ``'`` marks around a single-quoted run */
+            delimiter /** ``'`` quotes of a single-quoted run */
         };
         sum "string.quoted.double" {
-            delimiter /** the quote marks around a double-quoted run */
+            delimiter /** ``"`` quotes of a double-quoted run */
         };
         "string.escape" /** character escapes like ``\n`` and ``\x70`` */ escape;
         sum "string.escape" {
-            unicode /** a ``\u``, ``\U``, ``\x`` or ``\X`` escape */
-            octal /** a ``\`` and the octal digits after it */
-            control /** a ``\c`` escape */
+            unicode /** ``\u``, ``\U``, ``\x`` and ``\X`` escapes */
+            octal /** ``\`` and the octal digits after it */
+            control /** ``\c`` escapes */
         };
-        "string.escape.invalid" /** an escape whose value is out of range */ escape_invalid ["invalid"];
+        "string.escape.invalid" /** escapes out of range, like ``\U110000`` */ escape_invalid ["invalid"];
 
-        "variable" /** a variable name in a reference */ ["operator"];
-        "variable.sigil" /** the ``$`` before a name */;
-        "variable.sigil.dereference" /** a ``$`` that dereferences the one after it */;
-        "variable.slice" /** the brackets of a slice */;
-        "variable.parameter" /** a parameter of the enclosing function definition */;
-        "variable.parameter.argv" /** ``argv`` */;
-        "variable.parameter.named" /** a name the enclosing definition declares with ``-a`` */;
+        "variable" /** variable names like ``x`` in ``$x`` */ ["operator"];
+        "variable.sigil" /** ``$`` before a variable name */;
+        "variable.sigil.dereference" /** ``$`` dereferencing the next one, as in ``$$x`` */;
+        "variable.slice" /** slice brackets like ``[1]`` in ``$x[1]`` */;
+        "variable.parameter" /** ``$x`` referring to a parameter inside ``function … end`` */;
+        "variable.parameter.argv" /** ``$argv`` */;
+        "variable.parameter.named" /** ``$x`` referring to a name from ``-a`` */;
 
-        "operator" /** parameter expansion operators */;
+        "operator" /** expansion operators like ``*`` and ``~`` */;
         "operator.glob" /** ``*``, and ``?`` where a question mark globs */;
-        "operator.brace" /** the ``{``, ``}`` and ``,`` of a brace expansion */;
+        "operator.brace" /** ``{``, ``}`` and the ``,`` between them */;
         "operator.parenthesis" /** ``(`` and ``)`` */;
         "operator.tilde" /** ``~`` at the start of a word */;
-        "operator.dollar" /** the ``$`` of ``$(command)`` */;
+        "operator.dollar" /** ``$`` of ``$(command)`` */;
         "operator.logical" /** ``&&`` and ``||`` */;
-        "operator.assignment" /** the ``=`` that separates a name from its value */;
+        "operator.assignment" /** ``=`` between a name and its value */;
 
-        "redirection" /** IO redirections */;
+        "redirection" /** redirections like ``>/dev/null`` */;
         sum "redirection" {
-            input /** a redirection that reads: ``<`` */
-            output /** a redirection that writes: ``>`` */
-            append /** a redirection that appends: ``>>`` */
-            fd /** a redirection whose target is a file descriptor: ``>&`` */
+            input /** ``<`` and its target */
+            output /** ``>`` and its target */
+            append /** ``>>`` and its target */
+            fd /** ``>&`` and the descriptor after it */
         };
 
-        "terminator" /** process separators like ``;`` and ``&`` */ end;
+        "terminator" /** separators like ``;``, ``&`` and ``|`` */ end;
         sum "terminator" {
             pipe /** ``|`` */
             background /** ``&`` */
             semicolon /** ``;`` */
-            newline /** a newline */
+            newline /** newline */
         };
 
         "invalid" /** syntax errors */ error;
         sum "invalid" {
-            command /** a command word that names no command */
-            path /** a ``cd`` argument that is not a path */
-            redirection /** a redirection target that cannot be used */
+            command /** unknown command words, like ``/bin/nope`` */
+            path /** non-directory ``cd`` arguments, like ``cd foo`` */
+            redirection /** unusable redirection targets, like ``> /nope/x`` */
         };
 
         // The scopes an enclosing construct contributes.  They are entries like the
         // rest; a character's set places them after its leaf's chain and before the
         // root, and what makes one enclosing is that position, not its declaration.
-        "meta.function.no_shadowing" /** the body of a function definition whose header declares ``-S`` */ enclosing;
-        "meta.function" /** the body of a function definition */ enclosing;
-        "meta.command_substitution" /** the inside of a command substitution */ enclosing;
-        "meta.block" /** the body of a ``begin`` block or a brace block */ enclosing;
-        "meta.if" /** the body of an ``if``, ``else if`` or ``else`` branch */ enclosing;
-        "meta.case" /** the body of a ``case`` clause */ enclosing;
-        "meta.loop.for" /** a ``for`` loop's body */ enclosing;
-        "meta.loop.while" /** a ``while`` loop's body */ enclosing;
-        "meta.loop" /** every loop's body */ enclosing;
-        "meta.pipeline" /** the commands of a pipeline */ enclosing;
-        "meta.and_or" /** the commands of an ``and``/``or`` list */ enclosing;
+        "meta.function.no_shadowing" /** characters inside ``function … end -S`` */ enclosing;
+        "meta.function" /** characters inside ``function … end`` */ enclosing;
+        "meta.command_substitution" /** characters inside ``$(…)`` */ enclosing;
+        "meta.block" /** characters inside ``begin … end`` */ enclosing;
+        "meta.if" /** characters inside ``if … end`` */ enclosing;
+        "meta.case" /** characters inside ``case … end`` */ enclosing;
+        "meta.loop.for" /** characters inside ``for … end`` */ enclosing;
+        "meta.loop.while" /** characters inside ``while … end`` */ enclosing;
+        "meta.loop" /** characters inside ``for … end`` and ``while … end`` */ enclosing;
+        "meta.pipeline" /** characters of ``echo | cat`` */ enclosing;
+        "meta.and_or" /** characters of ``true && echo`` */ enclosing;
     }
 
     namespace "fish_pager_color_" {
-        "progress" /** the pager's status line, like ``and 3 more rows`` */;
-        "background" /** the background of a row */;
-        "prefix" /** the prefix of a row */;
-        "completion" /** the completion text of a row */;
-        "description" /** the description of a row */;
-        "secondary.background" /** the background of a secondary row */ ["background"];
-        "secondary.prefix" /** the prefix of a secondary row */ ["prefix"];
-        "secondary.completion" /** the completion text of a secondary row */ ["completion"];
-        "secondary.description" /** the description of a secondary row */ ["description"];
-        "selected.background" /** the background of the selected row */ ["background", @SearchMatch];
-        "selected.prefix" /** the prefix of the selected row */ ["prefix"];
-        "selected.completion" /** the completion text of the selected row */ ["completion"];
-        "selected.description" /** the description of the selected row */ ["description"];
+        "progress" /** status line of the pager, like ``and 3 more rows`` */;
+        "background" /** background color of a line */;
+        "prefix" /** prefix string to be completed */;
+        "completion" /** completion text, i.e. the proposed rest of the string */;
+        "description" /** completion description */;
+        "secondary.background" /** background of every second unselected completion */ ["background"];
+        "secondary.prefix" /** prefix of every second unselected completion */ ["prefix"];
+        "secondary.completion" /** suffix of every second unselected completion */ ["completion"];
+        "secondary.description" /** description of every second unselected completion */ ["description"];
+        "selected.background" /** background of the selected completion */ ["background", @SearchMatch];
+        "selected.prefix" /** prefix of the selected completion */ ["prefix"];
+        "selected.completion" /** suffix of the selected completion */ ["completion"];
+        "selected.description" /** description of the selected completion */ ["description"];
     }
 }
 
@@ -242,20 +242,20 @@ mod tests {
     }
 
     #[test]
-    fn a_product_leaf_states_the_values_it_takes() {
-        let leaf = TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED.entry();
-        assert!(leaf.description.contains("local"), "{}", leaf.description);
-        assert!(
-            leaf.description.contains("exported"),
-            "{}",
-            leaf.description
-        );
+    fn a_product_leaf_states_the_spelling_it_answers_to() {
+        let description = |scope: TokenScopeId| scope.entry().description;
 
-        let root = TokenScopeId::VARIABLE_DEFINITION.entry();
-        assert!(
-            !root.description.contains("local"),
-            "the fully absent leaf states the family alone: {}",
-            root.description
+        assert_eq!(
+            description(TokenScopeId::VARIABLE_DEFINITION),
+            "``x`` in ``set x``"
+        );
+        assert_eq!(
+            description(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED),
+            "``x`` in ``set -l -x x``"
+        );
+        assert_eq!(
+            description(TokenScopeId::VARIABLE_DEFINITION_UNIVERSAL_UNEXPORTED_NON_PATH),
+            "``x`` in ``set -U -u --unpath x``"
         );
     }
 
