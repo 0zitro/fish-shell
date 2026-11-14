@@ -45,10 +45,7 @@ use crate::{
     flog::{flog, flogf},
     function,
     global_safety::RelaxedAtomicBool,
-    highlight::{
-        HighlightRole, HighlightSpec, autosuggest_validate_from_history, highlight_shell,
-        parse_text_face_for_highlight,
-    },
+    highlight::{HighlightRole, HighlightSpec, autosuggest_validate_from_history, highlight_shell},
     history::{
         History, HistoryId, HistorySearch, MemoryHistoryId, PersistenceMode, SearchDirection,
         SearchFlags, SearchType, history_id, in_private_mode,
@@ -98,7 +95,7 @@ use crate::{
         },
     },
     termsize::{signal_safe_termsize_invalidate_tty, termsize_last, termsize_update},
-    text_face::{TextFace, parse_text_face},
+    text_style::{TextStyle, parse_text_style},
     threads::{assert_is_background_thread, assert_is_main_thread},
     tokenizer::{
         TokFlags, TokenType, Tokenizer, quote_end, tok_command, variable_assignment_equals_pos,
@@ -428,7 +425,7 @@ pub fn reader_pop() {
             .screen
             .reset_abandoning_line(Some(termsize_last().width()));
     } else {
-        Outputter::stdoutput().borrow_mut().reset_text_face();
+        Outputter::stdoutput().borrow_mut().reset_text_style();
         *commandline_state_snapshot() = CommandlineState::new();
     }
 }
@@ -1878,7 +1875,7 @@ impl<'a> Reader<'a> {
                 let explicit_foreground = self
                     .vars()
                     .get_unless_empty(L!("fish_color_search_match"))
-                    .is_some_and(|var| parse_text_face(var.as_list()).fg.is_some());
+                    .is_some_and(|var| parse_text_style(var.as_list()).fg.is_some());
 
                 for color in &mut colors[range] {
                     if explicit_foreground {
@@ -2677,7 +2674,7 @@ impl<'a> Reader<'a> {
                     }
                 }
             }
-            Outputter::stdoutput().borrow_mut().reset_text_face();
+            Outputter::stdoutput().borrow_mut().reset_text_style();
         }
         let result = self
             .rls()
@@ -3107,13 +3104,14 @@ impl<'a> Reader<'a> {
 
                     let mut outp = Outputter::stdoutput().borrow_mut();
                     if let Some(fish_color_cancel) = self.vars().get(L!("fish_color_cancel")) {
-                        outp.set_text_face(
-                            parse_text_face_for_highlight(&fish_color_cancel)
-                                .unwrap_or(TextFace::terminal_default()),
+                        outp.set_text_style(
+                            parse_text_style(fish_color_cancel.as_list())
+                                .find_style()
+                                .unwrap_or(TextStyle::terminal_default()),
                         );
                     }
                     outp.write_wstr(L!("^C"));
-                    outp.reset_text_face();
+                    outp.reset_text_style();
 
                     // We print a newline last so the prompt_sp hack doesn't get us.
                     outp.push(b'\n');
@@ -5130,7 +5128,7 @@ pub fn reader_write_title(
         /*default_title=*/ None,
     );
 
-    out.reset_text_face();
+    out.reset_text_style();
 
     if reset_cursor_position && written {
         // Put the cursor back at the beginning of the line (issue #2453).
@@ -6408,7 +6406,7 @@ fn reader_run_command(parser: &mut Parser, cmd: &wstr) -> EvalRes {
     reader_write_title(cmd, parser, true);
     Outputter::stdoutput()
         .borrow_mut()
-        .set_text_face(TextFace::terminal_default());
+        .set_text_style(TextStyle::terminal_default());
     term_donate(false);
 
     let time_before = Instant::now();
