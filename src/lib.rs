@@ -65,7 +65,7 @@ pub mod signal;
 pub mod stdx;
 pub mod terminal;
 pub mod termsize;
-pub mod text_face;
+pub mod text_style;
 pub mod threads;
 pub mod timer;
 pub mod tinyexpr;

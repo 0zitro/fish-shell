@@ -1,3 +1,11 @@
+//! The style one span of text is drawn in: its three colors and its flags.
+//!
+//! The style is the value domain the terminal is written with, and the value the
+//! colour variables parse into. A variable names the fields it sets and leaves the
+//! rest absent, so the type a variable parses into is a style whose every field may
+//! be missing: [`SpecifiedTextStyle`]. A style every field of which is present is
+//! what the terminal is given: [`TextStyle`].
+
 use crate::prelude::*;
 use crate::terminal::{self, get_color_support};
 use fish_color::Color;
@@ -49,8 +57,13 @@ pub(crate) enum UnderlineStyle {
     Dashed,
 }
 
+/// The resettable flags of a style.
+///
+/// A flag is worth an attribute rather than a modifier: bold and dim are set or not,
+/// while the rest are a three-valued decision, because a style may state that an
+/// underline is off, and that is not the absence of a decision.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) struct TextStyling {
+pub(crate) struct TextStyleFlags {
     pub(crate) bold: bool,
     pub(crate) underline_style: ResettableStyle<UnderlineStyle>,
     pub(crate) italics: ResettableStyle,
@@ -59,7 +72,7 @@ pub(crate) struct TextStyling {
     pub(crate) strikethrough: ResettableStyle,
 }
 
-impl TextStyling {
+impl TextStyleFlags {
     pub(crate) const fn terminal_default() -> Self {
         Self {
             bold: false,
@@ -70,6 +83,7 @@ impl TextStyling {
             strikethrough: ResettableStyle::Off,
         }
     }
+
     pub(crate) const fn unknown() -> Self {
         Self {
             bold: false,
@@ -105,6 +119,7 @@ impl TextStyling {
             strikethrough: self.strikethrough.union_prefer_right(other.strikethrough),
         }
     }
+
     pub(crate) fn difference_prefer_empty(self, other: Self) -> Self {
         Self {
             bold: self.is_bold() && !other.is_bold(),
@@ -120,7 +135,7 @@ impl TextStyling {
         }
     }
 
-    /// Returns whether the text face is bold.
+    /// Returns whether the text style is bold.
     pub const fn is_bold(self) -> bool {
         self.bold
     }
@@ -135,44 +150,46 @@ impl TextStyling {
         self.underline_style = underline;
     }
 
-    /// Returns whether the text face is dim.
+    /// Returns whether the text style is dim.
     pub const fn is_dim(self) -> bool {
         self.dim
     }
 }
 
+/// The style one span of text is drawn in: its three colors and its flags.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TextFace {
+pub(crate) struct TextStyle {
     pub(crate) fg: Color,
     pub(crate) bg: Color,
     pub(crate) underline_color: Color,
-    pub(crate) style: TextStyling,
+    pub(crate) flags: TextStyleFlags,
 }
 
-impl TextFace {
+impl TextStyle {
     pub const fn terminal_default() -> Self {
         Self {
             fg: Color::Normal,
             bg: Color::Normal,
             underline_color: Color::Normal,
-            style: TextStyling::terminal_default(),
+            flags: TextStyleFlags::terminal_default(),
         }
     }
+
     pub const fn unknown() -> Self {
         Self {
             fg: Color::None,
             bg: Color::None,
             underline_color: Color::None,
-            style: TextStyling::unknown(),
+            flags: TextStyleFlags::unknown(),
         }
     }
 
-    pub fn new(fg: Color, bg: Color, underline_color: Color, style: TextStyling) -> Self {
+    pub fn new(fg: Color, bg: Color, underline_color: Color, flags: TextStyleFlags) -> Self {
         Self {
             fg,
             bg,
             underline_color,
-            style,
+            flags,
         }
     }
 
@@ -181,39 +198,60 @@ impl TextFace {
         !self.fg.is_none()
             && !self.bg.is_none()
             && !self.underline_color.is_none()
-            && self.style.all_set()
+            && self.flags.all_set()
     }
 }
 
+/// The style a color variable denotes: the fields it names, and nothing else.
+///
+/// A field left absent is a field the variable does not speak about, which is what
+/// lets a composition keep the value a less specific variable gave that field.
 #[derive(Debug, PartialEq)]
-pub(crate) struct SpecifiedTextFace {
+pub(crate) struct SpecifiedTextStyle {
     pub(crate) fg: Option<Color>,
     pub(crate) bg: Option<Color>,
     pub(crate) underline_color: Option<Color>,
-    pub(crate) style: TextStyling,
+    pub(crate) flags: TextStyleFlags,
     pub(crate) reset: bool,
 }
 
-impl Default for SpecifiedTextFace {
+impl Default for SpecifiedTextStyle {
     fn default() -> Self {
-        SpecifiedTextFace {
+        SpecifiedTextStyle {
             fg: Default::default(),
             bg: Default::default(),
             underline_color: Default::default(),
-            style: TextStyling::unknown(),
+            flags: TextStyleFlags::unknown(),
             reset: false,
         }
     }
 }
 
-pub(crate) fn parse_text_face(arguments: &[WString]) -> SpecifiedTextFace {
+impl SpecifiedTextStyle {
+    /// The style this value denotes, or none when it specifies nothing.
+    ///
+    /// Every field it leaves unspecified takes the terminal default.
+    pub(crate) fn find_style(&self) -> Option<TextStyle> {
+        (*self != Self::default()).then(|| {
+            let default = TextStyle::terminal_default();
+            TextStyle {
+                fg: self.fg.unwrap_or(default.fg),
+                bg: self.bg.unwrap_or(default.bg),
+                underline_color: self.underline_color.unwrap_or(default.underline_color),
+                flags: default.flags.union_prefer_right(self.flags),
+            }
+        })
+    }
+}
+
+pub(crate) fn parse_text_style(arguments: &[WString]) -> SpecifiedTextStyle {
     let mut argv: Vec<&wstr> = Some(L!(""))
         .into_iter()
         .chain(arguments.iter().map(|s| s.as_utfstr()))
         .collect();
     use ParsedArgs::*;
-    match parse_text_face_and_options(&mut argv, /*is_builtin=*/ false) {
-        Ok(SetFace(specified_face)) => specified_face,
+    match parse_text_style_and_options(&mut argv, /*is_builtin=*/ false) {
+        Ok(SetStyle(specified_style)) => specified_style,
         Err(_) => Default::default(),
         Ok(PrintColors(_)) | Ok(PrintHelp) => unreachable!(),
     }
@@ -223,11 +261,11 @@ pub(crate) struct PrintColorsArgs<'argarray, 'args> {
     pub(crate) fg_args: &'argarray [&'args wstr],
     pub(crate) bg: Option<Color>,
     pub(crate) underline_color: Option<Color>,
-    pub(crate) style: TextStyling,
+    pub(crate) flags: TextStyleFlags,
 }
 
 pub(crate) enum ParsedArgs<'argarray, 'args> {
-    SetFace(SpecifiedTextFace),
+    SetStyle(SpecifiedTextStyle),
     PrintHelp,
     PrintColors(PrintColorsArgs<'argarray, 'args>),
 }
@@ -256,7 +294,7 @@ fn parse_resettable_style<'a>(w: &WGetopter<'_, 'a, '_>) -> Result<ResettableSty
     }
 }
 
-pub(crate) fn parse_text_face_and_options<'argarray, 'args>(
+pub(crate) fn parse_text_style_and_options<'argarray, 'args>(
     argv: &'argarray mut [&'args wstr],
     is_builtin: bool,
 ) -> Result<ParsedArgs<'argarray, 'args>, ParseError<'args>> {
@@ -297,7 +335,7 @@ pub(crate) fn parse_text_face_and_options<'argarray, 'args>(
     let mut fg_colors = vec![];
     let mut bg_colors = vec![];
     let mut underline_colors = vec![];
-    let mut style = TextStyling::unknown();
+    let mut flags = TextStyleFlags::unknown();
     let mut print_color_mode = false;
     let mut reset = false;
 
@@ -327,23 +365,23 @@ pub(crate) fn parse_text_face_and_options<'argarray, 'args>(
                 assert!(is_builtin);
                 return Ok(PrintHelp);
             }
-            'o' => style.bold = true,
+            'o' => flags.bold = true,
             'i' => {
-                style.italics =
+                flags.italics =
                     parse_resettable_style(&w).map_err(|v| InvalidOptArg(L!("--italics"), v))?;
             }
-            'd' => style.dim = true,
+            'd' => flags.dim = true,
             'r' => {
-                style.reverse =
+                flags.reverse =
                     parse_resettable_style(&w).map_err(|v| InvalidOptArg(L!("--reverse"), v))?;
             }
             's' => {
-                style.strikethrough = parse_resettable_style(&w)
+                flags.strikethrough = parse_resettable_style(&w)
                     .map_err(|v| InvalidOptArg(L!("--strikethrough"), v))?;
             }
             'u' => {
                 let arg = w.woptarg.unwrap_or(L!("single"));
-                style.underline_style = if arg == "single" {
+                flags.underline_style = if arg == "single" {
                     ResettableStyle::On(UnderlineStyle::Single)
                 } else if arg == "double" {
                     ResettableStyle::On(UnderlineStyle::Double)
@@ -395,13 +433,13 @@ pub(crate) fn parse_text_face_and_options<'argarray, 'args>(
             fg_args,
             bg,
             underline_color,
-            style,
+            flags,
         }));
     }
 
     // Historical behavior: reset only applies if it's the first argument.
     if is_builtin && fg_args.first().is_some_and(|fg| fg == "reset") {
-        return Ok(SetFace(SpecifiedTextFace {
+        return Ok(SetStyle(SpecifiedTextStyle {
             reset: true,
             ..Default::default()
         }));
@@ -421,25 +459,25 @@ pub(crate) fn parse_text_face_and_options<'argarray, 'args>(
     }
     // #1323: We may have multiple foreground colors. Choose the best one.
     let fg = best_color(fg_colors);
-    Ok(SetFace(SpecifiedTextFace {
+    Ok(SetStyle(SpecifiedTextStyle {
         fg,
         bg,
         underline_color,
-        style,
+        flags,
         reset,
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SpecifiedTextFace, TextStyling, parse_text_face};
+    use super::{SpecifiedTextStyle, TextStyleFlags, parse_text_style};
     use fish_color::{Color, Color24};
 
     #[test]
-    fn test_parse_text_face() {
+    fn test_parse_text_style() {
         assert_eq!(
-            parse_text_face(&["0000ee".into(), "--theme=default".into()]),
-            SpecifiedTextFace {
+            parse_text_style(&["0000ee".into(), "--theme=default".into()]),
+            SpecifiedTextStyle {
                 fg: Some(Color::Rgb(Color24 {
                     r: 0,
                     g: 0,
@@ -447,7 +485,7 @@ mod tests {
                 })),
                 bg: None,
                 underline_color: None,
-                style: TextStyling::unknown(),
+                flags: TextStyleFlags::unknown(),
                 reset: false
             }
         );
