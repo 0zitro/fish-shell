@@ -7,6 +7,7 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" type="text/css" href="fishconfig.css" />
     <link rel="stylesheet" type="text/css" media="print" href="fishconfig_print.css">
+    <script type="text/javascript" src="js/colour_variables.js" defer></script>
     <script type="text/javascript" src="js/colorutils.js" defer></script>
     <script type="text/javascript" src="js/main.js" defer></script>
     <script type="text/javascript" src="js/alpine.js" defer></script>
@@ -54,57 +55,28 @@
                                 </label>
                             </template>
                         </div>
-                        <!-- This is the sample text -->
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_command'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_command)}"
-                            @click="selectColorSetting('fish_color_command')">/bright/vixens</span>
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_param'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_param)}"
-                            @click="selectColorSetting('fish_color_param')">jump</span>
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_end'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_end)}"
-                            @click="selectColorSetting('fish_color_end')">|</span>
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_command'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_command)}"
-                            @click="selectColorSetting('fish_color_command')">dozy</span>
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_quote'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_quote)}"
-                            @click="selectColorSetting('fish_color_quote')"> "fowl"</span>
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_redirection'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_redirection)}"
-                            @click="selectColorSetting('fish_color_redirection')">&gt; quack</span>
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_end'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_end)}"
-                            @click="selectColorSetting('fish_color_end')">&</span>
-                        <br>
-
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_command'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_command)}"
-                            @click="selectColorSetting('fish_color_command')">echo</span>
-
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_error'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_error)}"
-                            @click="selectColorSetting('fish_color_error')">'</span><span
-                            :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_quote'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_quote)}"
-                            @click="selectColorSetting('fish_color_quote')">Errors are the portals to discovery</span>
-
-                        <br>
-
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_comment'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_comment)}"
-                            @click="selectColorSetting('fish_color_comment')"># This is a comment</span>
-
-                        <br>
-
-                        <span :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_command'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_command)}"
-                            @click="selectColorSetting('fish_color_command')">Th</span><span class="fake_cursor"><span
-                                style="visibility: hidden">i</span></span><span
-                            :class="{cs_clickable: customizationActive, cs_editing: csEditingType == 'fish_color_autosuggestion'}"
-                            :style="{ 'color': interpret_color(currentColorScheme().colors.fish_color_autosuggestion)}"
-                            @click="selectColorSetting('fish_color_autosuggestion')">s is an autosuggestion</span>
-
+                        <!-- The sample: fish source classified by the highlighting pass
+                             itself, coloured with the variable each piece's scope stands
+                             for and clicked to edit that variable. -->
+                        <div class="colour_sample_rows">
+                            <template x-for="(piece, pieceIndex) in colourSample" :key="pieceIndex">
+                                <span class="colour_sample_piece"
+                                    :class="{cs_clickable: customizationActive, cs_editing: csEditingType == variableForPiece(piece)}"
+                                    :style="{ 'color': interpret_color(currentColorScheme().colors[variableForPiece(piece)]) }"
+                                    @click="selectColorSetting(variableForPiece(piece))" x-text="piece.text"></span>
+                            </template>
+                        </div>
+                        <!-- The variables the sample cannot show — the enclosing scopes,
+                             the family fallbacks and the overlays — and every other one,
+                             so all of them are reachable. -->
+                        <div class="colour_variable_list">
+                            <template x-for="variable in colourVariables" :key="variable.variable">
+                                <div class="colour_variable_row"
+                                    :class="{cs_clickable: customizationActive, cs_editing: csEditingType == variable.variable}"
+                                    :style="{ 'color': interpret_color(currentColorScheme().colors[variable.variable]) }"
+                                    @click="selectColorSetting(variable.variable)" x-text="variable.description"></div>
+                            </template>
+                        </div>
 
                         <div style="position: absolute; right: 5px; bottom: 5px;">
 

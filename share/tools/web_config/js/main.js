@@ -18,6 +18,28 @@ document.addEventListener("alpine:init", () => {
         showSaveButton: false,
         csUserVisibleTitle: "",
         selectedColorSetting: false,
+        // Every colour variable the shell declares, in declaration order.
+        colourVariables: window.__fish_colour_variables,
+        // The variable a scope path stands for, so the classified sample can name it.
+        variableOfPath: Object.fromEntries(
+            window.__fish_colour_variables
+                .filter((variable) => variable.path)
+                .map((variable) => [variable.path, variable.variable])),
+        // The sample, classified by the highlighting pass itself.
+        colourSample: [],
+
+        variableForPiece(piece) {
+            return this.variableOfPath[piece.path];
+        },
+
+        // What the picker calls a setting: a declared variable states itself, and the
+        // variables the declaration does not hold — the prompt's own — are named by their
+        // spelling.
+        titleForSetting(name) {
+            const variable = this.colourVariables.find(
+                (variable) => variable.variable === name);
+            return variable ? variable.description : user_visible_title_for_setting_name(name);
+        },
 
         text_color_for_color: window.text_color_for_color,
 
@@ -77,14 +99,14 @@ document.addEventListener("alpine:init", () => {
                 this.customizationActive = true;
                 this.selectedColorSetting = setting;
                 this.csEditingType = setting;
-                this.csUserVisibleTitle = user_visible_title_for_setting_name(setting);
+                this.csUserVisibleTitle = this.titleForSetting(setting);
             }
         },
 
         selectColorSetting(name) {
             this.selectedColorSetting = name;
             this.csEditingType = this.customizationActive ? name : "";
-            this.csUserVisibleTitle = user_visible_title_for_setting_name(name);
+            this.csUserVisibleTitle = this.titleForSetting(name);
             this.beginCustomizationWithSetting(name);
         },
 
@@ -147,6 +169,7 @@ document.addEventListener("alpine:init", () => {
 
         async init() {
             let schemes = await (await fetch("colors/")).json();
+            this.colourSample = await (await fetch("colour_sample/")).json();
 
             for (var scheme of schemes) {
                 var currentScheme = {
