@@ -56,15 +56,46 @@
                             </template>
                         </div>
                         <!-- The sample: fish source classified by the highlighting pass
-                             itself, drawn with the style each piece resolves to and
-                             clicked to edit the variable that colours it. -->
-                        <div class="colour_sample_rows">
+                             itself, drawn with the style each piece resolves to.  A click
+                             picks a run and opens the scopes that colour it; nothing is
+                             decorated until then. -->
+                        <div class="colour_sample_rows"
+                            :class="{'colour_sample_with_rail': pickedStops.length > 0}">
                             <template x-for="(piece, pieceIndex) in colourSample" :key="pieceIndex">
                                 <span class="colour_sample_piece"
-                                    :class="{cs_clickable: customizationActive, cs_editing: csEditingType == variableForPiece(piece)}"
+                                    :class="{colour_scope_extent: pieceInActiveStop(pieceIndex), cs_editing: pickedPieceIndex == pieceIndex}"
                                     :style="styleForPiece(piece)"
-                                    @click="selectColorSetting(variableForPiece(piece))" x-text="piece.text"></span>
+                                    @click="pickPiece(pieceIndex)" x-text="piece.text"></span>
                             </template>
+                        </div>
+                        <!-- The scopes that colour the picked run, most specific first: the
+                             run's own scope, the chain it resolves through, the scopes that
+                             enclose it, and the root, each label drawn in the style its own
+                             variable resolves to, in one monospace column. -->
+                        <div class="colour_specificity" x-show="pickedStops.length > 0" x-ref="specificity"
+                            tabindex="0" @keydown.arrow-up.prevent="moveStop(-1)"
+                            @keydown.arrow-down.prevent="moveStop(1)">
+                            <div class="colour_specificity_graphic">^</div>
+                            <template x-for="(stop, stopIndex) in pickedStops" :key="stopIndex">
+                                <div>
+                                    <div class="colour_specificity_stop"
+                                        :class="{colour_specificity_selected: selectedStopIndex == stopIndex, colour_specificity_unset: !stopIsSet(stop)}"
+                                        :title="stop.variable"
+                                        @click="selectStop(stopIndex)"
+                                        @mouseenter="hoveredStopIndex = stopIndex"
+                                        @mouseleave="hoveredStopIndex = null"><span
+                                            class="colour_specificity_indicator"
+                                            x-text="selectedStopIndex == stopIndex ? '&gt; ' : '  '"></span><span
+                                            class="colour_specificity_bullet"
+                                            x-text="selectedStopIndex == stopIndex ? '* ' : 'o '"></span><span
+                                            class="colour_specificity_label"
+                                            :style="effectiveStyleOf(stop.variable)"
+                                            x-text="'[' + stop.path + ']'"></span></div>
+                                    <div class="colour_specificity_graphic"
+                                        x-show="stopIndex &lt; pickedStops.length - 1">|</div>
+                                </div>
+                            </template>
+                            <div class="colour_specificity_graphic">v</div>
                         </div>
                         <!-- The variables the sample cannot show — the enclosing scopes,
                              the family fallbacks and the overlays — and every other one,
@@ -73,8 +104,10 @@
                             <template x-for="variable in colourVariables" :key="variable.variable">
                                 <div class="colour_variable_row"
                                     :class="{cs_clickable: customizationActive, cs_editing: csEditingType == variable.variable}"
-                                    :style="{ 'color': interpret_color(currentColorScheme().colors[variable.variable]) }"
-                                    @click="selectColorSetting(variable.variable)" x-text="variable.description"></div>
+                                    :style="effectiveStyleOf(variable.variable)"
+                                    @click="selectVariable(variable.variable)"
+                                    @mouseenter="hoverVariable(variable.variable)"
+                                    @mouseleave="clearHoveredVariable()" x-text="variable.description"></div>
                             </template>
                         </div>
 
@@ -92,8 +125,36 @@
                     </div>
 
                     <div x-show="customizationActive">
-                        <div style="margin: 10px 0 7px 35px;">Choose a color for <span
-                                x-text="csUserVisibleTitle"></span>:</div>
+                        <div style="margin: 10px 0 7px 35px;">Choose <span
+                                x-text="fieldTitle()"></span> for <span x-text="csUserVisibleTitle"></span><span
+                                x-show="pickedStops.length"
+                                x-text="' (the ' + selectedStopPath() + ' scope)'"></span>: <span
+                                class="colour_field_value" :class="{colour_field_value_unset: !selectedFieldColour()}"
+                                :style="fieldValueStyle()" :title="fieldValueTitle()"></span></div>
+                        <!-- The field of the selected variable the color grid writes.  Each
+                             control is drawn in the style it sets, over a chip of a color
+                             that reads on it. -->
+                        <div class="colour_field_buttons">
+                            <button class="colour_field_button" title="Foreground color"
+                                :class="{colour_field_button_selected: editingField == 'foreground'}"
+                                :style="foregroundButtonStyle()" @click="selectField('foreground')">Aa</button>
+                            <button class="colour_field_button" title="Background color"
+                                :class="{colour_field_button_selected: editingField == 'background'}"
+                                :style="backgroundButtonStyle()" @click="selectField('background')">Aa</button>
+                            <button class="colour_field_button"
+                                title="Underline: on, then the color grid sets the underline color"
+                                :class="{colour_field_button_selected: editingField == 'underline_colour'}"
+                                :style="underlineButtonStyle()" @click="toggleFlag('underline')">Aa</button>
+                            <button class="colour_field_button" title="Bold"
+                                :class="{colour_field_button_selected: selectedFlag('bold')}"
+                                :style="flagButtonStyle('bold')" @click="toggleFlag('bold')">B</button>
+                            <button class="colour_field_button" title="Italics"
+                                :class="{colour_field_button_selected: selectedFlag('italics')}"
+                                :style="flagButtonStyle('italics')" @click="toggleFlag('italics')">I</button>
+                            <button class="colour_field_button" title="Dim"
+                                :class="{colour_field_button_selected: selectedFlag('dim')}"
+                                :style="flagButtonStyle('dim')" @click="toggleFlag('dim')">F</button>
+                        </div>
                         <!-- TODO maybe add input[type=color] for 24bit terminals -->
                         <table class="colorpicker_term256" style="margin: 0px 20px;">
                             <tbody>
@@ -102,9 +163,9 @@
                                         <template x-for="color in color_array">
                                             <td class="colorpicker_term256_cell"
                                                 :style="{'background-color': interpret_color(color)}"
-                                                @click="changeSelectedTextColor(color)">
+                                                @click="changeSelectedColor(color)">
                                                 <div class="colorpicker_term256_selection_indicator"
-                                                    x-show="currentColorScheme().colors[selectedColorSetting] == color"
+                                                    x-show="selectedFieldColour() == color"
                                                     :style="{'border-color': interpret_color(border_color_for_color(color))}">
                                                 </div>
                                             </td>

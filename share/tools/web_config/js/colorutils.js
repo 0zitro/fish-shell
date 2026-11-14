@@ -127,6 +127,35 @@ function text_color_for_color(color_str) {
     return adjust_lightness(color_str, compute_constrast);
 }
 
+/* The black or white that reads on top of `color`, for a control that shows one
+   color on a chip of another.  An unset color draws as the given fallback. */
+function contrasting_color(color, fallback) {
+    const hex = interpret_color(color) || interpret_color(fallback) || "";
+    if (hex.length < 7) return "#ffffff";
+    const red = parseInt(hex.slice(1, 3), 16);
+    const green = parseInt(hex.slice(3, 5), 16);
+    const blue = parseInt(hex.slice(5, 7), 16);
+    const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+    return luminance > 0.55 ? "#000000" : "#ffffff";
+}
+
+/* The CSS underline style a fish underline kind is drawn as. */
+function css_underline_style(kind) {
+    switch (kind) {
+        case "single":
+            return "solid";
+        case "curly":
+            return "wavy";
+        case "dotted":
+            return "dotted";
+        case "dashed":
+            return "dashed";
+        case "double":
+            return "double";
+    }
+    return "solid";
+}
+
 function rgb_to_hsl(r, g, b) {
     r /= 255, g /= 255, b /= 255;
     var max = Math.max(r, g, b), min = Math.min(r, g, b);
