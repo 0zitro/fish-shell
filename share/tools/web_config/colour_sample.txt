@@ -1,5 +1,8 @@
 #!/usr/bin/env fish
 
+# A sample of fish source, drawn by fish_config's colour page and classified by the
+# shell's own highlighting pass.  It is not sourced by anything: the last line is a
+# line still being typed, which is why the file does not parse.
 
 # @fish-lsp-disable-next-line 4004
 set --global --export RELEASES_ROOT "$__fish_config_dir/../releases"

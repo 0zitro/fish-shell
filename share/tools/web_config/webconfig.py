@@ -866,7 +866,7 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         Each piece is a run of characters the pass gave one scope, so the page colours
         and picks by what fish reports rather than by a second classification."""
         sample_path = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "colour_sample.fish"
+            os.path.dirname(os.path.realpath(__file__)), "colour_sample.txt"
         )
         with open(sample_path, encoding="utf-8") as sample_file:
             text = sample_file.read()
