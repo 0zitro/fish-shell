@@ -558,6 +558,38 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_keyword_resolves_through_its_own_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_command"), &[L!("red")]);
+
+        // if true; end — a keyword falls back on the command family, as the table says.
+        let classifications = colors.classify(L!("if true; end"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(0).fg, color(L!("red")));
+        assert_eq!(style(9).fg, color(L!("red")));
+
+        // Its own family stands in front of that fallback.
+        colors.set(L!("fish_color_keyword"), &[L!("green")]);
+        let classifications = colors.classify(L!("if true; end"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(0).fg, color(L!("green")));
+        assert_eq!(style(9).fg, color(L!("green")));
+
+        // A refinement splits one keyword off.
+        colors.set(L!("fish_color_keyword_if"), &[L!("yellow")]);
+        let classifications = colors.classify(L!("if true; end"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(0).fg, color(L!("yellow")));
+        assert_eq!(style(9).fg, color(L!("green")));
+
+        // A modifier is under the modifier family, which reaches the operator family.
+        colors.set(L!("fish_color_operator"), &[L!("brblue")]);
+        let classifications = colors.classify(L!("true; and false"));
+        assert_eq!(colors.style_of(classifications[6]).fg, color(L!("brblue")));
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);

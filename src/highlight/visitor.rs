@@ -800,24 +800,24 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
     // AST visitor implementations.
     fn visit_keyword(&mut self, node: &dyn Keyword) {
         let scope = match node.keyword() {
-            ParseKeyword::Begin
-            | ParseKeyword::Builtin
-            | ParseKeyword::Case
-            | ParseKeyword::Command
-            | ParseKeyword::Else
-            | ParseKeyword::End
-            | ParseKeyword::Exec
-            | ParseKeyword::For
-            | ParseKeyword::Function
-            | ParseKeyword::If
-            | ParseKeyword::In
-            | ParseKeyword::Switch
-            | ParseKeyword::While => TokenScopeId::KEYWORD,
-            ParseKeyword::And
-            | ParseKeyword::Or
-            | ParseKeyword::Not
-            | ParseKeyword::Exclam
-            | ParseKeyword::Time => TokenScopeId::OPERATOR,
+            ParseKeyword::Begin => TokenScopeId::KEYWORD_BEGIN,
+            ParseKeyword::Builtin => TokenScopeId::KEYWORD_BUILTIN,
+            ParseKeyword::Case => TokenScopeId::KEYWORD_CASE,
+            ParseKeyword::Command => TokenScopeId::KEYWORD_COMMAND,
+            ParseKeyword::Else => TokenScopeId::KEYWORD_ELSE,
+            ParseKeyword::End => TokenScopeId::KEYWORD_END,
+            ParseKeyword::Exec => TokenScopeId::KEYWORD_EXEC,
+            ParseKeyword::For => TokenScopeId::KEYWORD_FOR,
+            ParseKeyword::Function => TokenScopeId::KEYWORD_FUNCTION,
+            ParseKeyword::If => TokenScopeId::KEYWORD_IF,
+            ParseKeyword::In => TokenScopeId::KEYWORD_IN,
+            ParseKeyword::Switch => TokenScopeId::KEYWORD_SWITCH,
+            ParseKeyword::While => TokenScopeId::KEYWORD_WHILE,
+            ParseKeyword::And => TokenScopeId::KEYWORD_AND,
+            ParseKeyword::Or => TokenScopeId::KEYWORD_OR,
+            ParseKeyword::Not => TokenScopeId::KEYWORD_NOT,
+            ParseKeyword::Exclam => TokenScopeId::KEYWORD_EXCLAM,
+            ParseKeyword::Time => TokenScopeId::KEYWORD_TIME,
             ParseKeyword::None => TokenScopeId::NORMAL,
         };
         self.classify_node(node.as_node(), self.classification_of(scope));
@@ -1302,7 +1302,7 @@ mod tests {
             );
 
             validate!(
-                ("command", fg(TokenScopeId::KEYWORD)),
+                ("command", fg(TokenScopeId::KEYWORD_COMMAND)),
                 ("echo", fg(TokenScopeId::COMMAND)),
                 ("abc", fg(TokenScopeId::PARAM)),
                 ("foo", param_valid_path),
@@ -1319,7 +1319,8 @@ mod tests {
             );
 
             validate!(
-                ("if command", fg(TokenScopeId::KEYWORD)),
+                ("if", fg(TokenScopeId::KEYWORD_IF)),
+                ("command", fg(TokenScopeId::KEYWORD_COMMAND)),
                 ("ls", fg(TokenScopeId::COMMAND)),
                 ("; ", fg(TokenScopeId::END)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
@@ -1327,17 +1328,17 @@ mod tests {
                 ("; ", fg(TokenScopeId::END)),
                 ("/bin/definitely_not_a_command", fg(TokenScopeId::ERROR)),
                 ("; ", fg(TokenScopeId::END)),
-                ("end", fg(TokenScopeId::KEYWORD)),
+                ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             validate!(
-                ("if", fg(TokenScopeId::KEYWORD)),
+                ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
-                ("else", fg(TokenScopeId::KEYWORD)),
+                ("else", fg(TokenScopeId::KEYWORD_ELSE)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
-                ("end", fg(TokenScopeId::KEYWORD)),
+                ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             // Verify that cd shows errors for non-directories.
@@ -1472,9 +1473,9 @@ mod tests {
             validate!(("$(echo echo)(echo invalid)", fg(TokenScopeId::ERROR)));
 
             validate!(
-                ("for", fg(TokenScopeId::KEYWORD)),
+                ("for", fg(TokenScopeId::KEYWORD_FOR)),
                 ("x", fg(TokenScopeId::PARAM)),
-                ("in", fg(TokenScopeId::KEYWORD)),
+                ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("set-by-for-1", fg(TokenScopeId::PARAM)),
                 ("set-by-for-2", fg(TokenScopeId::PARAM)),
                 (";", fg(TokenScopeId::END)),
@@ -1482,7 +1483,7 @@ mod tests {
                 (">", fg(TokenScopeId::REDIRECTION)),
                 ("$x", fg(TokenScopeId::REDIRECTION)),
                 (";", fg(TokenScopeId::END)),
-                ("end", fg(TokenScopeId::KEYWORD)),
+                ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             validate!(
@@ -1511,7 +1512,7 @@ mod tests {
             validate!(
                 ("end", fg(TokenScopeId::ERROR)),
                 (";", fg(TokenScopeId::END)),
-                ("if", fg(TokenScopeId::KEYWORD)),
+                ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("end", fg(TokenScopeId::ERROR)),
             );
 
@@ -1564,12 +1565,12 @@ mod tests {
             );
 
             validate!(
-                ("for", fg(TokenScopeId::KEYWORD)),
+                ("for", fg(TokenScopeId::KEYWORD_FOR)),
                 ("i", fg(TokenScopeId::PARAM)),
-                ("in", fg(TokenScopeId::KEYWORD)),
+                ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("1 2 3", fg(TokenScopeId::PARAM)),
                 (";", fg(TokenScopeId::END)),
-                ("end", fg(TokenScopeId::KEYWORD)),
+                ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             validate!(
@@ -1599,22 +1600,22 @@ mod tests {
             );
 
             validate!(
-                ("if", fg(TokenScopeId::KEYWORD)),
+                ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("&&", fg(TokenScopeId::OPERATOR_LOGICAL)),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
-                ("or", fg(TokenScopeId::OPERATOR)),
+                ("or", fg(TokenScopeId::KEYWORD_OR)),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 ("||", fg(TokenScopeId::OPERATOR_LOGICAL)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
-                ("and", fg(TokenScopeId::OPERATOR)),
-                ("not", fg(TokenScopeId::OPERATOR)),
-                ("!", fg(TokenScopeId::OPERATOR)),
+                ("and", fg(TokenScopeId::KEYWORD_AND)),
+                ("not", fg(TokenScopeId::KEYWORD_NOT)),
+                ("!", fg(TokenScopeId::KEYWORD_EXCLAM)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
-                ("end", fg(TokenScopeId::KEYWORD)),
+                ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             validate!(
@@ -1662,9 +1663,12 @@ mod tests {
                 ("-s", fg(TokenScopeId::PARAM)),
             );
 
-            for decorator in ["command", "exec"] {
+            for (decorator, scope) in [
+                ("command", TokenScopeId::KEYWORD_COMMAND),
+                ("exec", TokenScopeId::KEYWORD_EXEC),
+            ] {
                 validate!(
-                    (decorator, fg(TokenScopeId::KEYWORD)),
+                    (decorator, fg(scope)),
                     ("--", fg(TokenScopeId::OPTION)),
                     ("/bin/cat", fg(TokenScopeId::COMMAND)),
                     ("-n", fg(TokenScopeId::OPTION)),
@@ -1673,12 +1677,12 @@ mod tests {
                 );
             }
 
-            for (decorator, role) in [
-                ("builtin", TokenScopeId::KEYWORD),
-                ("time", TokenScopeId::OPERATOR),
+            for (decorator, scope) in [
+                ("builtin", TokenScopeId::KEYWORD_BUILTIN),
+                ("time", TokenScopeId::KEYWORD_TIME),
             ] {
                 validate!(
-                    (decorator, fg(role)),
+                    (decorator, fg(scope)),
                     ("--", fg(TokenScopeId::OPTION)),
                     ("echo", fg(TokenScopeId::BUILTIN)),
                     ("-n", fg(TokenScopeId::OPTION)),
@@ -1686,8 +1690,8 @@ mod tests {
             }
 
             validate!(
-                ("not", fg(TokenScopeId::OPERATOR)),
-                ("time", fg(TokenScopeId::OPERATOR)),
+                ("not", fg(TokenScopeId::KEYWORD_NOT)),
+                ("time", fg(TokenScopeId::KEYWORD_TIME)),
                 ("--", fg(TokenScopeId::OPTION)),
                 ("{", fg(TokenScopeId::KEYWORD)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
