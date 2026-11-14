@@ -664,6 +664,51 @@ mod tests {
 
     #[test]
     #[serial]
+    fn an_option_shape_resolves_through_the_option_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_param"), &[L!("red")]);
+        colors.set(L!("fish_color_option"), &[L!("green")]);
+
+        // echo -s --long -gnu -5
+        let classifications = colors.classify(L!("echo -s --long -gnu -5"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(5).fg, color(L!("green")), "the short shape");
+        assert_eq!(style(8).fg, color(L!("green")), "the long shape");
+        assert_eq!(style(15).fg, color(L!("green")), "the GNU shape");
+        assert_eq!(
+            style(20).fg,
+            color(L!("red")),
+            "a negative number is a value, so it reaches the parameter"
+        );
+
+        // Its own variable splits one shape off.
+        colors.set(L!("fish_color_option_long"), &[L!("brblue")]);
+        let classifications = colors.classify(L!("echo -s --long -gnu -5"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(5).fg, color(L!("green")));
+        assert_eq!(style(8).fg, color(L!("brblue")));
+    }
+
+    #[test]
+    #[serial]
+    fn a_long_options_value_is_an_argument() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_option"), &[L!("green")]);
+        colors.set(L!("fish_color_param"), &[L!("red")]);
+
+        // echo --colour=always
+        let classifications = colors.classify(L!("echo --colour=always"));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(5).fg, color(L!("green")), "the name");
+        assert_eq!(
+            style(14).fg,
+            color(L!("red")),
+            "the value after the `=` is an argument"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);

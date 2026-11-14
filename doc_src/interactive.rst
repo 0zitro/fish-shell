@@ -194,6 +194,14 @@ The following variables are available to change the highlighting colors in fish:
     parameters and redirection targets that are filenames (if the file exists)
 .. envvar:: fish_color_option
     options starting with "-", up to the first "--" parameter
+.. envvar:: fish_color_option_short
+    a ``-`` and one character: ``-s``
+.. envvar:: fish_color_option_long
+    a ``--`` and a name: ``--long``
+.. envvar:: fish_color_option_gnu
+    a ``-`` and several characters: ``-option`` or ``-abc``
+.. envvar:: fish_color_option_numeric
+    a ``-`` and digits, which is a negative number rather than an option: ``-5``
 .. envvar:: fish_color_comment
     comments like '# important'
 .. envvar:: fish_color_selection
