@@ -73,9 +73,11 @@ declare_scope_entries! {
         "keyword" /** keywords like ``if``, ``for`` and ``end`` */ ["command"];
         sum "keyword" {
             begin /** ``begin`` keyword */
+            break /** ``break`` keyword */
             builtin /** ``builtin`` decorator */
             case /** ``case`` keyword */
             command /** ``command`` decorator */
+            continue /** ``continue`` keyword */
             else /** ``else`` keyword */
             end /** ``end`` keyword */
             exec /** ``exec`` decorator */
@@ -83,6 +85,7 @@ declare_scope_entries! {
             function /** ``function`` keyword */
             if /** ``if`` keyword */
             in /** ``in`` keyword */
+            return /** ``return`` keyword */
             switch /** ``switch`` keyword */
             while /** ``while`` keyword */
         };
@@ -97,7 +100,23 @@ declare_scope_entries! {
 
         "command" /** commands like ``echo`` */;
         "command.external" /** programs on the ``PATH``, like ``/bin/cat`` */;
-        "command.builtin" /** builtins like ``cd`` and ``set`` */ builtin;
+        "command.builtin" /** builtins like ``cd`` and ``echo`` */ builtin;
+        "command.builtin.async" /** the ``emit`` and ``wait`` builtins */ builtin_async;
+        sum "command.builtin.async" builtin_async {
+            emit /** ``emit`` builtin */
+            wait /** ``wait`` builtin */
+        };
+        "command.builtin.boolean" /** the ``true`` and ``false`` builtins */ builtin_boolean;
+        sum "command.builtin.boolean" builtin_boolean {
+            false /** ``false`` builtin */
+            true /** ``true`` builtin */
+        };
+        "command.builtin.eval" /** ``eval`` builtin */ builtin_eval;
+        "command.builtin.random" /** ``random`` builtin */ builtin_random;
+        "command.builtin.read" /** ``read`` builtin */ builtin_read;
+        "command.builtin.set" /** ``set`` builtin */ builtin_set;
+        "command.builtin.status" /** ``status`` builtin */ builtin_status;
+        "command.builtin.test" /** ``test`` builtin */ builtin_test;
         "command.function" /** function calls like ``myfunc`` */ function;
         "command.abbreviation" /** abbreviations, like ``gco`` for ``git checkout`` */;
         "command.implicit_cd" /** directories as command words, like ``/tmp`` */;
@@ -206,6 +225,43 @@ declare_scope_entries! {
         "selected.completion" /** suffix of the selected completion */ ["completion"];
         "selected.description" /** description of the selected completion */ ["description"];
     }
+}
+
+/// The scope a builtin's word names, when the declaration gives the word one.
+///
+/// The declaration states the word as the last component of a builtin's path —
+/// `command.builtin.set` declares ``set``, and `command.builtin.async.emit`
+/// declares ``emit`` — so the words with a scope of their own are read from the
+/// paths rather than listed beside them.  A path with children states a category
+/// of builtins, not a word: no builtin is named after one.
+pub fn builtin_word_scope(word: &wstr) -> Option<TokenScopeId> {
+    /// The path prefix whose remainder ends in a builtin's word.
+    const PREFIX: &str = "command.builtin.";
+
+    scope_of_word_under(word, PREFIX)
+}
+
+/// The scope a keyword's word names, when the declaration gives the word one.
+///
+/// The declaration states the word as the last component of a keyword's path —
+/// `keyword.return` declares ``return`` — so the words with a scope of their own
+/// are read from the paths rather than listed beside them.  A modifier's word is
+/// not reached this way: it is carried by the decoration that spells it, not by a
+/// command word.
+pub fn keyword_word_scope(word: &wstr) -> Option<TokenScopeId> {
+    /// The path prefix whose remainder is a keyword's word.
+    const PREFIX: &str = "keyword.";
+
+    scope_of_word_under(word, PREFIX)
+}
+
+/// The scope whose path under `prefix` ends in `word`.
+fn scope_of_word_under(word: &wstr, prefix: &str) -> Option<TokenScopeId> {
+    TOKEN_SCOPE_ENTRIES.iter().find_map(|entry| {
+        let path = entry.path.strip_prefix(prefix)?;
+        let last = path.rsplit('.').next().expect("every path has a component");
+        last.chars().eq(word.chars()).then_some(entry.scope)
+    })
 }
 
 #[cfg(test)]

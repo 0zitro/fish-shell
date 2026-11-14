@@ -20,6 +20,7 @@ use crate::{
         ParseKeyword, ParseTokenType, ParseTreeFlags, SourceRange, StatementDecoration,
     },
     parse_util::{get_process_first_token_offset, locate_cmdsubst_range, slice_length},
+    parser_keywords::parser_keywords_is_reserved,
     path::{path_as_implicit_cd, path_get_cdpath, path_get_path, paths_are_same_file},
     redirection::RedirectionMode,
     terminal::Outputter,
@@ -29,7 +30,9 @@ use crate::{
 };
 use fish_color::Color;
 use fish_feature_flags::{FeatureFlag, feature_test};
-use fish_token_scope::{EnclosingScopeSet, HighlightAttribute, TokenScopeId};
+use fish_token_scope::{
+    EnclosingScopeSet, HighlightAttribute, TokenScopeId, builtin_word_scope, keyword_word_scope,
+};
 use fish_wcstringutil::string_prefixes_string;
 use fish_widestring::{
     ASCII_MAX, EXPAND_RESERVED_BASE, EXPAND_RESERVED_END, L, PROCESS_EXPAND_SELF_STR, WExt as _,
@@ -133,14 +136,16 @@ fn command_scope(
         implicit_cd_ok = false;
     }
 
-    // Builtins
-    if builtin_ok && builtin_exists(cmd) {
-        return Some(TokenScopeId::BUILTIN);
-    }
-
+    // A function takes the name it declares, and a function of a builtin's name is what the
+    // word runs, so the function is consulted first.
     // Functions
     if function_ok && function::exists_no_autoload(cmd) {
         return Some(TokenScopeId::FUNCTION);
+    }
+
+    // Builtins
+    if builtin_ok && builtin_exists(cmd) {
+        return Some(builtin_word_scope(cmd).unwrap_or(TokenScopeId::BUILTIN));
     }
 
     // Abbreviations
@@ -1316,10 +1321,25 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         }
         let cmd = stmt.command.source(self.buff);
 
+        // A word the shell reserves names one thing in every pass: no function can take the
+        // name, so the text decides the scope and neither resolution nor I/O is involved.
+        // A word the shell does not reserve is resolved like any other command word, so its
+        // scope names the builtin only where the resolution found one.
+        // A command or exec decoration looks the word up as a program instead, which a
+        // reserved word cannot be.
+        let reserved_word_scope = match stmt.decoration() {
+            StatementDecoration::None | StatementDecoration::Builtin
+                if parser_keywords_is_reserved(cmd) =>
+            {
+                keyword_word_scope(cmd).or_else(|| builtin_word_scope(cmd))
+            }
+            _ => None,
+        };
+
         let mut expanded_cmd = WString::new();
         let mut cmd_scope = None;
         let mut unresolved_command = false;
-        if !has_cmdsub_without_dollar(cmd) {
+        if reserved_word_scope.is_none() && !has_cmdsub_without_dollar(cmd) {
             // We cannot check a command substitution without executing it, so assume it is valid.
             if !self.whether_io_permitted()
                 || variable_assignment_equals_pos(cmd).is_some()
@@ -1351,7 +1371,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         }
 
         // Classify our statement.
-        if let Some(cmd_scope) = cmd_scope {
+        if let Some(cmd_scope) = reserved_word_scope.or(cmd_scope) {
             self.classify_command_word(&stmt.command, cmd_scope);
         } else {
             let scope = if unresolved_command {
@@ -1766,6 +1786,62 @@ mod tests {
                 ("&", fg(TokenScopeId::END_BACKGROUND)),
             );
 
+            // A builtin the declaration names has a scope of its own; one it does not name
+            // keeps the builtin kind.
+            validate!(
+                ("set", fg(TokenScopeId::BUILTIN_SET)),
+                ("-l", fg(TokenScopeId::OPTION_SHORT)),
+                ("x", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
+            );
+            validate!(
+                ("eval", fg(TokenScopeId::BUILTIN_EVAL)),
+                ("echo", fg(TokenScopeId::PARAM)),
+            );
+            validate!(
+                ("read", fg(TokenScopeId::BUILTIN_READ)),
+                ("-l", fg(TokenScopeId::OPTION_SHORT)),
+                ("x", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
+            );
+            validate!(
+                ("test", fg(TokenScopeId::BUILTIN_TEST)),
+                ("-e", fg(TokenScopeId::OPTION_SHORT)),
+                ("/tmp", param_valid_path),
+            );
+            validate!(
+                ("status", fg(TokenScopeId::BUILTIN_STATUS)),
+                ("is-interactive", fg(TokenScopeId::PARAM)),
+            );
+            validate!(
+                ("random", fg(TokenScopeId::BUILTIN_RANDOM)),
+                ("1", fg(TokenScopeId::PARAM)),
+            );
+            validate!(
+                ("emit", fg(TokenScopeId::BUILTIN_ASYNC_EMIT)),
+                ("evt", fg(TokenScopeId::PARAM)),
+            );
+            // The shipped `wait` function is what the word runs, so the builtin's own scope
+            // is reached by asking for the builtin.
+            validate!(("wait", fg(TokenScopeId::FUNCTION)),);
+            validate!(
+                ("builtin", fg(TokenScopeId::KEYWORD_BUILTIN)),
+                ("wait", fg(TokenScopeId::BUILTIN_ASYNC_WAIT)),
+            );
+            validate!(("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),);
+            validate!(("false", fg(TokenScopeId::BUILTIN_BOOLEAN_FALSE)),);
+            validate!(
+                ("cd", fg(TokenScopeId::FUNCTION)),
+                ("/tmp", param_valid_path),
+            );
+
+            // A reserved word cannot direct control flow and a command at once: the keyword's
+            // text wins its own scope.
+            validate!(
+                ("return", fg(TokenScopeId::KEYWORD_RETURN)),
+                ("2", fg(TokenScopeId::PARAM)),
+            );
+            validate!(("break", fg(TokenScopeId::KEYWORD_BREAK)),);
+            validate!(("continue", fg(TokenScopeId::KEYWORD_CONTINUE)),);
+
             validate!(
                 ("command", fg(TokenScopeId::KEYWORD_COMMAND)),
                 ("echo", fg(TokenScopeId::COMMAND_EXTERNAL)),
@@ -1801,31 +1877,34 @@ mod tests {
 
             validate!(
                 ("if", fg(TokenScopeId::KEYWORD_IF)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("else", fg(TokenScopeId::KEYWORD_ELSE)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             // Verify that cd shows errors for non-directories.
-            validate!(("cd", fg(TokenScopeId::BUILTIN)), ("dir", param_valid_path),);
+            validate!(
+                ("cd", fg(TokenScopeId::FUNCTION)),
+                ("dir", param_valid_path),
+            );
 
             validate!(
-                ("cd", fg(TokenScopeId::BUILTIN)),
+                ("cd", fg(TokenScopeId::FUNCTION)),
                 ("foo", fg(TokenScopeId::ERROR_PATH)),
             );
 
             validate!(
-                ("cd", fg(TokenScopeId::BUILTIN)),
+                ("cd", fg(TokenScopeId::FUNCTION)),
                 ("--help", fg(TokenScopeId::OPTION_LONG)),
                 ("-h", fg(TokenScopeId::OPTION_SHORT)),
                 ("definitely_not_a_directory", fg(TokenScopeId::ERROR_PATH)),
             );
 
             validate!(
-                ("cd", fg(TokenScopeId::BUILTIN)),
+                ("cd", fg(TokenScopeId::FUNCTION)),
                 ("--logical", fg(TokenScopeId::OPTION_LONG)),
                 (
                     "still_definitely_not_a_directory",
@@ -1834,7 +1913,7 @@ mod tests {
             );
 
             validate!(
-                ("cd", fg(TokenScopeId::BUILTIN)),
+                ("cd", fg(TokenScopeId::FUNCTION)),
                 ("dir-in-cdpath", param_valid_path),
             );
 
@@ -1856,19 +1935,19 @@ mod tests {
                 ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
             );
             validate!(
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
             );
             validate!(
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
                 ("before", fg(TokenScopeId::QUOTE_DOUBLE), ns),
                 ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("param1", fg(TokenScopeId::PARAM)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("after", fg(TokenScopeId::QUOTE_DOUBLE), ns),
@@ -1876,12 +1955,12 @@ mod tests {
                 ("param2", fg(TokenScopeId::PARAM)),
             );
             validate!(
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("\"", fg(TokenScopeId::ERROR)),
                 ("unclosed quote", fg(TokenScopeId::QUOTE_DOUBLE), ns),
                 ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
             );
 
@@ -1945,7 +2024,7 @@ mod tests {
             validate!(
                 ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
             );
             validate!(
@@ -1970,7 +2049,7 @@ mod tests {
             );
 
             validate!(
-                ("set", fg(TokenScopeId::BUILTIN)),
+                ("set", fg(TokenScopeId::BUILTIN_SET)),
                 ("x", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("set-by-set", fg(TokenScopeId::PARAM)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
@@ -2121,19 +2200,19 @@ mod tests {
 
             validate!(
                 ("if", fg(TokenScopeId::KEYWORD_IF)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("&&", fg(TokenScopeId::OPERATOR_LOGICAL)),
-                ("false", fg(TokenScopeId::BUILTIN)),
+                ("false", fg(TokenScopeId::BUILTIN_BOOLEAN_FALSE)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("or", fg(TokenScopeId::KEYWORD_OR)),
-                ("false", fg(TokenScopeId::BUILTIN)),
+                ("false", fg(TokenScopeId::BUILTIN_BOOLEAN_FALSE)),
                 ("||", fg(TokenScopeId::OPERATOR_LOGICAL)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("and", fg(TokenScopeId::KEYWORD_AND)),
                 ("not", fg(TokenScopeId::KEYWORD_NOT)),
                 ("!", fg(TokenScopeId::KEYWORD_EXCLAM)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
@@ -2146,9 +2225,9 @@ mod tests {
             );
 
             validate!(
-                ("false", fg(TokenScopeId::BUILTIN)),
+                ("false", fg(TokenScopeId::BUILTIN_BOOLEAN_FALSE)),
                 ("&|", fg(TokenScopeId::END_PIPE)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
             );
 
             validate!(
@@ -2160,9 +2239,9 @@ mod tests {
                 ("VAL1", fg(TokenScopeId::PARAM), ns),
                 ("VAR", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
-                ("false", fg(TokenScopeId::BUILTIN)),
+                ("false", fg(TokenScopeId::BUILTIN_BOOLEAN_FALSE)),
                 ("|&", fg(TokenScopeId::END_PIPE)),
-                ("true", fg(TokenScopeId::BUILTIN)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("stuff", fg(TokenScopeId::PARAM)),
             );
 
@@ -2173,7 +2252,7 @@ mod tests {
 
             // A definition command's names take the mode its flags request.
             validate!(
-                ("set", fg(TokenScopeId::BUILTIN)),
+                ("set", fg(TokenScopeId::BUILTIN_SET)),
                 ("-gx", fg(TokenScopeId::OPTION_GNU)),
                 (
                     "name",
@@ -2182,12 +2261,12 @@ mod tests {
                 ("value", fg(TokenScopeId::PARAM)),
             );
             validate!(
-                ("read", fg(TokenScopeId::BUILTIN)),
+                ("read", fg(TokenScopeId::BUILTIN_READ)),
                 ("-l", fg(TokenScopeId::OPTION_SHORT)),
                 ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
             );
             validate!(
-                ("set", fg(TokenScopeId::BUILTIN)),
+                ("set", fg(TokenScopeId::BUILTIN_SET)),
                 ("-l", fg(TokenScopeId::OPTION_SHORT)),
                 ("--", fg(TokenScopeId::OPTION)),
                 ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
@@ -2195,7 +2274,7 @@ mod tests {
             );
             // An option the classifier cannot read makes it claim no definition.
             validate!(
-                ("set", fg(TokenScopeId::BUILTIN)),
+                ("set", fg(TokenScopeId::BUILTIN_SET)),
                 ("-e", fg(TokenScopeId::OPTION_SHORT)),
                 ("name", fg(TokenScopeId::PARAM)),
             );
@@ -2362,6 +2441,32 @@ mod tests {
         classifications
     }
 
+    /// The classifications of `text`, resolving commands and paths.
+    fn classified_with_io(vars: &dyn Environment, text: &wstr) -> Vec<HighlightClassification> {
+        let mut classifications = vec![];
+        highlight_shell(
+            text,
+            &mut classifications,
+            &mut OperationContext::background(vars, EXPANSION_LIMIT_BACKGROUND),
+            true, /* io_ok */
+            Some(text.len()),
+        );
+        classifications
+    }
+
+    #[test]
+    #[serial]
+    fn a_function_shadows_the_builtin_of_its_name() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+
+        // A definition is global, so until it is erased no other test may see the name.
+        parser.eval(L!("function true; end"), &crate::io::IoChain::new());
+        let classifications = classified_with_io(parser.vars(), L!("true"));
+        parser.eval(L!("functions --erase true"), &crate::io::IoChain::new());
+        assert_eq!(classifications[0].foreground(), TokenScopeId::FUNCTION);
+    }
+
     #[test]
     #[serial]
     fn test_definitions_without_io() {
@@ -2380,6 +2485,30 @@ mod tests {
         // A decorated word is another command, not the builtin that defines.
         let classifications = classified_without_io(vars, L!("command set -gx name 1"));
         assert_eq!(classifications[16].foreground(), TokenScopeId::PARAM);
+
+        // A word the shell reserves names its scope in every pass.
+        for (text, expected) in [
+            (L!("set -l name 1"), TokenScopeId::BUILTIN_SET),
+            (L!("eval echo"), TokenScopeId::BUILTIN_EVAL),
+            (L!("read -l name"), TokenScopeId::BUILTIN_READ),
+            (L!("test -e /tmp"), TokenScopeId::BUILTIN_TEST),
+            (L!("status is-interactive"), TokenScopeId::BUILTIN_STATUS),
+            (L!("return 2"), TokenScopeId::KEYWORD_RETURN),
+            (L!("break"), TokenScopeId::KEYWORD_BREAK),
+            (L!("continue"), TokenScopeId::KEYWORD_CONTINUE),
+        ] {
+            let classifications = classified_without_io(vars, text);
+            assert_eq!(
+                classifications[0].foreground(),
+                expected,
+                "the word at the start of `{text}`"
+            );
+        }
+
+        // A word the shell does not reserve names the builtin only where it resolved to one,
+        // and a pass without I/O resolves no command.
+        let classifications = classified_without_io(vars, L!("true"));
+        assert_eq!(classifications[0].foreground(), TokenScopeId::COMMAND);
     }
 
     #[test]

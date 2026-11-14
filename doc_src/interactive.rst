@@ -135,12 +135,16 @@ shell consults:
     keywords like ``if``, ``for`` and ``end``
 .. envvar:: fish_color_keyword_begin
     ``begin`` keyword
+.. envvar:: fish_color_keyword_break
+    ``break`` keyword
 .. envvar:: fish_color_keyword_builtin
     ``builtin`` decorator
 .. envvar:: fish_color_keyword_case
     ``case`` keyword
 .. envvar:: fish_color_keyword_command
     ``command`` decorator
+.. envvar:: fish_color_keyword_continue
+    ``continue`` keyword
 .. envvar:: fish_color_keyword_else
     ``else`` keyword
 .. envvar:: fish_color_keyword_end
@@ -155,6 +159,8 @@ shell consults:
     ``if`` keyword
 .. envvar:: fish_color_keyword_in
     ``in`` keyword
+.. envvar:: fish_color_keyword_return
+    ``return`` keyword
 .. envvar:: fish_color_keyword_switch
     ``switch`` keyword
 .. envvar:: fish_color_keyword_while
@@ -176,7 +182,31 @@ shell consults:
 .. envvar:: fish_color_command_external
     programs on the ``PATH``, like ``/bin/cat``
 .. envvar:: fish_color_builtin
-    builtins like ``cd`` and ``set``
+    builtins like ``cd`` and ``echo``
+.. envvar:: fish_color_builtin_async
+    the ``emit`` and ``wait`` builtins
+.. envvar:: fish_color_builtin_async_emit
+    ``emit`` builtin
+.. envvar:: fish_color_builtin_async_wait
+    ``wait`` builtin
+.. envvar:: fish_color_builtin_boolean
+    the ``true`` and ``false`` builtins
+.. envvar:: fish_color_builtin_boolean_false
+    ``false`` builtin
+.. envvar:: fish_color_builtin_boolean_true
+    ``true`` builtin
+.. envvar:: fish_color_builtin_eval
+    ``eval`` builtin
+.. envvar:: fish_color_builtin_random
+    ``random`` builtin
+.. envvar:: fish_color_builtin_read
+    ``read`` builtin
+.. envvar:: fish_color_builtin_set
+    ``set`` builtin
+.. envvar:: fish_color_builtin_status
+    ``status`` builtin
+.. envvar:: fish_color_builtin_test
+    ``test`` builtin
 .. envvar:: fish_color_function
     function calls like ``myfunc``
 .. envvar:: fish_color_command_abbreviation
