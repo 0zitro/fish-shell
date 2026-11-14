@@ -130,7 +130,7 @@ fn scopes_of(declaration: Declaration) -> Result<Vec<Scope>, DeclarationError> {
                     description,
                     factors,
                 } => {
-                    for leaf in product_leaves(&path, &factors, &description) {
+                    for leaf in product_leaves(&path, &factors, &description, span)? {
                         // The product's chain is the family root's, and every
                         // leaf reaches it through the derivation.
                         let written = if leaf.path == path {
@@ -182,15 +182,34 @@ struct Leaf {
 /// The leaves of a product: one path per tuple of factor values, the absent value
 /// included.
 ///
-/// A leaf's description states the family's and the values the leaf takes, so the
-/// tuple that takes no value is described by the family alone.
-fn product_leaves(path: &str, factors: &[Vec<Declared>], description: &str) -> Vec<Leaf> {
+/// The description is the template with one `{}` per factor, each replaced by the text
+/// the factor value states, in factor order; the absent value leaves its hole empty.
+fn product_leaves(
+    path: &str,
+    factors: &[Vec<Declared>],
+    template: &str,
+    span: Span,
+) -> Result<Vec<Leaf>, DeclarationError> {
+    let parts: Vec<&str> = template.split("{}").collect();
+    if parts.len() != factors.len() + 1 {
+        return Err(DeclarationError::at(
+            span,
+            format!(
+                "the description of `{path}` holds one `{{}}` per factor, and the product \
+                 declares {}",
+                factors.len()
+            ),
+        ));
+    }
+
     let mut leaves: Vec<(String, Vec<&str>)> = vec![(path.to_owned(), vec![])];
 
     for factor in factors {
         let mut next = Vec::new();
         for (leaf, values) in &leaves {
-            next.push((leaf.clone(), values.clone()));
+            let mut absent = values.clone();
+            absent.push("");
+            next.push((leaf.clone(), absent));
             for value in factor {
                 let mut taken = values.clone();
                 taken.push(value.description.as_str());
@@ -200,17 +219,17 @@ fn product_leaves(path: &str, factors: &[Vec<Declared>], description: &str) -> V
         leaves = next;
     }
 
-    leaves
+    Ok(leaves
         .into_iter()
-        .map(|(path, values)| Leaf {
-            path,
-            description: if values.is_empty() {
-                description.to_owned()
-            } else {
-                format!("{description}: {}", values.join(", "))
-            },
+        .map(|(path, values)| {
+            let mut description = String::from(parts[0]);
+            for (index, value) in values.iter().enumerate() {
+                description.push_str(value);
+                description.push_str(parts[index + 1]);
+            }
+            Leaf { path, description }
         })
-        .collect()
+        .collect())
 }
 
 /// Every path and its scope, and the root's.

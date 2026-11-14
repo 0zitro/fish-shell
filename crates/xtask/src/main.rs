@@ -41,6 +41,12 @@ enum Task {
     /// Run ShellCheck on non-fish shell scripts
     #[command(name = "shellcheck")]
     ShellCheck,
+    /// Generate or check the documentation of the colour variables.
+    TokenScopes {
+        /// Check the documentation instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// Only used to enable completion generation.
@@ -75,6 +81,13 @@ fn main() -> Result<()> {
         Task::HtmlDocs { fish_indent } => build_html_docs(fish_indent),
         Task::ManPages => cargo(["build", "--package", "fish-build-man-pages"]),
         Task::ShellCheck => shellcheck(),
+        Task::TokenScopes { check } => {
+            if check {
+                xtask::token_scopes::check()
+            } else {
+                xtask::token_scopes::update()
+            }
+        }
     }
 }
 

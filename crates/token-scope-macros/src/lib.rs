@@ -28,20 +28,25 @@ mod expansion;
 ///     form :=
 ///         | "<path>" <description> [<stem>] [<steps>] [root] [enclosing] ;
 ///         | sum "<family path>" [<stem>] { <declared> ... } ;
-///         | product "<path>" [<steps>] <description> { sum { <declared> ... } ... } ;
+///         | product "<path>" [<steps>] <template> { sum { <contributed> ... } ... } ;
 ///
 ///     <stem>        := <identifier>
 ///     <steps>       := [ <step> , ... ]      <step> := "<path>" | @<Attribute>
 ///     <declared>    := <identifier> <description>
+///     <contributed> := <identifier> "<the text it contributes>"
 ///     <description> := the doc comment after the name, in Markdown
+///     <template>    := a <description> holding one `{}` per factor
 /// }
 /// ```
 ///
 /// **A description says what a scope is.**  It is the doc comment that follows the
-/// path, written in Markdown so that the same words are the generated
+/// name, written in Markdown so that the same words are the generated
 /// documentation's line and the constant's own documentation.  Every scope states
-/// one: a sum's variants and a product's factor values each state their own, and a
-/// product's leaves compose their family's description with the values they take.
+/// one: a sum's variants each state their own, and a product's factor values state
+/// the text they contribute to the leaf's description, whose template holds one
+/// `{}` per factor — so `product "variable.definition" … /** ``x`` in ``set{}{}{} x``
+/// */ { sum { local " -l" ... } ... }` describes one leaf as
+/// ``x`` in ``set -lx x``.
 ///
 /// **The namespace names the variable.**  Every scope is declared inside a
 /// namespace, and its variable is that namespace's prefix followed by its stem.

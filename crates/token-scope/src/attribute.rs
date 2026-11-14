@@ -133,6 +133,11 @@ pub enum AttributeMode {
 pub struct HighlightAttributeEntry {
     /// The entry's attribute.
     pub attribute: HighlightAttribute,
+    /// What the variable carries, in the words the documentation states it in.
+    ///
+    /// The words are Markdown: the same description is the entry's line in the
+    /// generated documentation.
+    pub description: &'static str,
     /// The variable that carries it.
     pub variable_name: ColorVariableName,
     /// How the value combines with the resolved style, and which fields it may
@@ -152,6 +157,7 @@ pub struct HighlightAttributeEntry {
 static ATTRIBUTE_ENTRIES: &[HighlightAttributeEntry] = &[
     HighlightAttributeEntry {
         attribute: HighlightAttribute::SearchMatch,
+        description: "history search matches and selected pager items",
         variable_name: ColorVariableName(fish_widestring::L!("fish_color_search_match")),
         mode: AttributeMode::Merge(StyleFieldSet::of(&[
             StyleField::Foreground,
@@ -161,12 +167,14 @@ static ATTRIBUTE_ENTRIES: &[HighlightAttributeEntry] = &[
     },
     HighlightAttributeEntry {
         attribute: HighlightAttribute::Selection,
+        description: "selected text in vi visual mode",
         variable_name: ColorVariableName(fish_widestring::L!("fish_color_selection")),
         mode: AttributeMode::Replace(StyleFieldSet::of(EVERY_FIELD)),
         application_order: 20,
     },
     HighlightAttributeEntry {
         attribute: HighlightAttribute::Autosuggestion,
+        description: "autosuggestions, the proposed rest of a command",
         variable_name: ColorVariableName(fish_widestring::L!("fish_color_autosuggestion")),
         mode: AttributeMode::Replace(StyleFieldSet::of(&[
             StyleField::Foreground,
@@ -177,6 +185,7 @@ static ATTRIBUTE_ENTRIES: &[HighlightAttributeEntry] = &[
     },
     HighlightAttributeEntry {
         attribute: HighlightAttribute::PathExisting,
+        description: "parameters and redirection targets naming an existing file",
         variable_name: ColorVariableName(fish_widestring::L!("fish_color_valid_path")),
         mode: AttributeMode::Merge(StyleFieldSet::of(EVERY_FIELD)),
         application_order: 40,
