@@ -700,7 +700,7 @@ fn abandon_line_string(screen_width: Option<usize>) -> Vec<u8> {
             .write_command(EnterDimMode);
 
         abandon_line_string.write_bytes(omitted_newline_str.as_bytes());
-        abandon_line_string.reset_text_face();
+        abandon_line_string.reset_text_style();
         abandon_line_string
             .contents_mut()
             .extend(repeat_n(b' ', screen_width - non_space_width));
@@ -1011,7 +1011,7 @@ impl Screen {
         let mut set_color = |zelf: &mut Self, c| {
             zelf.outp
                 .borrow_mut()
-                .set_text_face(color_resolver.resolve_spec(&c, vars));
+                .set_text_style(color_resolver.resolve_spec(&c, vars));
         };
 
         let mut cached_layouts = LAYOUT_CACHE_SHARED.lock().unwrap();

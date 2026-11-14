@@ -8,7 +8,7 @@ use crate::{
     builtins::builtin_exists,
     common::{valid_var_name, valid_var_name_char},
     complete::complete_wrap_map,
-    env::{EnvVar, Environment},
+    env::Environment,
     expand::{ExpandFlags, ExpandResultCode, expand_one, expand_to_command_and_args},
     function,
     highlight::file_tester::FileTester,
@@ -20,7 +20,7 @@ use crate::{
     parse_util::{get_process_first_token_offset, locate_cmdsubst_range, slice_length},
     path::{path_as_implicit_cd, path_get_cdpath, path_get_path, paths_are_same_file},
     terminal::Outputter,
-    text_face::{ResettableStyle, SpecifiedTextFace, TextFace, UnderlineStyle, parse_text_face},
+    text_style::{ResettableStyle, TextStyle, UnderlineStyle, parse_text_style},
     threads::assert_is_background_thread,
     tokenizer::{PipeOrRedir, variable_assignment_equals_pos},
 };
@@ -69,17 +69,17 @@ pub fn colorize(text: &wstr, colors: &[HighlightSpec], vars: &dyn Environment) -
     for (i, c) in text.chars().enumerate() {
         let color = colors[i];
         if color != last_color {
-            let mut face = rv.resolve_spec(&color, vars);
-            face.bg = Color::Normal; // Historical behavior.
-            outp.set_text_face(face);
+            let mut style = rv.resolve_spec(&color, vars);
+            style.bg = Color::Normal; // Historical behavior.
+            outp.set_text_style(style);
             last_color = color;
         }
         if i + 1 == text.char_count() && c == '\n' {
-            outp.set_text_face(TextFace::terminal_default());
+            outp.set_text_style(TextStyle::terminal_default());
         }
         outp.writech(c);
     }
-    outp.set_text_face(TextFace::terminal_default());
+    outp.set_text_style(TextStyle::terminal_default());
     outp.contents().to_owned()
 }
 
@@ -126,7 +126,7 @@ pub fn highlight_and_colorize<'src, 'ctx>(
 /// one screen redraw.
 #[derive(Default)]
 pub struct HighlightColorResolver {
-    cache: HashMap<HighlightSpec, TextFace>,
+    cache: HashMap<HighlightSpec, TextStyle>,
 }
 
 /// highlight_color_resolver_t resolves highlight specs (like "a command") to actual RGB colors.
@@ -141,17 +141,17 @@ impl HighlightColorResolver {
         &mut self,
         highlight: &HighlightSpec,
         vars: &dyn Environment,
-    ) -> TextFace {
+    ) -> TextStyle {
         match self.cache.entry(*highlight) {
             Entry::Occupied(e) => *e.get(),
             Entry::Vacant(e) => {
-                let face = Self::resolve_spec_uncached(highlight, vars);
-                e.insert(face);
-                face
+                let style = Self::resolve_spec_uncached(highlight, vars);
+                e.insert(style);
+                style
             }
         }
     }
-    fn resolve_spec_uncached(highlight: &HighlightSpec, vars: &dyn Environment) -> TextFace {
+    fn resolve_spec_uncached(highlight: &HighlightSpec, vars: &dyn Environment) -> TextStyle {
         let resolve_role = |role| {
             let mut roles: &[HighlightRole] = &[role, get_fallback(role), HighlightRole::Normal];
             // TODO(MSRV>=?) partition_dedup
@@ -161,74 +161,57 @@ impl HighlightColorResolver {
                 }
             }
             for &role in roles {
-                if let Some(face) = vars
+                if let Some(style) = vars
                     .get_unless_empty(get_highlight_var_name(role))
                     .as_ref()
-                    .and_then(parse_text_face_for_highlight)
+                    .and_then(|var| parse_text_style(var.as_list()).find_style())
                 {
-                    return face;
+                    return style;
                 }
             }
-            TextFace::terminal_default()
+            TextStyle::terminal_default()
         };
-        let mut face = resolve_role(highlight.foreground);
+        let mut style = resolve_role(highlight.foreground);
 
         // Optimization: no need to parse again if both colors are the same.
         if highlight.background != highlight.foreground {
-            let bg_face = resolve_role(highlight.background);
-            face.bg = bg_face.bg;
+            let bg_style = resolve_role(highlight.background);
+            style.bg = bg_style.bg;
             // In case the background role is different from the foreground one, we ignore its style
             // except for reverse mode.
-            if face.style.reverse != ResettableStyle::On(()) {
-                face.style.reverse = bg_face.style.reverse;
+            if style.flags.reverse != ResettableStyle::On(()) {
+                style.flags.reverse = bg_style.flags.reverse;
             }
         }
 
         // Handle modifiers.
         if highlight.valid_path {
             if let Some(valid_path_var) = vars.get(L!("fish_color_valid_path")) {
-                let valid_path_face = parse_text_face(valid_path_var.as_list());
-                if valid_path_face.reset {
-                    face = TextFace::terminal_default();
+                let valid_path_style = parse_text_style(valid_path_var.as_list());
+                if valid_path_style.reset {
+                    style = TextStyle::terminal_default();
                 }
-                if let Some(fg) = valid_path_face.fg {
-                    face.fg = fg;
+                if let Some(fg) = valid_path_style.fg {
+                    style.fg = fg;
                 }
-                if let Some(bg) = valid_path_face.bg {
-                    face.bg = bg;
+                if let Some(bg) = valid_path_style.bg {
+                    style.bg = bg;
                 }
-                if let Some(underline_color) = valid_path_face.underline_color {
-                    face.underline_color = underline_color;
+                if let Some(underline_color) = valid_path_style.underline_color {
+                    style.underline_color = underline_color;
                 }
-                face.style = face.style.union_prefer_right(valid_path_face.style);
+                style.flags = style.flags.union_prefer_right(valid_path_style.flags);
             }
         }
 
         if highlight.force_underline {
-            face.style
+            style
+                .flags
                 .inject_underline(ResettableStyle::On(UnderlineStyle::Single));
         }
 
-        face
+        style
     }
-}
-
-/// Return the internal color code representing the specified color.
-pub(crate) fn parse_text_face_for_highlight(var: &EnvVar) -> Option<TextFace> {
-    let face = parse_text_face(var.as_list());
-    (face != SpecifiedTextFace::default()).then(|| {
-        let default = TextFace::terminal_default();
-        let fg = face.fg.unwrap_or(default.fg);
-        let bg = face.bg.unwrap_or(default.bg);
-        let underline_color = face.underline_color.unwrap_or(default.underline_color);
-        let style = default.style.union_prefer_right(face.style);
-        TextFace {
-            fg,
-            bg,
-            underline_color,
-            style,
-        }
-    })
 }
 
 fn command_role(
@@ -1377,11 +1360,10 @@ pub struct HighlightSpec {
 mod tests {
     use super::{HighlightColorResolver, HighlightRole, HighlightSpec, highlight_shell};
     use crate::env::{EnvMode, EnvSetMode, EnvVar, EnvVarFlags, Environment as _};
-    use crate::highlight::parse_text_face_for_highlight;
     use crate::operation_context::{EXPANSION_LIMIT_BACKGROUND, OperationContext};
     use crate::prelude::*;
     use crate::tests::prelude::*;
-    use crate::text_face::{ResettableStyle, UnderlineStyle};
+    use crate::text_style::{ResettableStyle, UnderlineStyle, parse_text_style};
     use fish_common::ScopeGuard;
     use fish_feature_flags::{FeatureFlag, with_overridden_feature};
     use libc::PATH_MAX;
@@ -1976,9 +1958,9 @@ mod tests {
 
         // Check that 'echo' is underlined
         for i in 0..4 {
-            let face = resolver.resolve_spec(&colors[i], vars);
+            let style = resolver.resolve_spec(&colors[i], vars);
             assert_eq!(
-                face.style.underline_style(),
+                style.flags.underline_style(),
                 ResettableStyle::On(UnderlineStyle::Single),
                 "Character at position {} of 'echo' should be underlined",
                 i
@@ -1987,9 +1969,9 @@ mod tests {
 
         // Check that trailing spaces are NOT underlined
         for i in 4..text.len() {
-            let face = resolver.resolve_spec(&colors[i], vars);
+            let style = resolver.resolve_spec(&colors[i], vars);
             assert_eq!(
-                face.style.underline_style(),
+                style.flags.underline_style(),
                 ResettableStyle::Off,
                 "Trailing space at position {} should NOT be underlined",
                 i
@@ -2015,23 +1997,24 @@ mod tests {
         set(L!("fish_color_keyword"), vec![L!("--theme=default").into()]);
 
         let keyword_spec = HighlightSpec::with_both(HighlightRole::Keyword);
-        let face = HighlightColorResolver::resolve_spec_uncached(&keyword_spec, vars);
+        let style = HighlightColorResolver::resolve_spec_uncached(&keyword_spec, vars);
 
-        let command_face =
-            parse_text_face_for_highlight(&vars.get(L!("fish_color_command")).unwrap()).unwrap();
-        assert_eq!(face, command_face);
+        let command_style = parse_text_style(vars.get(L!("fish_color_command")).unwrap().as_list())
+            .find_style()
+            .unwrap();
+        assert_eq!(style, command_style);
     }
 
     #[test]
-    fn test_parse_text_face_for_highlight_fully_specified() {
+    fn test_find_style_fully_specified() {
         let assert_all_set = |values: Vec<WString>| {
             let var = EnvVar::new_vec(values.clone(), EnvVarFlags::default());
-            let face = parse_text_face_for_highlight(&var);
+            let style = parse_text_style(var.as_list()).find_style();
             assert!(
-                face.is_some_and(|face| face.all_set()),
+                style.is_some_and(|style| style.all_set()),
                 "Underspecified result for {:?}\n => {:?}",
                 values,
-                face
+                style
             );
         };
 
