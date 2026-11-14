@@ -614,6 +614,58 @@ fn classify_word(
     }
 }
 
+/// How a word's shape spells an option.
+enum OptionShape {
+    /// The word is not an option.
+    Argument,
+    /// The whole word is one option shape.
+    Whole(TokenScopeId),
+    /// A long option whose `=` splits the name from its value; the value is the index of
+    /// that `=`.
+    LongWithValue { name_end: usize },
+}
+
+/// The option shape a word has, when options are allowed here.
+///
+/// The shapes are spellings, not readings: a single dash with several characters is one
+/// shape whether it is a GNU-style long option or a bundle of short ones, because telling
+/// them apart needs the command's own option table, which the classifier does not read.
+fn option_shape(word: &wstr, options_allowed: bool) -> OptionShape {
+    if !options_allowed || word.is_empty() || word.char_at(0) != '-' {
+        return OptionShape::Argument;
+    }
+
+    // `-` and `--` are themselves options.
+    if word.len() == 1 {
+        return OptionShape::Whole(TokenScopeId::OPTION);
+    }
+
+    if word.char_at(1) == '-' {
+        if word.len() == 2 {
+            return OptionShape::Whole(TokenScopeId::OPTION);
+        }
+        // A long option, which splits at its `=` if it has one.
+        let mut index = 2;
+        while index < word.len() {
+            if word.char_at(index) == '=' {
+                return OptionShape::LongWithValue { name_end: index };
+            }
+            index += 1;
+        }
+        return OptionShape::Whole(TokenScopeId::OPTION_LONG);
+    }
+
+    let rest = &word[1..];
+    if rest.chars().all(|character| character.is_ascii_digit()) {
+        // A negative number is a value, not an option.
+        OptionShape::Whole(TokenScopeId::OPTION_NUMERIC)
+    } else if rest.len() == 1 {
+        OptionShape::Whole(TokenScopeId::OPTION_SHORT)
+    } else {
+        OptionShape::Whole(TokenScopeId::OPTION_GNU)
+    }
+}
+
 /// The parse tree's visitor: every character is classified as the traversal
 /// reaches it.
 struct HighlightVisitor<'src, 'wd, 'ctx> {
@@ -752,20 +804,40 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         // node does not necessarily have type symbol_argument here.
         let source_range = node.source_range();
         let arg_str = self.source_slice(source_range);
+        let parameter = self.classification_of(TokenScopeId::PARAM);
 
-        // Classify this argument without concern for command substitutions.
-        let scope = if options_allowed && arg_str.char_at(0) == '-' {
-            TokenScopeId::OPTION
-        } else {
-            TokenScopeId::PARAM
-        };
-        let base = self.classification_of(scope);
-        classify_word(
-            arg_str,
-            self.enclosing_function_parameters.last(),
-            base,
-            &mut self.classifications[source_range.as_usize()],
-        );
+        match option_shape(arg_str, options_allowed) {
+            OptionShape::Argument => {
+                classify_word(
+                    arg_str,
+                    self.enclosing_function_parameters.last(),
+                    parameter,
+                    &mut self.classifications[source_range.as_usize()],
+                );
+            }
+            OptionShape::Whole(scope) => {
+                let base = self.classification_of(scope);
+                classify_word(
+                    arg_str,
+                    self.enclosing_function_parameters.last(),
+                    base,
+                    &mut self.classifications[source_range.as_usize()],
+                );
+            }
+            OptionShape::LongWithValue { name_end } => {
+                // The long form splits at its `=`: the name keeps the shape's scope and
+                // the value is an argument in its own right.
+                let name = self.classification_of(TokenScopeId::OPTION_LONG);
+                let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
+                let parameters = self.enclosing_function_parameters.last();
+
+                let classifications = &mut self.classifications[source_range.as_usize()];
+                let (name_part, value_part) = classifications.split_at_mut(name_end + 1);
+                classify_word(&arg_str[..name_end], parameters, name, name_part);
+                name_part[name_end] = assignment;
+                classify_word(&arg_str[name_end + 1..], parameters, parameter, value_part);
+            }
+        }
 
         self.classify_command_substitutions(node);
     }
@@ -1412,14 +1484,14 @@ mod tests {
 
             validate!(
                 ("cd", fg(TokenScopeId::BUILTIN)),
-                ("--help", fg(TokenScopeId::OPTION)),
-                ("-h", fg(TokenScopeId::OPTION)),
+                ("--help", fg(TokenScopeId::OPTION_LONG)),
+                ("-h", fg(TokenScopeId::OPTION_SHORT)),
                 ("definitely_not_a_directory", fg(TokenScopeId::ERROR)),
             );
 
             validate!(
                 ("cd", fg(TokenScopeId::BUILTIN)),
-                ("--logical", fg(TokenScopeId::OPTION)),
+                ("--logical", fg(TokenScopeId::OPTION_LONG)),
                 ("still_definitely_not_a_directory", fg(TokenScopeId::ERROR)),
             );
 
@@ -1432,12 +1504,12 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("param1", fg(TokenScopeId::PARAM)),
-                ("-l", fg(TokenScopeId::OPTION)),
+                ("-l", fg(TokenScopeId::OPTION_SHORT)),
                 ("--", fg(TokenScopeId::OPTION)),
                 ("-l", fg(TokenScopeId::PARAM)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("ls", fg(TokenScopeId::FUNCTION)),
-                ("-l", fg(TokenScopeId::OPTION)),
+                ("-l", fg(TokenScopeId::OPTION_SHORT)),
                 ("--", fg(TokenScopeId::OPTION)),
                 ("-l", fg(TokenScopeId::PARAM)),
                 ("param2", fg(TokenScopeId::PARAM)),
@@ -1607,6 +1679,27 @@ mod tests {
                 ("]", fg(TokenScopeId::VARIABLE_SLICE)),
             );
 
+            // An option's shape is a spelling, not a reading.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("-s", fg(TokenScopeId::OPTION_SHORT)),
+                ("--long", fg(TokenScopeId::OPTION_LONG)),
+                ("-gnu", fg(TokenScopeId::OPTION_GNU)),
+                ("-abc", fg(TokenScopeId::OPTION_GNU)),
+                ("-5", fg(TokenScopeId::OPTION_NUMERIC)),
+                ("-", fg(TokenScopeId::OPTION)),
+                ("--", fg(TokenScopeId::OPTION)),
+                ("-s", fg(TokenScopeId::PARAM)),
+            );
+
+            // The long form splits at its `=`.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("--colour", fg(TokenScopeId::OPTION_LONG)),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
+                ("always", fg(TokenScopeId::PARAM), ns),
+            );
+
             // A mixed word: the quoted runs take their quote style, the rest stays the
             // argument.
             validate!(
@@ -1741,7 +1834,7 @@ mod tests {
                     (decorator, fg(scope)),
                     ("--", fg(TokenScopeId::OPTION)),
                     ("/bin/cat", fg(TokenScopeId::COMMAND)),
-                    ("-n", fg(TokenScopeId::OPTION)),
+                    ("-n", fg(TokenScopeId::OPTION_SHORT)),
                     ("--", fg(TokenScopeId::OPTION)),
                     ("-s", fg(TokenScopeId::PARAM)),
                 );
@@ -1755,7 +1848,7 @@ mod tests {
                     (decorator, fg(scope)),
                     ("--", fg(TokenScopeId::OPTION)),
                     ("echo", fg(TokenScopeId::BUILTIN)),
-                    ("-n", fg(TokenScopeId::OPTION)),
+                    ("-n", fg(TokenScopeId::OPTION_SHORT)),
                 );
             }
 
