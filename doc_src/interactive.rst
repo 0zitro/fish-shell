@@ -303,6 +303,17 @@ The following variables are available to change the highlighting colors in fish:
 .. envvar:: fish_color_history_current
     the current position in the history for commands like ``dirh`` and ``cdh``
 
+A name a command defines is colored by the definition mode the command requests, and
+each factor of that mode is part of the variable's name: the scope (``local``,
+``function``, ``global``, ``universal``), whether the variable is ``exported`` or
+``unexported``, and whether it is a ``path`` or a ``non_path`` variable. The factors the
+command names follow ``fish_color_variable_definition`` in that order, so ``set -l x``
+colors the name with ``fish_color_variable_definition_local``, ``set -gx x`` with
+``fish_color_variable_definition_global_exported``, and ``set x``, which names no factor,
+with ``fish_color_variable_definition``. ``x=1 command`` defines a local, exported
+variable; a ``for`` loop's variable, and a name a definition's header declares with
+``-a``, are local.
+
 If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options, it
 names nothing, and the color of a piece of text is composed from several variables at
 once. Each character belongs to a scope — the class of text it is — and the color is

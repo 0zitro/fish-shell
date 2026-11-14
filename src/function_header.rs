@@ -159,6 +159,11 @@ pub fn header_options() -> Vec<WOption<'static>> {
 pub struct FunctionHeaderFacts {
     /// The argument names the header declares, in the order it declares them.
     pub argument_names: Vec<WString>,
+    /// The indices of the words that declare a name.
+    ///
+    /// A name that is attached to its option, as in `-ax`, has no word of its own and so
+    /// no index; it is declared all the same.
+    pub argument_name_indices: Vec<usize>,
     /// Whether the body shares the calling scope.
     pub no_scope_shadowing: bool,
 }
@@ -178,10 +183,16 @@ impl FunctionHeaderFacts {
                 .iter()
                 .find(|flag| flag.short == value)
                 .copied();
+            // The element an option's argument was read from, when it had one of its own.
+            let word_index = getopter.wopt_index.checked_sub(1).filter(|index| {
+                getopter
+                    .woptarg
+                    .is_some_and(|argument| words.get(*index) == Some(&argument))
+            });
             match flag.map(|flag| flag.effect) {
                 Some(FunctionHeaderEffect::ArgumentNames) => {
                     declaring_names = true;
-                    facts.push_name(getopter.woptarg);
+                    facts.push_name(getopter.woptarg, word_index);
                 }
                 Some(FunctionHeaderEffect::NoScopeShadowing) => {
                     declaring_names = false;
@@ -192,7 +203,7 @@ impl FunctionHeaderFacts {
                 // introduced the names, and nothing otherwise.
                 None if value == NON_OPTION_CHAR => {
                     if declaring_names {
-                        facts.push_name(getopter.woptarg);
+                        facts.push_name(getopter.woptarg, word_index);
                     }
                 }
                 None => declaring_names = false,
@@ -201,9 +212,13 @@ impl FunctionHeaderFacts {
         facts
     }
 
-    fn push_name(&mut self, name: Option<&wstr>) {
-        if let Some(name) = name {
-            self.argument_names.push(name.to_owned());
+    fn push_name(&mut self, name: Option<&wstr>, word_index: Option<usize>) {
+        let Some(name) = name else {
+            return;
+        };
+        self.argument_names.push(name.to_owned());
+        if let Some(index) = word_index {
+            self.argument_name_indices.push(index);
         }
     }
 }

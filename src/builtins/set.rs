@@ -70,10 +70,7 @@ impl Options {
         }
         short_opts.push_utfstr(L!("LSaehnpq"));
 
-        let mut long_opts: Vec<WOption> = ENV_MODE_FLAGS
-            .iter()
-            .map(|flag| flag.option())
-            .collect();
+        let mut long_opts: Vec<WOption> = ENV_MODE_FLAGS.iter().map(|flag| flag.option()).collect();
         long_opts.extend_from_slice(&[
             wopt(L!("erase"), NoArgument, 'e'),
             wopt(L!("names"), NoArgument, 'n'),
@@ -91,13 +88,7 @@ impl Options {
         let mut w = WGetopter::new(&short_opts, &long_opts, args);
         while let Some(c) = w.next_opt() {
             if let Some(flag) = flag_of(c) {
-                apply_definition_flag(
-                    parser,
-                    streams,
-                    cmd,
-                    &mut opts.set_mode.mode,
-                    flag.sets,
-                )?;
+                apply_definition_flag(parser, streams, cmd, &mut opts.set_mode.mode, flag.sets)?;
                 continue;
             }
             match c {

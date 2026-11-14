@@ -8,7 +8,7 @@ use crate::{
     builtins::builtin_exists,
     common::{valid_var_name, valid_var_name_char},
     complete::complete_wrap_map,
-    env::Environment,
+    env::{ENV_MODE_FLAGS, EnvMode, Environment, VariableScope},
     expand::{ExpandFlags, ExpandResultCode, expand_one, expand_to_command_and_args},
     function,
     highlight::HighlightClassification,
@@ -700,6 +700,154 @@ fn body_enclosing(
     }
 }
 
+/// The scope that classifies a variable name written in this definition mode.
+///
+/// The projection from the environment's domain into the vocabulary's: lossy, so it is a
+/// statement rather than a conversion, and it lives here rather than in either domain
+/// because `EnvMode` must not learn the vocabulary.  Each factor contributes its value's
+/// path component unless the mode leaves the factor absent.
+pub fn definition_scope(mode: &EnvMode) -> TokenScopeId {
+    use TokenScopeId as Scope;
+
+    let export = mode.export;
+    let pathvar = mode.pathvar;
+    match mode.write_scope() {
+        None => match (export, pathvar) {
+            (None, None) => Scope::VARIABLE_DEFINITION,
+            (None, Some(true)) => Scope::VARIABLE_DEFINITION_PATH,
+            (None, Some(false)) => Scope::VARIABLE_DEFINITION_NON_PATH,
+            (Some(true), None) => Scope::VARIABLE_DEFINITION_EXPORTED,
+            (Some(false), None) => Scope::VARIABLE_DEFINITION_UNEXPORTED,
+            (Some(true), Some(true)) => Scope::VARIABLE_DEFINITION_EXPORTED_PATH,
+            (Some(true), Some(false)) => Scope::VARIABLE_DEFINITION_EXPORTED_NON_PATH,
+            (Some(false), Some(true)) => Scope::VARIABLE_DEFINITION_UNEXPORTED_PATH,
+            (Some(false), Some(false)) => Scope::VARIABLE_DEFINITION_UNEXPORTED_NON_PATH,
+        },
+        Some(VariableScope::Local) => match (export, pathvar) {
+            (None, None) => Scope::VARIABLE_DEFINITION_LOCAL,
+            (None, Some(true)) => Scope::VARIABLE_DEFINITION_LOCAL_PATH,
+            (None, Some(false)) => Scope::VARIABLE_DEFINITION_LOCAL_NON_PATH,
+            (Some(true), None) => Scope::VARIABLE_DEFINITION_LOCAL_EXPORTED,
+            (Some(false), None) => Scope::VARIABLE_DEFINITION_LOCAL_UNEXPORTED,
+            (Some(true), Some(true)) => Scope::VARIABLE_DEFINITION_LOCAL_EXPORTED_PATH,
+            (Some(true), Some(false)) => Scope::VARIABLE_DEFINITION_LOCAL_EXPORTED_NON_PATH,
+            (Some(false), Some(true)) => Scope::VARIABLE_DEFINITION_LOCAL_UNEXPORTED_PATH,
+            (Some(false), Some(false)) => Scope::VARIABLE_DEFINITION_LOCAL_UNEXPORTED_NON_PATH,
+        },
+        Some(VariableScope::Function) => match (export, pathvar) {
+            (None, None) => Scope::VARIABLE_DEFINITION_FUNCTION,
+            (None, Some(true)) => Scope::VARIABLE_DEFINITION_FUNCTION_PATH,
+            (None, Some(false)) => Scope::VARIABLE_DEFINITION_FUNCTION_NON_PATH,
+            (Some(true), None) => Scope::VARIABLE_DEFINITION_FUNCTION_EXPORTED,
+            (Some(false), None) => Scope::VARIABLE_DEFINITION_FUNCTION_UNEXPORTED,
+            (Some(true), Some(true)) => Scope::VARIABLE_DEFINITION_FUNCTION_EXPORTED_PATH,
+            (Some(true), Some(false)) => Scope::VARIABLE_DEFINITION_FUNCTION_EXPORTED_NON_PATH,
+            (Some(false), Some(true)) => Scope::VARIABLE_DEFINITION_FUNCTION_UNEXPORTED_PATH,
+            (Some(false), Some(false)) => Scope::VARIABLE_DEFINITION_FUNCTION_UNEXPORTED_NON_PATH,
+        },
+        Some(VariableScope::Global) => match (export, pathvar) {
+            (None, None) => Scope::VARIABLE_DEFINITION_GLOBAL,
+            (None, Some(true)) => Scope::VARIABLE_DEFINITION_GLOBAL_PATH,
+            (None, Some(false)) => Scope::VARIABLE_DEFINITION_GLOBAL_NON_PATH,
+            (Some(true), None) => Scope::VARIABLE_DEFINITION_GLOBAL_EXPORTED,
+            (Some(false), None) => Scope::VARIABLE_DEFINITION_GLOBAL_UNEXPORTED,
+            (Some(true), Some(true)) => Scope::VARIABLE_DEFINITION_GLOBAL_EXPORTED_PATH,
+            (Some(true), Some(false)) => Scope::VARIABLE_DEFINITION_GLOBAL_EXPORTED_NON_PATH,
+            (Some(false), Some(true)) => Scope::VARIABLE_DEFINITION_GLOBAL_UNEXPORTED_PATH,
+            (Some(false), Some(false)) => Scope::VARIABLE_DEFINITION_GLOBAL_UNEXPORTED_NON_PATH,
+        },
+        Some(VariableScope::Universal) => match (export, pathvar) {
+            (None, None) => Scope::VARIABLE_DEFINITION_UNIVERSAL,
+            (None, Some(true)) => Scope::VARIABLE_DEFINITION_UNIVERSAL_PATH,
+            (None, Some(false)) => Scope::VARIABLE_DEFINITION_UNIVERSAL_NON_PATH,
+            (Some(true), None) => Scope::VARIABLE_DEFINITION_UNIVERSAL_EXPORTED,
+            (Some(false), None) => Scope::VARIABLE_DEFINITION_UNIVERSAL_UNEXPORTED,
+            (Some(true), Some(true)) => Scope::VARIABLE_DEFINITION_UNIVERSAL_EXPORTED_PATH,
+            (Some(true), Some(false)) => Scope::VARIABLE_DEFINITION_UNIVERSAL_EXPORTED_NON_PATH,
+            (Some(false), Some(true)) => Scope::VARIABLE_DEFINITION_UNIVERSAL_UNEXPORTED_PATH,
+            (Some(false), Some(false)) => Scope::VARIABLE_DEFINITION_UNIVERSAL_UNEXPORTED_NON_PATH,
+        },
+    }
+}
+
+/// Which words of a definition command are the names it defines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DefinitionCommand {
+    /// `set` defines its first name; the words after it are that name's values.
+    Set,
+    /// `read` defines every name it is given.
+    Read,
+}
+
+impl DefinitionCommand {
+    /// The definition command `word` names, if it names one.
+    fn of_command(word: &wstr) -> Option<Self> {
+        if word == "set" {
+            Some(Self::Set)
+        } else if word == "read" {
+            Some(Self::Read)
+        } else {
+            None
+        }
+    }
+
+    /// Whether every name the command is given is defined, rather than only the first.
+    fn whether_defines_each_name(self) -> bool {
+        self == Self::Read
+    }
+}
+
+/// The mode a definition command's arguments request, or none when they carry an option
+/// the classifier does not read.
+///
+/// The flags are read against the one declaration the definition commands share.  A word
+/// that is no flag ends the scan, which is exactly the order `set` reads its arguments in,
+/// and is the conservative reading for `read`: its names are classified with the mode the
+/// leading flags request.
+fn definition_mode<'a>(
+    arguments: impl Iterator<Item = &'a ast::ArgumentOrRedirection>,
+    source: &wstr,
+) -> Option<EnvMode> {
+    let mut mode = EnvMode::default();
+    let mut reading_flags = true;
+    for argument_or_redirection in arguments {
+        let ast::ArgumentOrRedirection::Argument(argument) = argument_or_redirection else {
+            continue;
+        };
+        let word = argument.source(source);
+        if !reading_flags {
+            continue;
+        }
+        if word == "--" {
+            reading_flags = false;
+            continue;
+        }
+        if !word.starts_with('-') || word == "-" {
+            reading_flags = false;
+            continue;
+        }
+        let flag = ENV_MODE_FLAGS
+            .iter()
+            .find(|flag| flag.whether_spelled_by(word));
+        if let Some(flag) = flag {
+            flag.sets.set(&mut mode);
+            continue;
+        }
+
+        // A short option may bundle several flags, and none of them takes an argument.
+        if word.char_at(1) == '-' || word.len() <= 2 {
+            return None;
+        }
+        for index in 1..word.len() {
+            let flag = ENV_MODE_FLAGS
+                .iter()
+                .find(|flag| flag.short == word.char_at(index))?;
+            flag.sets.set(&mut mode);
+        }
+    }
+    Some(mode)
+}
+
 /// The parse tree's visitor: every character is classified as the traversal
 /// reaches it.
 struct HighlightVisitor<'src, 'wd, 'ctx> {
@@ -1114,7 +1262,8 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         // before it as the definition it is.
         if let Some(offset) = variable_assignment_equals_pos(varas.source(self.buff)) {
             let start = varas.source_range().start();
-            let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
+            // An assignment in command position defines a local, exported variable.
+            let definition = self.classification_of(definition_scope(&EnvMode::LOCAL_EXPORTED));
             self.classifications[start..start + offset].fill(definition);
             let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
             self.classifications[start + offset] = assignment;
@@ -1195,26 +1344,31 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         // Classify arguments and redirections.
         // Except if our command is 'cd' we have special logic for how arguments are classified.
         let is_cd = is_veritable_cd(&expanded_cmd);
-        let mut is_set = expanded_cmd == "set";
+        // A definition command's names take the scope of the mode its flags request.
+        let definitions = DefinitionCommand::of_command(&expanded_cmd).and_then(|command| {
+            definition_mode(stmt.args_or_redirs.iter(), self.buff).map(|mode| (command, mode))
+        });
+        let mut defining = definitions.is_some();
         // If we have seen a "--" argument, classify all options from then on as normal arguments.
         let mut have_dashdash = false;
         for v in &stmt.args_or_redirs {
             if v.is_argument() {
-                let mut definitions_name = false;
-                if is_set {
-                    let arg = v.argument().source(self.buff);
-                    if valid_var_name(arg) {
-                        self.pending_variable_names.push(arg);
-                        is_set = false;
-                        definitions_name = true;
-                    }
+                let name = v.argument().source(self.buff);
+                let mut definition = None;
+                if defining
+                    && let Some((command, mode)) = definitions
+                    && valid_var_name(name)
+                {
+                    definition = Some(definition_scope(&mode));
+                    self.pending_variable_names.push(name);
+                    defining = command.whether_defines_each_name();
                 }
                 self.visit_argument(v.argument(), is_cd, !have_dashdash);
-                if definitions_name {
-                    let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
-                    self.classify_node(v.argument(), definition);
+                if let Some(scope) = definition {
+                    let classification = self.classification_of(scope);
+                    self.classify_node(v.argument(), classification);
                 }
-                if v.argument().source(self.buff) == "--" {
+                if name == "--" {
                     have_dashdash = true;
                 }
             } else {
@@ -1248,9 +1402,27 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             let var_name = fh.var_name.source(self.buff);
             self.pending_variable_names.push(var_name);
 
-            // A loop's variable is defined by the header.
-            let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
+            // A loop's variable is defined by the header, in the local scope.
+            let scope = definition_scope(&EnvMode::LOCAL);
+            let definition = self.classification_of(scope);
             self.classify_node(&fh.var_name, definition);
+        }
+
+        // The names a definition's header declares are defined in its local scope.
+        if let BlockStatementHeader::Function(header) = &block.header {
+            let name_indices = self
+                .enclosing_function_parameters
+                .last()
+                .map(|parameters| parameters.argument_name_indices().to_vec())
+                .unwrap_or_default();
+            let scope = definition_scope(&EnvMode::LOCAL);
+            for index in name_indices {
+                let classification = self.classification_of(scope);
+                match index {
+                    0 => self.classify_node(&header.first_arg, classification),
+                    _ => self.classify_node(&header.args[index - 1], classification),
+                }
+            }
         }
         let body_scopes = body_enclosing(&block.header, self.enclosing_function_parameters.last());
         self.visit_inside(body_scopes, |visitor| visitor.visit(&block.jobs));
@@ -1750,7 +1922,7 @@ mod tests {
 
             validate!(
                 ("for", fg(TokenScopeId::KEYWORD_FOR)),
-                ("x", fg(TokenScopeId::VARIABLE_DEFINITION)),
+                ("x", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("set-by-for-1", fg(TokenScopeId::PARAM)),
                 ("set-by-for-2", fg(TokenScopeId::PARAM)),
@@ -1780,7 +1952,11 @@ mod tests {
             );
 
             validate!(
-                ("x", fg(TokenScopeId::VARIABLE_DEFINITION), ns),
+                (
+                    "x",
+                    fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED),
+                    ns
+                ),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("set-by-variable-override", fg(TokenScopeId::PARAM), ns),
                 ("echo", fg(TokenScopeId::BUILTIN)),
@@ -1871,7 +2047,7 @@ mod tests {
 
             validate!(
                 ("for", fg(TokenScopeId::KEYWORD_FOR)),
-                ("i", fg(TokenScopeId::VARIABLE_DEFINITION)),
+                ("i", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("1 2 3", fg(TokenScopeId::PARAM)),
                 (";", fg(TokenScopeId::END)),
@@ -1941,13 +2117,13 @@ mod tests {
             );
 
             validate!(
-                ("HOME", fg(TokenScopeId::VARIABLE_DEFINITION)),
+                ("HOME", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 (".", fg(TokenScopeId::PARAM), ns),
-                ("VAR1", fg(TokenScopeId::VARIABLE_DEFINITION)),
+                ("VAR1", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("VAL1", fg(TokenScopeId::PARAM), ns),
-                ("VAR", fg(TokenScopeId::VARIABLE_DEFINITION)),
+                ("VAR", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 ("|&", fg(TokenScopeId::END)),
@@ -1958,6 +2134,45 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)), // (
                 (")", fg(TokenScopeId::ERROR)),
+            );
+
+            // A definition command's names take the mode its flags request.
+            validate!(
+                ("set", fg(TokenScopeId::BUILTIN)),
+                ("-gx", fg(TokenScopeId::OPTION_GNU)),
+                (
+                    "name",
+                    fg(TokenScopeId::VARIABLE_DEFINITION_GLOBAL_EXPORTED)
+                ),
+                ("value", fg(TokenScopeId::PARAM)),
+            );
+            validate!(
+                ("read", fg(TokenScopeId::BUILTIN)),
+                ("-l", fg(TokenScopeId::OPTION_SHORT)),
+                ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
+            );
+            validate!(
+                ("set", fg(TokenScopeId::BUILTIN)),
+                ("-l", fg(TokenScopeId::OPTION_SHORT)),
+                ("--", fg(TokenScopeId::OPTION)),
+                ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
+                ("value", fg(TokenScopeId::PARAM)),
+            );
+            // An option the classifier cannot read makes it claim no definition.
+            validate!(
+                ("set", fg(TokenScopeId::BUILTIN)),
+                ("-e", fg(TokenScopeId::OPTION_SHORT)),
+                ("name", fg(TokenScopeId::PARAM)),
+            );
+
+            // A name a definition's header declares is defined in its local scope.
+            validate!(
+                ("function", fg(TokenScopeId::KEYWORD_FUNCTION)),
+                ("f", fg(TokenScopeId::PARAM)),
+                ("-a", fg(TokenScopeId::OPTION_SHORT)),
+                ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
+                (";", fg(TokenScopeId::END)),
+                ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             validate!(
@@ -2015,7 +2230,7 @@ mod tests {
             );
 
             validate!(
-                ("a", fg(TokenScopeId::VARIABLE_DEFINITION)),
+                ("a", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
             );
 
