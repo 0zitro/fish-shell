@@ -76,6 +76,48 @@ impl EnvMode {
         universal: true,
         ..Self::DEFAULT
     };
+
+    /// The one scope a write requests, or none when the mode requests no scope flag.
+    ///
+    /// The precedence — universal, then global, then local, then function — is stated
+    /// here once, so that the environment and the classifier cannot drift apart.  A
+    /// universal write that cannot be honoured is the environment's own decision and is
+    /// taken after this projection.
+    pub fn write_scope(&self) -> Option<VariableScope> {
+        if self.universal {
+            Some(VariableScope::Universal)
+        } else if self.global {
+            Some(VariableScope::Global)
+        } else if self.local {
+            Some(VariableScope::Local)
+        } else if self.function {
+            Some(VariableScope::Function)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the mode requests more than one scope, which one write cannot honour.
+    pub fn whether_multiple_scopes(&self) -> bool {
+        [self.local, self.function, self.global, self.universal]
+            .into_iter()
+            .filter(|requested| *requested)
+            .count()
+            > 1
+    }
+}
+
+/// The scope a definition writes into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariableScope {
+    /// Local to the current block.
+    Local,
+    /// Local to the nearest function; a write rule rather than a fourth stored scope.
+    Function,
+    /// Global.
+    Global,
+    /// Universal.
+    Universal,
 }
 
 #[derive(Copy, Clone, Default)]
