@@ -22,4 +22,7 @@ pub use attribute::{
 };
 pub use chain::{ResolutionChainStep, ScopeResolutionChain};
 pub use enclosing::EnclosingScopeSet;
-pub use entries::{ColorVariableName, TOKEN_SCOPE_ENTRIES, TokenScopeEntry, TokenScopeId};
+pub use entries::{
+    ColorVariableName, TOKEN_SCOPE_ENTRIES, TokenScopeEntry, TokenScopeId, builtin_word_scope,
+    keyword_word_scope,
+};

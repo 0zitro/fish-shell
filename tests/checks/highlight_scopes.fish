@@ -10,7 +10,7 @@ function runs_of
 end
 
 printf '%s' 'set -gx name 1' | runs_of
-# CHECK: 0 command
+# CHECK: 0 command.builtin.set
 # CHECK: 3 source
 # CHECK: 4 argument.option.gnu
 # CHECK: 7 source
@@ -26,7 +26,7 @@ printf '%s' 'echo --long -5' | runs_of
 # CHECK: 12 argument.option.numeric
 
 printf '%s' 'set --path P ~/x' | runs_of
-# CHECK: 0 command
+# CHECK: 0 command.builtin.set
 # CHECK: 3 source
 # CHECK: 4 argument.option.long
 # CHECK: 10 source
