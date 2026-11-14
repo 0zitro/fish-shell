@@ -831,6 +831,40 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_builtin_word_and_a_keyword_word_resolve_through_their_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_builtin"), &[L!("green")]);
+        colors.set(L!("fish_color_keyword"), &[L!("green")]);
+        let fg = |text: &wstr| {
+            let classifications = colors.classify(text);
+            colors.style_of(classifications[0]).fg
+        };
+
+        assert_eq!(
+            colors.classify(L!("true"))[0].foreground(),
+            TokenScopeId::BUILTIN_BOOLEAN_TRUE
+        );
+        assert_eq!(fg(L!("true")), color(L!("green")), "a builtin word");
+        assert_eq!(fg(L!("false")), color(L!("green")), "another builtin word");
+        assert_eq!(fg(L!("return")), color(L!("green")), "a keyword word");
+
+        // A category splits its words from the builtin family, and a word splits from the
+        // category.
+        colors.set(L!("fish_color_builtin_boolean"), &[L!("brred")]);
+        assert_eq!(fg(L!("true")), color(L!("brred")), "the category");
+        assert_eq!(fg(L!("false")), color(L!("brred")), "the category");
+        colors.set(L!("fish_color_builtin_boolean_true"), &[L!("brblue")]);
+        assert_eq!(fg(L!("true")), color(L!("brblue")), "the word");
+        assert_eq!(fg(L!("false")), color(L!("brred")), "the category below it");
+
+        // A keyword's own variable splits it from the keyword family.
+        colors.set(L!("fish_color_keyword_return"), &[L!("brblue")]);
+        assert_eq!(fg(L!("return")), color(L!("brblue")), "the keyword");
+        assert_eq!(fg(L!("set")), color(L!("green")), "a builtin word");
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);
