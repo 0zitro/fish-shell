@@ -56,13 +56,13 @@
                             </template>
                         </div>
                         <!-- The sample: fish source classified by the highlighting pass
-                             itself, coloured with the variable each piece's scope stands
-                             for and clicked to edit that variable. -->
+                             itself, drawn with the style each piece resolves to and
+                             clicked to edit the variable that colours it. -->
                         <div class="colour_sample_rows">
                             <template x-for="(piece, pieceIndex) in colourSample" :key="pieceIndex">
                                 <span class="colour_sample_piece"
                                     :class="{cs_clickable: customizationActive, cs_editing: csEditingType == variableForPiece(piece)}"
-                                    :style="{ 'color': interpret_color(currentColorScheme().colors[variableForPiece(piece)]) }"
+                                    :style="styleForPiece(piece)"
                                     @click="selectColorSetting(variableForPiece(piece))" x-text="piece.text"></span>
                             </template>
                         </div>
