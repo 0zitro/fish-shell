@@ -34,6 +34,11 @@ impl FunctionParameterList {
         self.facts.no_scope_shadowing
     }
 
+    /// The words of the header that declare a name, as indices into its words.
+    pub fn argument_name_indices(&self) -> &[usize] {
+        &self.facts.argument_name_indices
+    }
+
     /// The scope that classifies a reference to `name`, or none when the name is not a
     /// parameter of this definition.
     pub fn find_parameter_scope(&self, name: &wstr) -> Option<TokenScopeId> {

@@ -764,6 +764,38 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_definition_resolves_through_its_requested_mode() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_variable_definition"), &[L!("green")]);
+
+        // set x / set -l x — a name whose mode names no scope, and one whose mode does.
+        let plain = colors.classify(L!("set x 1"));
+        let local = colors.classify(L!("set -l x 1"));
+        assert_eq!(colors.style_of(plain[4]).fg, color(L!("green")));
+        assert_eq!(colors.style_of(local[7]).fg, color(L!("green")));
+
+        // The scope leaf splits the requested scope off.
+        colors.set(L!("fish_color_variable_definition_local"), &[L!("brblue")]);
+        let plain = colors.classify(L!("set x 1"));
+        let local = colors.classify(L!("set -l x 1"));
+        assert_eq!(colors.style_of(plain[4]).fg, color(L!("green")));
+        assert_eq!(colors.style_of(local[7]).fg, color(L!("brblue")));
+
+        // And the export leaf extends it.
+        colors.set(
+            L!("fish_color_variable_definition_local_exported"),
+            &[L!("yellow")],
+        );
+        let exported = colors.classify(L!("set -lx x 1"));
+        assert_eq!(colors.style_of(exported[8]).fg, color(L!("yellow")));
+
+        // A name a loop defines is local, and so is one a header declares.
+        let loop_name = colors.classify(L!("for x in a; end"));
+        assert_eq!(colors.style_of(loop_name[4]).fg, color(L!("brblue")));
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);
