@@ -13,6 +13,9 @@ use fish_widestring::WExt as _;
 /// The documentation the generated blocks are written into.
 const DOCUMENTATION: &str = "doc_src/interactive.rst";
 
+/// The page's list of colour variables, generated from the declaration.
+const COLOUR_VARIABLES_SCRIPT: &str = "share/tools/web_config/js/colour_variables.js";
+
 /// The line that opens or closes a generated block.
 fn marker(position: &str, block: &str) -> String {
     format!(".. {position} GENERATED {block}")
@@ -36,9 +39,12 @@ impl Block {
     }
 }
 
-/// One documented variable: its name and what it is.
+/// One documented variable: its name, the scope it stands for and what it is.
 struct Documented {
     variable: String,
+    /// The scope's path, which the highlighting pass reports; a variable that stands
+    /// for an attribute has none.
+    path: Option<&'static str>,
     description: &'static str,
 }
 
@@ -49,6 +55,7 @@ fn documented_in(namespace: &str) -> Vec<Documented> {
         .filter(|entry| entry.variable_name.as_ref().starts_with(namespace))
         .map(|entry| Documented {
             variable: entry.variable_name.as_ref().to_string(),
+            path: Some(entry.path),
             description: entry.description,
         })
         .collect()
@@ -60,20 +67,25 @@ fn documented_attributes() -> Vec<Documented> {
         .iter()
         .map(|entry| Documented {
             variable: entry.variable_name.as_ref().to_string(),
+            path: None,
             description: entry.description,
         })
         .collect()
 }
 
+/// Every colour variable, in declaration order, the attributes last.
+fn colour_variables() -> Vec<Documented> {
+    let mut documented = documented_in("fish_color_");
+    documented.extend(documented_attributes());
+    documented
+}
+
 /// Every block the declaration generates.
 fn blocks() -> Vec<Block> {
-    let mut colour = documented_in("fish_color_");
-    colour.extend(documented_attributes());
-
     vec![
         Block {
             name: "colour variables",
-            lines: rendered_lines(colour),
+            lines: rendered_lines(colour_variables()),
         },
         Block {
             name: "pager variables",
@@ -112,16 +124,28 @@ fn updated() -> Result<String> {
 pub fn update() -> Result<()> {
     let updated = updated()?;
     std::fs::write(Path::new(DOCUMENTATION), updated)
-        .with_context(|| format!("writing {DOCUMENTATION}"))
+        .with_context(|| format!("writing {DOCUMENTATION}"))?;
+    std::fs::write(COLOUR_VARIABLES_SCRIPT, colour_variables_script())
+        .with_context(|| format!("writing {COLOUR_VARIABLES_SCRIPT}"))
 }
 
-/// Fail unless the documentation states what the declaration renders.
+/// Fail unless the documentation and the page state what the declaration renders.
 pub fn check() -> Result<()> {
     let updated = updated()?;
     let current = std::fs::read_to_string(DOCUMENTATION)
         .with_context(|| format!("reading {DOCUMENTATION}"))?;
     if current != updated {
         bail!("{DOCUMENTATION} does not hold the declared scopes; run `cargo xtask token-scopes`");
+    }
+
+    let rendered = colour_variables_script();
+    let current = std::fs::read_to_string(COLOUR_VARIABLES_SCRIPT)
+        .with_context(|| format!("reading {COLOUR_VARIABLES_SCRIPT}"))?;
+    if current != rendered {
+        bail!(
+            "{COLOUR_VARIABLES_SCRIPT} does not hold the declared scopes; \
+             run `cargo xtask token-scopes`"
+        );
     }
     Ok(())
 }
@@ -142,9 +166,43 @@ fn replace_block(lines: &mut Vec<String>, block: &Block) -> Result<()> {
     Ok(())
 }
 
+/// The page's list of colour variables: every declared variable, with the scope it
+/// stands for and what it is.
+///
+/// The page colours the classified sample through the path each variable stands for, so
+/// the list carries the paths; a variable that stands for an attribute carries none,
+/// because the highlighting pass never reports an attribute as a character's scope.
+fn colour_variables_script() -> String {
+    let mut script = String::from(
+        "// The colour variables, generated from the declared scopes by `cargo xtask\n\
+         // token-scopes`; do not edit.\n\
+         window.__fish_colour_variables = [\n",
+    );
+    for documented in colour_variables() {
+        let path = match documented.path {
+            Some(path) => format!("{path:?}"),
+            None => "null".to_owned(),
+        };
+        script.push_str(&format!(
+            "    {{variable: {:?}, path: {path}, description: {:?}}},\n",
+            documented.variable,
+            plain_text(documented.description)
+        ));
+    }
+    script.push_str("];\n");
+    script
+}
+
+/// A description with its Markdown code spans marked out as plain text.
+///
+/// The page sets a description as text, so a ```x``` span would show its backticks.
+fn plain_text(description: &str) -> String {
+    description.replace("``", "")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Block, blocks, marker, replace_block};
+    use super::{Block, blocks, colour_variables, colour_variables_script, marker, replace_block};
 
     #[test]
     fn a_block_replaces_what_its_markers_hold() {
@@ -172,6 +230,13 @@ mod tests {
                 "after".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn the_page_lists_every_colour_variable() {
+        let script = colour_variables_script();
+        let listed = script.matches("variable: ").count();
+        assert_eq!(listed, colour_variables().len());
     }
 
     #[test]

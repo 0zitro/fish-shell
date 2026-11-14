@@ -407,6 +407,29 @@ tt {
     margin: -7px;
 }
 
+/* The sample is one classified snippet, so it wraps like source. */
+.colour_sample_rows {
+    margin-top: 45px;
+    max-height: 16em;
+    overflow-y: auto;
+    line-height: 1.5em;
+    white-space: pre-wrap;
+    text-align: left;
+}
+
+/* The variables the sample does not exercise, so that all of them are reachable. */
+.colour_variable_list {
+    margin-top: 15px;
+    max-height: 10em;
+    overflow-y: auto;
+    line-height: 1.5em;
+    text-align: left;
+}
+
+.colour_variable_row {
+    white-space: pre;
+}
+
 .colorpicker_text_sample_tight {
     font-size: 11pt;
     line-height: 1.5em;
