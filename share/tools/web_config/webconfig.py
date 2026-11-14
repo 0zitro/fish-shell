@@ -237,10 +237,13 @@ def parse_color(comps):
     strikethrough = False
     dim = False
     reverse = False
+    reset = False
     i = 0
     while i < len(comps):
         comp = comps[i]
-        if comp == "--bold" or comp == "-o":
+        if comp == "--reset" or comp == "-R":
+            reset = True
+        elif comp == "--bold" or comp == "-o":
             bold = True
         elif comp == "--underline" or comp == "-u":
             underline = "single"
@@ -315,6 +318,7 @@ def parse_color(comps):
         "dim": dim,
         "reverse": reverse,
         "strikethrough": strikethrough,
+        "reset": reset,
     }
 
 
@@ -341,6 +345,8 @@ def unparse_color(col):
         ret += " --background=" + col["background"]
     if col["underline-color"]:
         ret += " --underline-color=" + col["underline-color"]
+    if col["reset"]:
+        ret += " --reset"
     return ret
 
 
@@ -864,18 +870,30 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         """The colour sample, classified by the highlighting pass itself.
 
         Each piece is a run of characters the pass gave one scope, so the page colours
-        and picks by what fish reports rather than by a second classification."""
+        and picks by what fish reports rather than by a second classification.  The pass
+        resolves commands and paths the way the command line does, and each piece states
+        the scopes that enclose it and the attributes it carries, so the page composes
+        the style the terminal would draw."""
         sample_path = os.path.join(
             os.path.dirname(os.path.realpath(__file__)), "colour_sample.txt"
         )
         with open(sample_path, encoding="utf-8") as sample_file:
             text = sample_file.read()
-        out, err = run_fish_cmd("fish_indent --pygments < " + shlex.quote(sample_path))
+        out, err = run_fish_cmd(
+            "fish_indent --pygments --io < " + shlex.quote(sample_path)
+        )
         assert err == "", err
         pieces = []
         for line in out.splitlines():
-            start, end, path = line.split(",", 2)
-            pieces.append({"text": text[int(start) : int(end)], "path": path})
+            start, end, path, enclosing, attributes = line.split(",", 4)
+            pieces.append(
+                {
+                    "text": text[int(start) : int(end)],
+                    "path": path,
+                    "enclosing": enclosing.split("+") if enclosing else [],
+                    "attributes": attributes.split("+") if attributes else [],
+                }
+            )
         return pieces
 
     def do_get_functions(self):

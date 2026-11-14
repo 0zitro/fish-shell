@@ -40,6 +40,12 @@ The following options are available:
 **--html**
     Outputs HTML, which supports syntax highlighting if the appropriate CSS is defined. The CSS class of a piece of text is the name of the color variable that colors it: ``fish_color_param``, ``fish_color_end``. Every class is a variable name, so a stylesheet is written against the same names the configuration uses.
 
+**--pygments**
+    Outputs one line per run of characters in the input, as ``start,end,path,enclosing,attributes``. ``path`` is the dotted path of the scope that colors the run (``command.external``), ``enclosing`` is the paths of the scopes that enclose it, most general first, joined by ``+``, and ``attributes`` is the variables that the run's attributes carry, joined by ``+``. The ranges are half-open and count characters.
+
+**--io**
+    Lets the highlighting that ``--ansi``, ``--html`` and ``--pygments`` report resolve commands and paths, the way the command line does: a builtin, a function and a program each take their own color, and a path that exists takes its attribute. Without it the pass resolves nothing, so a command word takes the color every kind falls back on and no path is tested.
+
 **--dump-parse-tree**
     Dumps information about the parsed statements to standard error. This is likely to be of interest only to people working on the fish source code.
 

@@ -25,11 +25,135 @@ document.addEventListener("alpine:init", () => {
             window.__fish_colour_variables
                 .filter((variable) => variable.path)
                 .map((variable) => [variable.path, variable.variable])),
+        // The declaration's entry for a variable, which states the variables it resolves
+        // through.
+        colourVariableOf: Object.fromEntries(
+            window.__fish_colour_variables
+                .map((variable) => [variable.variable, variable])),
+        // The attribute a variable carries.
+        attributeOf: Object.fromEntries(
+            window.__fish_highlight_attributes
+                .map((attribute) => [attribute.variable, attribute])),
         // The sample, classified by the highlighting pass itself.
         colourSample: [],
 
         variableForPiece(piece) {
             return this.variableOfPath[piece.path];
+        },
+
+        // The style a piece of the sample resolves to, composed as the shell composes it:
+        // the root, the enclosing scopes from the outermost, the leaf's chain from its
+        // least specific step, the leaf, and then the attributes it carries.  Each
+        // variable writes the fields it names, a more specific one after a less specific
+        // one, and `--reset` clears the fields before it writes.
+        styleForPiece(piece) {
+            const colours = this.currentColorScheme().colordata;
+            const resolution = this.resolutionOf(piece);
+            let named = {};
+            for (const variable of resolution) {
+                named = this.writeFields(named, variable, colours, this.channelFields);
+            }
+            for (const variable of piece.attributes) {
+                named = this.writeAttribute(named, variable, colours);
+            }
+            return this.styleOf(named);
+        },
+
+        // The fields each channel composes: the foreground channel takes the flags and
+        // the underline colour with it, and the background channel is its own.
+        channelFields: {
+            foreground: ["foreground", "underline_colour", "flags"],
+            background: ["background"],
+        },
+
+        // The variables one piece resolves through, least specific first.
+        resolutionOf(piece) {
+            const leaf = this.colourVariableOf[this.variableForPiece(piece)];
+            if (!leaf) return [];
+            const root = "fish_color_normal";
+            const resolution = [root];
+            for (const enclosing of piece.enclosing.slice().reverse()) {
+                const variable = this.variableOfPath[enclosing];
+                if (variable) resolution.push(variable);
+            }
+            for (const step of leaf.chain.slice().reverse()) {
+                if (step !== root) resolution.push(step);
+            }
+            resolution.push(leaf.variable);
+            return resolution;
+        },
+
+        // The fields a variable's value names.
+        namedFieldsOf(specification) {
+            const named = {};
+            if (!specification) return named;
+            if (specification.color) named.foreground = specification.color;
+            if (specification.background) named.background = specification.background;
+            if (specification["underline-color"])
+                named.underline_colour = specification["underline-color"];
+            const flags = {};
+            for (const flag of ["bold", "italics", "underline", "dim", "reverse", "strikethrough"]) {
+                if (specification[flag]) flags[flag] = specification[flag];
+            }
+            if (Object.keys(flags).length > 0) named.flags = flags;
+            return named;
+        },
+
+        // One variable's fields written over the style for both channels.
+        writeFields(named, variable, colours, fieldsByChannel) {
+            const specification = colours[variable];
+            for (const [channel, fields] of Object.entries(fieldsByChannel)) {
+                if (specification && specification.reset) {
+                    for (const field of fields) delete named[field];
+                }
+                const namedFields = this.namedFieldsOf(specification);
+                for (const field of fields) {
+                    if (namedFields[field] !== undefined) named[field] = namedFields[field];
+                }
+            }
+            return named;
+        },
+
+        // One attribute's fields written over the style: a merge writes what it names, and
+        // a replace puts the terminal default in the fields it does not.
+        writeAttribute(named, variable, colours) {
+            const attribute = this.attributeOf[variable];
+            if (!attribute) return named;
+            const specification = colours[variable];
+            const namedFields = this.namedFieldsOf(specification);
+            if (attribute.mode === "merge" && !specification) return named;
+            for (const field of attribute.fields) {
+                if (attribute.mode === "merge" && specification.reset) delete named[field];
+                if (attribute.mode === "replace" && namedFields[field] === undefined) {
+                    delete named[field];
+                }
+                if (namedFields[field] !== undefined) named[field] = namedFields[field];
+            }
+            return named;
+        },
+
+        // The CSS a composed style draws.
+        styleOf(named) {
+            const css = {};
+            let foreground = named.foreground;
+            let background = named.background;
+            const flags = named.flags || {};
+            if (flags.reverse) [foreground, background] = [background, foreground];
+            if (foreground) css["color"] = interpret_color(foreground);
+            if (background) css["background-color"] = interpret_color(background);
+            if (flags.bold) css["font-weight"] = "bold";
+            if (flags.italics) css["font-style"] = "italic";
+            if (flags.dim) css["opacity"] = "0.6";
+            const decorations = [];
+            if (flags.underline) {
+                decorations.push("underline " + (flags.underline === "single" ? "solid" : flags.underline));
+            }
+            if (flags.strikethrough) decorations.push("line-through");
+            if (decorations.length) css["text-decoration"] = decorations.join(" ");
+            if (named.underline_colour) {
+                css["text-decoration-color"] = interpret_color(named.underline_colour);
+            }
+            return css;
         },
 
         // What the picker calls a setting: a declared variable states itself, and the
