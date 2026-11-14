@@ -294,7 +294,7 @@ pub fn abbrs_match(token: &wstr, position: Position, cmd: &wstr) -> Vec<Replacer
 mod tests {
     use super::{Abbreviation, Position, abbrs_match, with_abbrs_mut};
     use crate::editable_line::{Edit, apply_edit};
-    use crate::highlight::HighlightSpec;
+    use crate::highlight::HighlightClassification;
     use crate::prelude::*;
     use crate::reader::reader_expand_abbreviation_at_cursor;
     use crate::tests::prelude::*;
@@ -368,10 +368,10 @@ mod tests {
                     parser,
                 )?;
                 let mut cmdline_expanded = cmdline.to_owned();
-                let mut colors = vec![HighlightSpec::new(); cmdline.len()];
+                let mut classifications = vec![HighlightClassification::default(); cmdline.len()];
                 apply_edit(
                     &mut cmdline_expanded,
-                    &mut colors,
+                    &mut classifications,
                     &Edit::new(replacement.range.into(), replacement.text),
                 );
                 Some(cmdline_expanded)

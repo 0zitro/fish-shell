@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::highlight::HighlightSpec;
+use crate::highlight::HighlightClassification;
 use crate::prelude::*;
 
 /// An edit action that can be undone.
@@ -37,20 +37,25 @@ impl Edit {
 
 /// Modify a string and its syntax highlighting according to the given edit.
 /// Currently exposed for testing only.
-pub fn apply_edit(target: &mut WString, colors: &mut Vec<HighlightSpec>, edit: &Edit) {
+pub fn apply_edit(
+    target: &mut WString,
+    classifications: &mut Vec<HighlightClassification>,
+    edit: &Edit,
+) {
     let range = &edit.range;
     target.replace_range(range.clone(), &edit.replacement);
 
-    // Now do the same to highlighting.
-    let last_color = edit
+    // Now do the same to the classifications: the replacement takes the classification of
+    // the character before it.
+    let last_classification = edit
         .range
         .start
         .checked_sub(1)
-        .map(|i| colors[i])
+        .map(|i| classifications[i])
         .unwrap_or_default();
-    colors.splice(
+    classifications.splice(
         range.clone(),
-        std::iter::repeat_n(last_color, edit.replacement.len()),
+        std::iter::repeat_n(last_classification, edit.replacement.len()),
     );
 }
 
@@ -94,8 +99,8 @@ impl UndoHistory {
 pub struct EditableLine {
     /// The command line.
     text: WString,
-    /// Syntax highlighting.
-    colors: Vec<HighlightSpec>,
+    /// The classification of every character of the command line.
+    classifications: Vec<HighlightClassification>,
     /// The current position of the cursor in the command line.
     position: usize,
     pub pending_position: Option<usize>,
@@ -114,12 +119,12 @@ impl EditableLine {
         &self.text
     }
 
-    pub fn colors(&self) -> &[HighlightSpec] {
-        &self.colors
+    pub fn classifications(&self) -> &[HighlightClassification] {
+        &self.classifications
     }
-    pub fn set_colors(&mut self, colors: Vec<HighlightSpec>) {
-        assert_eq!(colors.len(), self.len());
-        self.colors = colors;
+    pub fn set_classifications(&mut self, classifications: Vec<HighlightClassification>) {
+        assert_eq!(classifications.len(), self.len());
+        self.classifications = classifications;
     }
 
     pub fn position(&self) -> usize {
@@ -157,7 +162,7 @@ impl EditableLine {
             assert_eq!(range.start, self.position());
             let last_edit = self.undo_history.edits.last_mut().unwrap();
             last_edit.replacement.push_utfstr(&edit.replacement);
-            apply_edit(&mut self.text, &mut self.colors, &edit);
+            apply_edit(&mut self.text, &mut self.classifications, &edit);
             self.set_position(self.position() + edit.replacement.len());
 
             assert!(self.undo_history.may_coalesce);
@@ -184,7 +189,7 @@ impl EditableLine {
         }
         edit.cursor_position_before_edit = self.pending_position.take().unwrap_or(self.position());
         edit.old = self.text[range.clone()].to_owned();
-        apply_edit(&mut self.text, &mut self.colors, &edit);
+        apply_edit(&mut self.text, &mut self.classifications, &edit);
         self.set_position(cursor_position_after_edit(&edit));
         assert_eq!(
             self.undo_history.edits_applied,
@@ -221,7 +226,7 @@ impl EditableLine {
             );
             inverse.replacement = edit.old.clone();
             let old_position = edit.cursor_position_before_edit;
-            apply_edit(&mut self.text, &mut self.colors, &inverse);
+            apply_edit(&mut self.text, &mut self.classifications, &inverse);
             self.set_position(old_position);
             did_undo = true;
         }
@@ -251,7 +256,7 @@ impl EditableLine {
             }
             last_group_id = edit.group_id;
             self.undo_history.edits_applied += 1;
-            apply_edit(&mut self.text, &mut self.colors, edit);
+            apply_edit(&mut self.text, &mut self.classifications, edit);
             edit.cursor_position_before_undo
                 .map(|pos| self.set_position(pos));
             did_redo = true;

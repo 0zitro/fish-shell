@@ -182,7 +182,7 @@ tt {
     color: #999900;
 }
 
-.detail_function .fish_color_statement_terminator {
+.detail_function .fish_color_end {
     color: #009900;
 }
 
@@ -737,7 +737,7 @@ button.delete_button:hover {
         color: #b9ca4a;
     }
 
-    .detail_function .fish_color_statement_terminator {
+    .detail_function .fish_color_end {
         color: #c397d8;
     }
 }

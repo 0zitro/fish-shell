@@ -343,6 +343,7 @@ dependencies = [
  "fish-localization",
  "fish-printf",
  "fish-tempfile",
+ "fish-token-scope",
  "fish-util",
  "fish-wcstringutil",
  "fish-wgetopt",

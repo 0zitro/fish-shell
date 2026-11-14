@@ -89,7 +89,9 @@ pub struct StyleFieldSet(u8);
 
 impl StyleFieldSet {
     /// The set holding these fields.
-    pub(crate) const fn of(fields: &[StyleField]) -> Self {
+    ///
+    /// A field that is named twice is still one field.
+    pub const fn of(fields: &[StyleField]) -> Self {
         let mut bits = 0u8;
         let mut index = 0;
         while index < fields.len() {

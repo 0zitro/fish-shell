@@ -1,0 +1,505 @@
+//! Resolution of a character's classification into the style the terminal is
+//! given.
+//!
+//! A character carries an ordered set of scopes per color channel: the leaf scope the
+//! visitor chose, the scopes its chain adds, the enclosing scopes it is inside, and
+//! the root.
+//!
+//! Resolution composes their variables field by field.  Each variable is a partial
+//! style: it may name a foreground, a background, an underline color, any of the
+//! flags, or none of them.  A field named by a more specific scope replaces the same
+//! field named by a less specific one; a field nobody names takes the terminal
+//! default.  A scope that is not in the set is not consulted, so its fields are never
+//! named and its rules apply by omission.
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+
+use fish_token_scope::{
+    AttributeMode, ColorVariableName, EnclosingScopeSet, HighlightAttribute,
+    HighlightAttributeEntry, ResolutionChainStep, StyleField, StyleFieldSet, TokenScopeId,
+};
+
+use crate::env::Environment;
+use crate::highlight::HighlightClassification;
+use crate::text_style::{
+    ResettableStyle, SpecifiedTextStyle, TextStyle, UnderlineStyle, parse_text_style,
+};
+
+/// Which color channel of a classification one style is composed for.
+///
+/// The foreground channel composes the foreground color, the underline color and the
+/// flags, and the background channel composes the background color.  A channel that
+/// composed another channel's field would let one slot of a pager row write the
+/// other slot's color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ColorChannel {
+    Foreground,
+    Background,
+}
+
+impl ColorChannel {
+    /// The fields of `value` this channel composes.
+    fn fields_of(self, value: TextStyle) -> TextStyle {
+        let fields = self.fields();
+        value.restrict(fields)
+    }
+
+    /// The style with the fields this channel composes cleared.
+    fn cleared(self, style: TextStyle) -> TextStyle {
+        style.without(self.fields())
+    }
+
+    /// The fields this channel composes.
+    fn fields(self) -> StyleFieldSet {
+        match self {
+            Self::Foreground => StyleFieldSet::of(&[
+                StyleField::Foreground,
+                StyleField::UnderlineColor,
+                StyleField::Flags,
+            ]),
+            Self::Background => StyleFieldSet::of(&[StyleField::Background]),
+        }
+    }
+}
+
+/// Resolves highlight classifications to text styles.
+///
+/// The cache has no invalidation and its lifetime is one render: a resolver is
+/// constructed by the screen for each update, as the previous resolver was.
+#[derive(Default)]
+pub struct HighlightStyleResolver {
+    cache: HashMap<HighlightClassification, TextStyle>,
+}
+
+impl HighlightStyleResolver {
+    /// Construct an empty resolver.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The style `classification` resolves to.
+    ///
+    /// Both channels are composed field by field, then the attributes combine with
+    /// the result in `application_order`.
+    pub fn style_of(
+        &mut self,
+        classification: HighlightClassification,
+        vars: &dyn Environment,
+    ) -> TextStyle {
+        match self.cache.entry(classification) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let style = Self::resolve(classification, vars);
+                *entry.insert(style)
+            }
+        }
+    }
+
+    fn resolve(classification: HighlightClassification, vars: &dyn Environment) -> TextStyle {
+        let mut style = TextStyle::unknown();
+
+        style = style.union_prefer_right(channel_style(
+            ColorChannel::Foreground,
+            classification.foreground(),
+            classification.enclosing(),
+            vars,
+        ));
+
+        if classification.background() != classification.foreground() {
+            style = style.union_prefer_right(channel_style(
+                ColorChannel::Background,
+                classification.background(),
+                classification.enclosing(),
+                vars,
+            ));
+        }
+
+        for entry in HighlightAttribute::entries() {
+            if classification.attributes().has_attribute(entry.attribute) {
+                style = combined_style(style, entry, vars);
+            }
+        }
+
+        if classification
+            .attributes()
+            .has_attribute(HighlightAttribute::ForcedUnderline)
+        {
+            style
+                .flags
+                .inject_underline(ResettableStyle::On(UnderlineStyle::Single));
+        }
+
+        // Whatever no variable named is drawn as the terminal draws it.
+        style.with_terminal_defaults()
+    }
+}
+
+/// The style one color channel's scope set denotes.
+///
+/// The set is walked from the root toward the leaf — the root, the enclosing scopes
+/// outermost first, the chain from its least specific step, and the leaf — and each
+/// variable writes the fields the channel composes.  A variable carrying `--reset`
+/// clears what was written for it before.
+fn channel_style(
+    channel: ColorChannel,
+    scope: TokenScopeId,
+    enclosing: EnclosingScopeSet,
+    vars: &dyn Environment,
+) -> TextStyle {
+    let root = TokenScopeId::NORMAL;
+    let chain: Vec<ResolutionChainStep> = scope.entry().resolution_chain.into_iter().collect();
+
+    let mut steps: Vec<ResolutionChainStep> = Vec::with_capacity(chain.len() + 3);
+    if scope != root {
+        steps.push(ResolutionChainStep::Scope(root));
+    }
+    steps.extend(enclosing.scopes().rev().map(ResolutionChainStep::Scope));
+    steps.extend(
+        chain
+            .into_iter()
+            .rev()
+            .filter(|step| *step != ResolutionChainStep::Scope(root)),
+    );
+    steps.push(ResolutionChainStep::Scope(scope));
+
+    let mut style = TextStyle::unknown();
+    for step in steps {
+        let Some(variable) = step_variable(step) else {
+            continue;
+        };
+        let Some(value) = variable_style(variable, vars) else {
+            continue;
+        };
+        if value.reset {
+            style = channel.cleared(style);
+        }
+        style = style.union_prefer_right(channel.fields_of(value.named_fields()));
+    }
+
+    style
+}
+
+/// The variable one chain step consults.
+fn step_variable(step: ResolutionChainStep) -> Option<ColorVariableName> {
+    match step {
+        ResolutionChainStep::Scope(scope) => Some(scope.entry().variable_name),
+        ResolutionChainStep::Attribute(attribute) => {
+            attribute.entry().map(|entry| entry.variable_name)
+        }
+    }
+}
+
+/// The style one variable denotes, or none when it is unset, empty, or names
+/// nothing.
+fn variable_style(
+    variable: ColorVariableName,
+    vars: &dyn Environment,
+) -> Option<SpecifiedTextStyle> {
+    let value = vars.get_unless_empty(variable.as_ref())?;
+    let specified = parse_text_style(value.as_list());
+    (specified != SpecifiedTextStyle::default()).then_some(specified)
+}
+
+/// The style combined with an attribute's value under its mode.
+fn combined_style(
+    style: TextStyle,
+    entry: &HighlightAttributeEntry,
+    vars: &dyn Environment,
+) -> TextStyle {
+    match entry.mode {
+        AttributeMode::Merge(fields) => {
+            let Some(value) = variable_style(entry.variable_name, vars) else {
+                return style;
+            };
+            let mut style = if value.reset {
+                style.without(fields)
+            } else {
+                style
+            };
+            style = style.union_prefer_right(value.named_fields().restrict(fields));
+            style
+        }
+        AttributeMode::Replace(fields) => {
+            let replacement = variable_style(entry.variable_name, vars)
+                .and_then(|value| value.find_style())
+                .unwrap_or_else(TextStyle::terminal_default)
+                .restrict(fields);
+            style.union_prefer_right(replacement)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HighlightStyleResolver;
+    use crate::env::{EnvMode, EnvSetMode, EnvStack};
+    use crate::highlight::{HighlightClassification, highlight_shell};
+    use crate::operation_context::{EXPANSION_LIMIT_BACKGROUND, OperationContext};
+    use crate::prelude::*;
+    use crate::tests::prelude::*;
+    use crate::text_style::{ResettableStyle, TextStyle, UnderlineStyle};
+    use fish_color::Color;
+    use fish_token_scope::{HighlightAttribute, TokenScopeId};
+
+    /// The colour variables of one test, and the styles they resolve to.
+    struct Colors {
+        parser: TestParser,
+    }
+
+    impl Colors {
+        fn new() -> Self {
+            test_init();
+            Self {
+                parser: TestParser::new(),
+            }
+        }
+
+        /// Set one colour variable to these `set_color` words.
+        fn set(&self, name: &wstr, words: &[&wstr]) {
+            let values = words.iter().map(|word| (*word).to_owned()).collect();
+            self.vars()
+                .set(name, EnvSetMode::new(EnvMode::LOCAL, false), values);
+        }
+
+        fn vars(&self) -> &EnvStack {
+            self.parser.parser.vars()
+        }
+
+        fn style_of(&self, classification: HighlightClassification) -> TextStyle {
+            HighlightStyleResolver::new().style_of(classification, self.vars())
+        }
+    }
+
+    /// The named colour a `set_color` word denotes.
+    fn color(name: &wstr) -> Color {
+        Color::from_wstr(name).expect("the word names a colour")
+    }
+
+    #[test]
+    #[serial]
+    fn a_more_specific_scope_wins_field_by_field() {
+        let colors = Colors::new();
+        // The root names the flags, the family the underline, and the leaf the
+        // colour.
+        colors.set(L!("fish_color_normal"), &[L!("--bold")]);
+        colors.set(L!("fish_color_command"), &[L!("--underline")]);
+        colors.set(L!("fish_color_builtin"), &[L!("red")]);
+
+        let style = colors.style_of(HighlightClassification::from(TokenScopeId::BUILTIN));
+
+        assert_eq!(style.fg, color(L!("red")), "the leaf names the colour");
+        assert!(
+            style.flags.is_bold(),
+            "a field only the root names still stands"
+        );
+        assert_eq!(
+            style.flags.underline_style(),
+            ResettableStyle::On(UnderlineStyle::Single),
+            "a field only the family names still stands"
+        );
+        assert_eq!(
+            style.bg,
+            TextStyle::terminal_default().bg,
+            "a field nobody names takes the terminal default"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_reset_clears_what_the_less_specific_scopes_named() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_normal"), &[L!("--bold")]);
+        colors.set(L!("fish_color_builtin"), &[L!("--reset"), L!("green")]);
+
+        let style = colors.style_of(HighlightClassification::from(TokenScopeId::BUILTIN));
+
+        assert!(
+            !style.flags.is_bold(),
+            "the reset clears what the root named"
+        );
+        assert_eq!(style.fg, color(L!("green")));
+    }
+
+    #[test]
+    #[serial]
+    fn an_empty_variable_names_nothing() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_command"), &[L!("red")]);
+        colors.set(L!("fish_color_builtin"), &[]);
+
+        let style = colors.style_of(HighlightClassification::from(TokenScopeId::BUILTIN));
+
+        assert_eq!(
+            style.fg,
+            color(L!("red")),
+            "the empty leaf contributes nothing, so the family colours it"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn the_selection_replaces_the_style() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_comment"), &[L!("green"), L!("--underline")]);
+        colors.set(
+            L!("fish_color_selection"),
+            &[L!("white"), L!("--background=brblack"), L!("--bold")],
+        );
+
+        let style = colors.style_of(
+            HighlightClassification::from(TokenScopeId::COMMENT)
+                .with_attribute(HighlightAttribute::Selection),
+        );
+
+        assert_eq!(style.fg, color(L!("white")));
+        assert_eq!(style.bg, color(L!("brblack")));
+        assert!(style.flags.is_bold());
+        assert_eq!(
+            style.flags.underline_style(),
+            ResettableStyle::Off,
+            "the composed underline is replaced, not kept"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn the_search_match_supplies_the_fields_it_names() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_comment"), &[L!("green")]);
+        colors.set(L!("fish_color_search_match"), &[L!("--background=brblue")]);
+
+        let background_only = colors.style_of(
+            HighlightClassification::from(TokenScopeId::COMMENT)
+                .with_attribute(HighlightAttribute::SearchMatch),
+        );
+        assert_eq!(
+            background_only.fg,
+            color(L!("green")),
+            "a match that names no foreground keeps the character's own"
+        );
+        assert_eq!(background_only.bg, color(L!("brblue")));
+
+        colors.set(
+            L!("fish_color_search_match"),
+            &[L!("yellow"), L!("--background=brblue")],
+        );
+        let named_foreground = colors.style_of(
+            HighlightClassification::from(TokenScopeId::COMMENT)
+                .with_attribute(HighlightAttribute::SearchMatch),
+        );
+        assert_eq!(named_foreground.fg, color(L!("yellow")));
+    }
+
+    #[test]
+    #[serial]
+    fn the_autosuggestion_replaces_the_foreground_it_carries() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_comment"), &[L!("green")]);
+        colors.set(L!("fish_color_autosuggestion"), &[L!("brblack")]);
+
+        let style = colors.style_of(
+            HighlightClassification::from(TokenScopeId::COMMENT)
+                .with_attribute(HighlightAttribute::Autosuggestion),
+        );
+
+        assert_eq!(style.fg, color(L!("brblack")));
+    }
+
+    #[test]
+    #[serial]
+    fn a_pager_row_falls_back_through_the_search_match() {
+        let colors = Colors::new();
+        // The selected row's background falls back to the search-match attribute.
+        colors.set(L!("fish_color_search_match"), &[L!("--background=brblue")]);
+
+        let row = HighlightClassification::of_scopes(
+            TokenScopeId::COMPLETION,
+            TokenScopeId::SELECTED_BACKGROUND,
+        );
+        assert_eq!(colors.style_of(row).bg, color(L!("brblue")));
+
+        // Its own variable wins over the fallback.
+        colors.set(
+            L!("fish_pager_color_selected_background"),
+            &[L!("--background=red")],
+        );
+        assert_eq!(colors.style_of(row).bg, color(L!("red")));
+    }
+
+    #[test]
+    #[serial]
+    fn the_forced_underline_is_a_fixed_effect() {
+        let colors = Colors::new();
+
+        let style = colors.style_of(
+            HighlightClassification::default().with_attribute(HighlightAttribute::ForcedUnderline),
+        );
+
+        assert_eq!(
+            style.flags.underline_style(),
+            ResettableStyle::On(UnderlineStyle::Single)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);
+        colors.set(L!("fish_color_operator"), &[L!("yellow")]);
+
+        let classifications = [
+            HighlightClassification::from(TokenScopeId::BUILTIN),
+            HighlightClassification::from(TokenScopeId::OPERATOR),
+            HighlightClassification::of_scopes(
+                TokenScopeId::COMPLETION,
+                TokenScopeId::SELECTED_BACKGROUND,
+            ),
+        ];
+
+        let vars = colors.vars();
+        let mut shared = HighlightStyleResolver::new();
+        for classification in classifications {
+            let cached = shared.style_of(classification, vars);
+            let fresh = HighlightStyleResolver::new().style_of(classification, vars);
+            assert_eq!(
+                cached, fresh,
+                "a style read from the cache is the style a fresh resolution gives"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn trailing_spaces_do_not_inherit_the_commands_underline() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_command"), &[L!("--underline")]);
+
+        let text = L!("echo   ").to_owned();
+        let mut classifications = vec![];
+        highlight_shell(
+            &text,
+            &mut classifications,
+            &mut OperationContext::background(colors.vars(), EXPANSION_LIMIT_BACKGROUND),
+            true, /* io_ok */
+            Some(text.len()),
+        );
+        assert_eq!(classifications.len(), text.len());
+
+        let vars = colors.vars();
+        let mut resolver = HighlightStyleResolver::new();
+        for (index, classification) in classifications.iter().enumerate() {
+            let underline = resolver
+                .style_of(*classification, vars)
+                .flags
+                .underline_style();
+            let expected = if index < 4 {
+                ResettableStyle::On(UnderlineStyle::Single)
+            } else {
+                ResettableStyle::Off
+            };
+            assert_eq!(underline, expected, "character {index} of {text:?}");
+        }
+    }
+}
