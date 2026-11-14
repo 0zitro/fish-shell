@@ -124,71 +124,142 @@ Example: to make errors highlighted and red, use::
 
 The following variables are available to change the highlighting colors in fish:
 
-==============================================        =====================================================================
-Variable                                              Meaning
-==============================================        =====================================================================
-.. envvar:: fish_color_normal                         default color
-.. envvar:: fish_color_command                        commands like echo
-.. envvar:: fish_color_builtin                        builtin commands like cd and set - this falls back on the command color if unset
-.. envvar:: fish_color_function                       user-defined functions - this falls back on the command color if unset
-.. envvar:: fish_color_keyword                        keywords like if - this falls back on the command color if unset
-.. envvar:: fish_color_keyword_begin                  the ``begin`` keyword
-.. envvar:: fish_color_keyword_builtin                the ``builtin`` decorator
-.. envvar:: fish_color_keyword_case                   the ``case`` keyword
-.. envvar:: fish_color_keyword_command                the ``command`` decorator
-.. envvar:: fish_color_keyword_else                   the ``else`` keyword
-.. envvar:: fish_color_keyword_end                    the ``end`` keyword
-.. envvar:: fish_color_keyword_exec                   the ``exec`` decorator
-.. envvar:: fish_color_keyword_for                    the ``for`` keyword
-.. envvar:: fish_color_keyword_function               the ``function`` keyword
-.. envvar:: fish_color_keyword_if                     the ``if`` keyword
-.. envvar:: fish_color_keyword_in                     the ``in`` keyword
-.. envvar:: fish_color_keyword_switch                 the ``switch`` keyword
-.. envvar:: fish_color_keyword_while                  the ``while`` keyword
-.. envvar:: fish_color_keyword_modifier               ``and``, ``or``, ``not``, ``!`` and ``time``, as a group
-.. envvar:: fish_color_keyword_and                    the ``and`` keyword
-.. envvar:: fish_color_keyword_or                     the ``or`` keyword
-.. envvar:: fish_color_keyword_not                    the ``not`` keyword
-.. envvar:: fish_color_keyword_exclam                 the ``!`` keyword
-.. envvar:: fish_color_keyword_time                   the ``time`` decorator
-.. envvar:: fish_color_quote                          quoted text like ``"abc"``
-.. envvar:: fish_color_quote_single                   the text of a single-quoted run
-.. envvar:: fish_color_quote_single_delimiter         the ``'`` marks of a single-quoted run
-.. envvar:: fish_color_quote_double                   the text of a double-quoted run
-.. envvar:: fish_color_quote_double_delimiter         the ``"`` marks of a double-quoted run
-.. envvar:: fish_color_redirection                    IO redirections like >/dev/null
-.. envvar:: fish_color_end                            process separators like ``;`` and ``&``
-.. envvar:: fish_color_error                          syntax errors
-.. envvar:: fish_color_param                          ordinary command parameters
-.. envvar:: fish_color_valid_path                     parameters and redirection targets that are filenames (if the file exists)
-.. envvar:: fish_color_option                         options starting with "-", up to the first "--" parameter
-.. envvar:: fish_color_comment                        comments like '# important'
-.. envvar:: fish_color_selection                      selected text in vi visual mode
-.. envvar:: fish_color_operator                       parameter expansion operators like ``*`` and ``~``
-.. envvar:: fish_color_operator_glob                  ``*``, and ``?`` where a question mark globs
-.. envvar:: fish_color_operator_brace                 the ``{``, ``}`` and ``,`` of a brace expansion
-.. envvar:: fish_color_operator_parenthesis           ``(`` and ``)``
-.. envvar:: fish_color_operator_tilde                 ``~`` at the start of a word
-.. envvar:: fish_color_operator_dollar                the ``$`` of ``$(command)``
-.. envvar:: fish_color_operator_logical               ``&&`` and ``||``
-.. envvar:: fish_color_operator_assignment            the ``=`` that separates a name from its value
-.. envvar:: fish_color_escape                         character escapes like ``\n`` and ``\x70``
-.. envvar:: fish_color_escape_unicode                 a ``\u``, ``\U``, ``\x`` or ``\X`` escape
-.. envvar:: fish_color_escape_octal                   a ``\`` and the octal digits after it
-.. envvar:: fish_color_escape_control                 a ``\c`` escape
-.. envvar:: fish_color_escape_invalid                 an escape whose value is out of range
-.. envvar:: fish_color_autosuggestion                 autosuggestions (the proposed rest of a command)
-.. envvar:: fish_color_cwd                            the current working directory in the default prompt
-.. envvar:: fish_color_cwd_root                       the current working directory in the default prompt for the root user
-.. envvar:: fish_color_user                           the username in the default prompt
-.. envvar:: fish_color_host                           the hostname in the default prompt
-.. envvar:: fish_color_host_remote                    the hostname in the default prompt for remote sessions (like ssh)
-.. envvar:: fish_color_status                         the last command's nonzero exit code in the default prompt
-.. envvar:: fish_color_cancel                         the '^C' indicator on a canceled command
-.. envvar:: fish_color_search_match                   history search matches and selected pager items (background only)
-.. envvar:: fish_color_history_current                the current position in the history for commands like ``dirh`` and ``cdh``
-
-==============================================        =====================================================================
+.. envvar:: fish_color_normal
+    default color
+.. envvar:: fish_color_command
+    commands like echo
+.. envvar:: fish_color_builtin
+    builtin commands like cd and set - this falls back on the command color if unset
+.. envvar:: fish_color_function
+    user-defined functions - this falls back on the command color if unset
+.. envvar:: fish_color_keyword
+    keywords like if - this falls back on the command color if unset
+.. envvar:: fish_color_keyword_begin
+    the ``begin`` keyword
+.. envvar:: fish_color_keyword_builtin
+    the ``builtin`` decorator
+.. envvar:: fish_color_keyword_case
+    the ``case`` keyword
+.. envvar:: fish_color_keyword_command
+    the ``command`` decorator
+.. envvar:: fish_color_keyword_else
+    the ``else`` keyword
+.. envvar:: fish_color_keyword_end
+    the ``end`` keyword
+.. envvar:: fish_color_keyword_exec
+    the ``exec`` decorator
+.. envvar:: fish_color_keyword_for
+    the ``for`` keyword
+.. envvar:: fish_color_keyword_function
+    the ``function`` keyword
+.. envvar:: fish_color_keyword_if
+    the ``if`` keyword
+.. envvar:: fish_color_keyword_in
+    the ``in`` keyword
+.. envvar:: fish_color_keyword_switch
+    the ``switch`` keyword
+.. envvar:: fish_color_keyword_while
+    the ``while`` keyword
+.. envvar:: fish_color_keyword_modifier
+    ``and``, ``or``, ``not``, ``!`` and ``time``, as a group
+.. envvar:: fish_color_keyword_and
+    the ``and`` keyword
+.. envvar:: fish_color_keyword_or
+    the ``or`` keyword
+.. envvar:: fish_color_keyword_not
+    the ``not`` keyword
+.. envvar:: fish_color_keyword_exclam
+    the ``!`` keyword
+.. envvar:: fish_color_keyword_time
+    the ``time`` decorator
+.. envvar:: fish_color_quote
+    quoted text like ``"abc"``
+.. envvar:: fish_color_quote_single
+    the text of a single-quoted run
+.. envvar:: fish_color_quote_single_delimiter
+    the ``'`` marks of a single-quoted run
+.. envvar:: fish_color_quote_double
+    the text of a double-quoted run
+.. envvar:: fish_color_quote_double_delimiter
+    the ``"`` marks of a double-quoted run
+.. envvar:: fish_color_redirection
+    IO redirections like >/dev/null
+.. envvar:: fish_color_end
+    process separators like ``;`` and ``&``
+.. envvar:: fish_color_error
+    syntax errors
+.. envvar:: fish_color_param
+    ordinary command parameters
+.. envvar:: fish_color_valid_path
+    parameters and redirection targets that are filenames (if the file exists)
+.. envvar:: fish_color_option
+    options starting with "-", up to the first "--" parameter
+.. envvar:: fish_color_comment
+    comments like '# important'
+.. envvar:: fish_color_selection
+    selected text in vi visual mode
+.. envvar:: fish_color_operator
+    parameter expansion operators like ``*`` and ``~``
+.. envvar:: fish_color_operator_glob
+    ``*``, and ``?`` where a question mark globs
+.. envvar:: fish_color_operator_brace
+    the ``{``, ``}`` and ``,`` of a brace expansion
+.. envvar:: fish_color_operator_parenthesis
+    ``(`` and ``)``
+.. envvar:: fish_color_operator_tilde
+    ``~`` at the start of a word
+.. envvar:: fish_color_operator_dollar
+    the ``$`` of ``$(command)``
+.. envvar:: fish_color_operator_logical
+    ``&&`` and ``||``
+.. envvar:: fish_color_operator_assignment
+    the ``=`` that separates a name from its value
+.. envvar:: fish_color_escape
+    character escapes like ``\n`` and ``\x70``
+.. envvar:: fish_color_escape_unicode
+    a ``\u``, ``\U``, ``\x`` or ``\X`` escape
+.. envvar:: fish_color_escape_octal
+    a ``\`` and the octal digits after it
+.. envvar:: fish_color_escape_control
+    a ``\c`` escape
+.. envvar:: fish_color_escape_invalid
+    an escape whose value is out of range
+.. envvar:: fish_color_variable
+    a variable name in a reference
+.. envvar:: fish_color_variable_sigil
+    the ``$`` before a name
+.. envvar:: fish_color_variable_sigil_dereference
+    a ``$`` that dereferences the one after it
+.. envvar:: fish_color_variable_slice
+    the brackets of a slice
+.. envvar:: fish_color_variable_parameter
+    a parameter of the enclosing function definition, as a group
+.. envvar:: fish_color_variable_parameter_argv
+    ``argv``
+.. envvar:: fish_color_variable_parameter_named
+    a name the enclosing definition declares with ``-a``
+.. envvar:: fish_color_variable_definition
+    a name a command defines: ``x=...``, ``set x``, ``for x``
+.. envvar:: fish_color_autosuggestion
+    autosuggestions (the proposed rest of a command)
+.. envvar:: fish_color_cwd
+    the current working directory in the default prompt
+.. envvar:: fish_color_cwd_root
+    the current working directory in the default prompt for the root user
+.. envvar:: fish_color_user
+    the username in the default prompt
+.. envvar:: fish_color_host
+    the hostname in the default prompt
+.. envvar:: fish_color_host_remote
+    the hostname in the default prompt for remote sessions (like ssh)
+.. envvar:: fish_color_status
+    the last command's nonzero exit code in the default prompt
+.. envvar:: fish_color_cancel
+    the '^C' indicator on a canceled command
+.. envvar:: fish_color_search_match
+    history search matches and selected pager items (background only)
+.. envvar:: fish_color_history_current
+    the current position in the history for commands like ``dirh`` and ``cdh``
 
 If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options, it
 names nothing, and the color of a piece of text is composed from several variables at

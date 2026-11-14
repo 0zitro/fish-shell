@@ -7,6 +7,7 @@
 
 mod classification;
 mod file_tester;
+mod function_parameters;
 mod style_resolution;
 mod visitor;
 

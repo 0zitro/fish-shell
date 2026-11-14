@@ -36,6 +36,7 @@ use fish_widestring::{
 };
 
 use super::file_tester::IsFile;
+use super::function_parameters::FunctionParameterList;
 
 /// Writes `text` with each character's resolved style as ANSI escape sequences.
 pub fn colorize_text(
@@ -277,57 +278,76 @@ pub fn autosuggest_validate_from_history(
     true
 }
 
-// Highlights the variable starting with 'in', setting colors within the 'colors' array. Returns the
-// number of characters consumed.
-fn classify_variable(inp: &wstr, classifications: &mut [HighlightClassification]) -> usize {
+// Classifies the variable reference starting with `inp`'s first `$`, writing one
+// classification per character into `classifications`. Returns the number of characters
+// consumed.
+fn classify_variable(
+    inp: &wstr,
+    parameters: Option<&FunctionParameterList>,
+    classifications: &mut [HighlightClassification],
+) -> usize {
     assert_eq!(inp.char_at(0), '$');
-    let operator = HighlightClassification::from(TokenScopeId::OPERATOR);
+    let sigil = HighlightClassification::from(TokenScopeId::VARIABLE_SIGIL);
+    let dereference = HighlightClassification::from(TokenScopeId::VARIABLE_SIGIL_DEREFERENCE);
+    let variable = HighlightClassification::from(TokenScopeId::VARIABLE);
+    let slice = HighlightClassification::from(TokenScopeId::VARIABLE_SLICE);
     let dollar = HighlightClassification::from(TokenScopeId::OPERATOR_DOLLAR);
     let invalid = HighlightClassification::from(TokenScopeId::ERROR);
 
-    // Handle an initial run of $s.
-    let mut idx = 0;
+    // The run of dollars: the one adjacent to what the reference reads is the sigil, and
+    // the ones before it dereference it.
     let mut dollar_count = 0;
-    while inp.char_at(idx) == '$' {
-        // Our color depends on the next char.
-        let next = inp.char_at(idx + 1);
-        if next == '$' || valid_var_name_char(next) {
-            classifications[idx] = operator;
-        } else if next == '(' {
-            // The dollar opens a command substitution; the parenthesis after it is
-            // the substitution's own operator.
-            classifications[idx] = dollar;
-            return idx + 1;
-        } else {
-            classifications[idx] = invalid;
-        }
-        idx += 1;
+    while inp.char_at(dollar_count) == '$' {
         dollar_count += 1;
     }
+    let next = inp.char_at(dollar_count);
+
+    if next == '(' {
+        // A command substitution, or a dynamic reference whose name the substitution
+        // produces; the parenthesis is the substitution's own operator.
+        if dollar_count == 1 {
+            classifications[0] = dollar;
+            return 1;
+        }
+        classifications[..dollar_count - 1].fill(dereference);
+        classifications[dollar_count - 1] = sigil;
+        return dollar_count;
+    }
+
+    classifications[..dollar_count - 1].fill(dereference);
+    classifications[dollar_count - 1] = if valid_var_name_char(next) {
+        sigil
+    } else {
+        invalid
+    };
+    let mut idx = dollar_count;
 
     // Handle a sequence of variable characters.
     // It may contain an escaped newline - see #8444.
+    let name_start = idx;
     loop {
         if valid_var_name_char(inp.char_at(idx)) {
-            classifications[idx] = operator;
             idx += 1;
         } else if inp.char_at(idx) == '\\' && inp.char_at(idx + 1) == '\n' {
-            classifications[idx] = operator;
-            idx += 1;
-            classifications[idx] = operator;
-            idx += 1;
+            idx += 2;
         } else {
             break;
         }
     }
+    // A reference to a parameter of the enclosing definition is classified by it.
+    let name = &inp[name_start..idx];
+    let name_classification = parameters
+        .and_then(|parameters| parameters.find_parameter_scope(name))
+        .map_or(variable, HighlightClassification::from);
+    classifications[name_start..idx].fill(name_classification);
 
     // Handle a slice, up to dollar_count of them. Note that we currently don't do any validation of
     // the slice's contents, e.g. $foo[blah] will not show an error even though it's invalid.
     for _slice_count in 0..dollar_count {
         match slice_length(&inp[idx..]) {
             Some(slice_len) if slice_len > 0 => {
-                classifications[idx] = operator;
-                classifications[idx + slice_len - 1] = operator;
+                classifications[idx] = slice;
+                classifications[idx + slice_len - 1] = slice;
                 idx += slice_len;
             }
             Some(_slice_len) => {
@@ -351,6 +371,7 @@ fn classify_variable(inp: &wstr, classifications: &mut [HighlightClassification]
 /// without regard to command substitutions.
 fn classify_word(
     buffstr: &wstr,
+    parameters: Option<&FunctionParameterList>,
     base: HighlightClassification,
     classifications: &mut [HighlightClassification],
 ) {
@@ -491,6 +512,7 @@ fn classify_word(
                             assert!(in_pos < buff_len);
                             in_pos += classify_variable(
                                 &buffstr[in_pos..],
+                                parameters,
                                 &mut classifications[in_pos..],
                             );
                             // Subtract one to account for the upcoming loop increment.
@@ -571,8 +593,11 @@ fn classify_word(
                             }
                         }
                     '$' => {
-                        in_pos +=
-                            classify_variable(&buffstr[in_pos..], &mut classifications[in_pos..]);
+                        in_pos += classify_variable(
+                            &buffstr[in_pos..],
+                            parameters,
+                            &mut classifications[in_pos..],
+                        );
                         // Subtract one to account for the upcoming increment in the loop.
                         in_pos -= 1;
                     }
@@ -607,6 +632,9 @@ struct HighlightVisitor<'src, 'wd, 'ctx> {
     // A stack of variables that the current commandline probably defines.  We mark redirections
     // as valid if they use one of these variables, to avoid marking valid targets as error.
     pending_variable_names: Vec<&'src wstr>,
+    /// The parameter lists of the function definitions this buffer is inside, innermost
+    /// last.
+    enclosing_function_parameters: Vec<FunctionParameterList>,
     done: bool,
 }
 
@@ -627,6 +655,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             file_tester,
             classifications: vec![],
             pending_variable_names: vec![],
+            enclosing_function_parameters: vec![],
             done: false,
         }
     }
@@ -703,10 +732,12 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
     fn classify_command_word(&mut self, node: &ast::String_, scope: TokenScopeId) {
         let source_range = node.source_range();
         let cmd_str = self.source_slice(source_range);
+        let base = self.classification_of(scope);
 
         classify_word(
             cmd_str,
-            self.classification_of(scope),
+            self.enclosing_function_parameters.last(),
+            base,
             &mut self.classifications[source_range.as_usize()],
         );
         self.classify_command_substitutions(node);
@@ -728,9 +759,11 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         } else {
             TokenScopeId::PARAM
         };
+        let base = self.classification_of(scope);
         classify_word(
             arg_str,
-            self.classification_of(scope),
+            self.enclosing_function_parameters.last(),
+            base,
             &mut self.classifications[source_range.as_usize()],
         );
 
@@ -936,11 +969,14 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
     fn visit_variable_assignment(&mut self, varas: &VariableAssignment) {
         self.classify_as_argument(varas, true);
-        // Classify the '=' in variable assignments as an assignment operator.
+        // Classify the '=' in variable assignments as an assignment operator, and the name
+        // before it as the definition it is.
         if let Some(offset) = variable_assignment_equals_pos(varas.source(self.buff)) {
-            let equals_loc = varas.source_range().start() + offset;
+            let start = varas.source_range().start();
+            let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
+            self.classifications[start..start + offset].fill(definition);
             let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
-            self.classifications[equals_loc] = assignment;
+            self.classifications[start + offset] = assignment;
             let var_name = &varas.source(self.buff)[..offset];
             self.pending_variable_names.push(var_name);
         }
@@ -1012,14 +1048,20 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         let mut have_dashdash = false;
         for v in &stmt.args_or_redirs {
             if v.is_argument() {
+                let mut definitions_name = false;
                 if is_set {
                     let arg = v.argument().source(self.buff);
                     if valid_var_name(arg) {
                         self.pending_variable_names.push(arg);
                         is_set = false;
+                        definitions_name = true;
                     }
                 }
                 self.visit_argument(v.argument(), is_cd, !have_dashdash);
+                if definitions_name {
+                    let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
+                    self.classify_node(v.argument(), definition);
+                }
                 if v.argument().source(self.buff) == "--" {
                     have_dashdash = true;
                 }
@@ -1038,12 +1080,31 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         }
         self.visit(&block.args_or_redirs);
         let pending_variable_names_count = self.pending_variable_names.len();
+
+        // A definition's body resolves references against the parameters its own header
+        // declares.
+        let parameters = match &block.header {
+            BlockStatementHeader::Function(header) => {
+                Some(FunctionParameterList::of_function_header(header, self.buff))
+            }
+            _ => None,
+        };
+        let has_parameters = parameters.is_some();
+        self.enclosing_function_parameters.extend(parameters);
+
         if let BlockStatementHeader::For(fh) = &block.header {
             let var_name = fh.var_name.source(self.buff);
             self.pending_variable_names.push(var_name);
+
+            // A loop's variable is defined by the header.
+            let definition = self.classification_of(TokenScopeId::VARIABLE_DEFINITION);
+            self.classify_node(&fh.var_name, definition);
         }
         self.visit(&block.jobs);
         self.visit(&block.end);
+        if has_parameters {
+            self.enclosing_function_parameters.pop();
+        }
         self.pending_variable_names
             .truncate(pending_variable_names_count);
     }
@@ -1474,7 +1535,7 @@ mod tests {
 
             validate!(
                 ("for", fg(TokenScopeId::KEYWORD_FOR)),
-                ("x", fg(TokenScopeId::PARAM)),
+                ("x", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("set-by-for-1", fg(TokenScopeId::PARAM)),
                 ("set-by-for-2", fg(TokenScopeId::PARAM)),
@@ -1488,7 +1549,7 @@ mod tests {
 
             validate!(
                 ("set", fg(TokenScopeId::BUILTIN)),
-                ("x", fg(TokenScopeId::PARAM)),
+                ("x", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("set-by-set", fg(TokenScopeId::PARAM)),
                 (";", fg(TokenScopeId::END)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
@@ -1501,7 +1562,7 @@ mod tests {
             );
 
             validate!(
-                ("x", fg(TokenScopeId::PARAM), ns),
+                ("x", fg(TokenScopeId::VARIABLE_DEFINITION), ns),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("set-by-variable-override", fg(TokenScopeId::PARAM), ns),
                 ("echo", fg(TokenScopeId::BUILTIN)),
@@ -1527,18 +1588,23 @@ mod tests {
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("\"", fg(TokenScopeId::ERROR)),
                 ("double_quote", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("$stuff", fg(TokenScopeId::OPERATOR), ns),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
+                ("stuff", fg(TokenScopeId::VARIABLE), ns),
             );
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("$foo", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("foo", fg(TokenScopeId::VARIABLE), ns),
                 ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
-                ("$bar", fg(TokenScopeId::OPERATOR), ns),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
+                ("bar", fg(TokenScopeId::VARIABLE), ns),
                 ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
-                ("$baz[", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("baz", fg(TokenScopeId::VARIABLE), ns),
+                ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
                 ("1 2..3", fg(TokenScopeId::PARAM)),
-                ("]", fg(TokenScopeId::OPERATOR)),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE)),
             );
 
             // A mixed word: the quoted runs take their quote style, the rest stays the
@@ -1566,7 +1632,7 @@ mod tests {
 
             validate!(
                 ("for", fg(TokenScopeId::KEYWORD_FOR)),
-                ("i", fg(TokenScopeId::PARAM)),
+                ("i", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("1 2 3", fg(TokenScopeId::PARAM)),
                 (";", fg(TokenScopeId::END)),
@@ -1575,11 +1641,15 @@ mod tests {
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("$$foo[", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL_DEREFERENCE)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
+                ("foo", fg(TokenScopeId::VARIABLE), ns),
+                ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
                 ("1", fg(TokenScopeId::PARAM)),
-                ("][", fg(TokenScopeId::OPERATOR)),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
+                ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
                 ("2", fg(TokenScopeId::PARAM)),
-                ("]", fg(TokenScopeId::OPERATOR)),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE)),
                 ("[3]", fg(TokenScopeId::PARAM)), // two dollar signs, so last one is not an expansion
             );
 
@@ -1632,13 +1702,13 @@ mod tests {
             );
 
             validate!(
-                ("HOME", fg(TokenScopeId::PARAM)),
+                ("HOME", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 (".", fg(TokenScopeId::PARAM), ns),
-                ("VAR1", fg(TokenScopeId::PARAM)),
+                ("VAR1", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("VAL1", fg(TokenScopeId::PARAM), ns),
-                ("VAR", fg(TokenScopeId::PARAM)),
+                ("VAR", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 ("|&", fg(TokenScopeId::END)),
@@ -1706,15 +1776,16 @@ mod tests {
             );
 
             validate!(
-                ("a", fg(TokenScopeId::PARAM)),
+                ("a", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
             );
 
             // Highlighting works across escaped line breaks (#8444).
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("$FISH_\\\n", fg(TokenScopeId::OPERATOR)),
-                ("VERSION", fg(TokenScopeId::OPERATOR), ns),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("FISH_\\\n", fg(TokenScopeId::VARIABLE), ns),
+                ("VERSION", fg(TokenScopeId::VARIABLE), ns),
             );
 
             // NOTE: we assume /usr/bin/env exists on the system here
@@ -1731,14 +1802,16 @@ mod tests {
             validate!(
                 ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
                 ("{", fg(TokenScopeId::OPERATOR_BRACE), ns),
-                ("$VARIABLE_IN_COMMAND", fg(TokenScopeId::OPERATOR), ns),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
+                ("VARIABLE_IN_COMMAND", fg(TokenScopeId::VARIABLE), ns),
                 ("}", fg(TokenScopeId::OPERATOR_BRACE), ns),
                 ("*", fg(TokenScopeId::OPERATOR_GLOB), ns)
             );
 
             validate!(
                 ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
-                ("$VARIABLE_IN_COMMAND2", fg(TokenScopeId::OPERATOR), ns)
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
+                ("VARIABLE_IN_COMMAND2", fg(TokenScopeId::VARIABLE), ns)
             );
 
             validate!(("$EMPTY_VARIABLE", fg(TokenScopeId::ERROR)));
