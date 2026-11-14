@@ -1367,9 +1367,15 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         // Except if our command is 'cd' we have special logic for how arguments are classified.
         let is_cd = is_veritable_cd(&expanded_cmd);
         // A definition command's names take the scope of the mode its flags request.
-        let definitions = DefinitionCommand::of_command(&expanded_cmd).and_then(|command| {
-            definition_mode(stmt.args_or_redirs.iter(), self.buff).map(|mode| (command, mode))
-        });
+        // The word is read from the buffer, so a pass that resolves no commands — no I/O, a
+        // pager row, `fish_indent` — still classifies the definitions the text declares; a
+        // decorated word is some other command, not the builtin that defines.
+        let definitions = (stmt.decoration() == StatementDecoration::None)
+            .then(|| DefinitionCommand::of_command(stmt.command.source(self.buff)))
+            .flatten()
+            .and_then(|command| {
+                definition_mode(stmt.args_or_redirs.iter(), self.buff).map(|mode| (command, mode))
+            });
         let mut defining = definitions.is_some();
         // If we have seen a "--" argument, classify all options from then on as normal arguments.
         let mut have_dashdash = false;
@@ -2341,6 +2347,39 @@ mod tests {
             .position(|window| window == needle.as_char_slice())
             .expect("the needle is in the text");
         classifications[offset].enclosing()
+    }
+
+    /// The classifications of `text`, in a pass that resolves no commands.
+    fn classified_without_io(vars: &dyn Environment, text: &wstr) -> Vec<HighlightClassification> {
+        let mut classifications = vec![];
+        highlight_shell(
+            text,
+            &mut classifications,
+            &mut OperationContext::background(vars, EXPANSION_LIMIT_BACKGROUND),
+            false, /* io_ok */
+            Some(text.len()),
+        );
+        classifications
+    }
+
+    #[test]
+    #[serial]
+    fn test_definitions_without_io() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // `fish_indent`, the pager and an autosuggestion resolve no commands, and the text
+        // still declares the mode of the names it defines.
+        let classifications = classified_without_io(vars, L!("set -gx name 1"));
+        assert_eq!(
+            classifications[8].foreground(),
+            TokenScopeId::VARIABLE_DEFINITION_GLOBAL_EXPORTED
+        );
+
+        // A decorated word is another command, not the builtin that defines.
+        let classifications = classified_without_io(vars, L!("command set -gx name 1"));
+        assert_eq!(classifications[16].foreground(), TokenScopeId::PARAM);
     }
 
     #[test]
