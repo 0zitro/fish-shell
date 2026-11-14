@@ -354,7 +354,10 @@ fn classify_word(
     let operator = HighlightClassification::from(TokenScopeId::OPERATOR);
     let invalid = HighlightClassification::from(TokenScopeId::ERROR);
     let escape = HighlightClassification::from(TokenScopeId::ESCAPE);
-    let quote = HighlightClassification::from(TokenScopeId::QUOTE);
+    let delimiter_single = HighlightClassification::from(TokenScopeId::QUOTE_SINGLE_DELIMITER);
+    let delimiter_double = HighlightClassification::from(TokenScopeId::QUOTE_DOUBLE_DELIMITER);
+    let quoted_single = HighlightClassification::from(TokenScopeId::QUOTE_SINGLE);
+    let quoted_double = HighlightClassification::from(TokenScopeId::QUOTE_DOUBLE);
     let buff_len = buffstr.len();
     classifications.fill(base);
 
@@ -379,7 +382,7 @@ fn classify_word(
         match mode {
             Mode::Unquoted => {
                 if c == '\\' {
-                    let mut fill_classification = escape; // may be set to the invalid scope
+                    let mut fill_scope = TokenScopeId::ESCAPE; // may become another class
                     let backslash_pos = in_pos;
                     let mut fill_end = backslash_pos;
 
@@ -393,7 +396,7 @@ fn classify_word(
 
                     if escaped_char == '\0' {
                         fill_end = in_pos;
-                        fill_classification = invalid;
+                        fill_scope = TokenScopeId::ERROR;
                     } else if matches!(escaped_char, '~' | '%') {
                         if in_pos == 1 {
                             fill_end = in_pos + 1;
@@ -406,6 +409,7 @@ fn classify_word(
                         fill_end = in_pos + 1;
                     } else if escaped_char == 'c' {
                         // Like \ci. So highlight three characters.
+                        fill_scope = TokenScopeId::ESCAPE_CONTROL;
                         fill_end = in_pos + 1;
                     } else if "uUxX01234567".contains(escaped_char) {
                         let mut res = 0;
@@ -454,7 +458,13 @@ fn classify_word(
 
                         // It's an error if we exceeded the max value.
                         if res > u32::from(max_val) {
-                            fill_classification = invalid;
+                            fill_scope = TokenScopeId::ESCAPE_INVALID;
+                        } else {
+                            fill_scope = if base == 8 {
+                                TokenScopeId::ESCAPE_OCTAL
+                            } else {
+                                TokenScopeId::ESCAPE_UNICODE
+                            };
                         }
 
                         // Subtract one from in_pos, so that the increment in the loop will move to
@@ -462,7 +472,8 @@ fn classify_word(
                         in_pos -= 1;
                     }
                     assert!(fill_end >= backslash_pos);
-                    classifications[backslash_pos..fill_end].fill(fill_classification);
+                    classifications[backslash_pos..fill_end]
+                        .fill(HighlightClassification::from(fill_scope));
                 } else {
                     // Not a backslash.
                     match c {
@@ -496,12 +507,12 @@ fn classify_word(
                             classifications[in_pos] = operator;
                         }
                         '\'' => {
-                            classifications[in_pos] = quote;
+                            classifications[in_pos] = delimiter_single;
                             unclosed_quote_offset = Some(in_pos);
                             mode = Mode::SingleQuoted;
                         }
                         '"' => {
-                            classifications[in_pos] = quote;
+                            classifications[in_pos] = delimiter_double;
                             unclosed_quote_offset = Some(in_pos);
                             mode = Mode::DoubleQuoted;
                         }
@@ -511,7 +522,7 @@ fn classify_word(
             }
             // Mode 1 means single quoted string, i.e 'foo'.
             Mode::SingleQuoted => {
-                classifications[in_pos] = quote;
+                classifications[in_pos] = quoted_single;
                 if c == '\\' {
                     // backslash
                     if in_pos + 1 < buff_len {
@@ -523,6 +534,7 @@ fn classify_word(
                         }
                     }
                 } else if c == '\'' {
+                    classifications[in_pos] = delimiter_single;
                     mode = Mode::Unquoted;
                 }
             }
@@ -531,10 +543,11 @@ fn classify_word(
                 // Slices are colored in advance, past `in_pos`, and we don't want to overwrite
                 // that.
                 if classifications[in_pos] == base {
-                    classifications[in_pos] = quote;
+                    classifications[in_pos] = quoted_double;
                 }
                 match c {
                     '"' => {
+                        classifications[in_pos] = delimiter_double;
                         mode = Mode::Unquoted;
                     }
                     '\\'
@@ -1243,7 +1256,7 @@ mod tests {
 
                     assert_eq!(
                         classifications[i], expected_classifications[i],
-                        "Failed at position {i}, char {c}"
+                        "Failed at position {i}, char {c}, of {text:?}"
                     );
                 }
             };
@@ -1368,18 +1381,20 @@ mod tests {
             );
             validate!(
                 ("true", fg(TokenScopeId::BUILTIN)),
-                ("\"before", fg(TokenScopeId::QUOTE)),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
+                ("before", fg(TokenScopeId::QUOTE_DOUBLE), ns),
                 ("$(", fg(TokenScopeId::OPERATOR)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("param1", fg(TokenScopeId::PARAM)),
                 (")", fg(TokenScopeId::OPERATOR)),
-                ("after\"", fg(TokenScopeId::QUOTE)),
+                ("after", fg(TokenScopeId::QUOTE_DOUBLE), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
                 ("param2", fg(TokenScopeId::PARAM)),
             );
             validate!(
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("\"", fg(TokenScopeId::ERROR)),
-                ("unclosed quote", fg(TokenScopeId::QUOTE)),
+                ("unclosed quote", fg(TokenScopeId::QUOTE_DOUBLE), ns),
                 ("$(", fg(TokenScopeId::OPERATOR)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 (")", fg(TokenScopeId::OPERATOR)),
@@ -1489,26 +1504,49 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("'", fg(TokenScopeId::ERROR)),
-                ("single_quote", fg(TokenScopeId::QUOTE)),
-                ("$stuff", fg(TokenScopeId::QUOTE)),
+                ("single_quote", fg(TokenScopeId::QUOTE_SINGLE), ns),
+                ("$stuff", fg(TokenScopeId::QUOTE_SINGLE), ns),
             );
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("\"", fg(TokenScopeId::ERROR)),
-                ("double_quote", fg(TokenScopeId::QUOTE)),
-                ("$stuff", fg(TokenScopeId::OPERATOR)),
+                ("double_quote", fg(TokenScopeId::QUOTE_DOUBLE), ns),
+                ("$stuff", fg(TokenScopeId::OPERATOR), ns),
             );
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("$foo", fg(TokenScopeId::OPERATOR)),
-                ("\"", fg(TokenScopeId::QUOTE)),
-                ("$bar", fg(TokenScopeId::OPERATOR)),
-                ("\"", fg(TokenScopeId::QUOTE)),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
+                ("$bar", fg(TokenScopeId::OPERATOR), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
                 ("$baz[", fg(TokenScopeId::OPERATOR)),
                 ("1 2..3", fg(TokenScopeId::PARAM)),
                 ("]", fg(TokenScopeId::OPERATOR)),
+            );
+
+            // A mixed word: the quoted runs take their quote style, the rest stays the
+            // argument.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("a", fg(TokenScopeId::PARAM)),
+                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("b", fg(TokenScopeId::QUOTE_SINGLE), ns),
+                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("c", fg(TokenScopeId::QUOTE_DOUBLE), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+            );
+
+            // An escape is classified by the shape of what follows the backslash.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("\\u1234", fg(TokenScopeId::ESCAPE_UNICODE)),
+                ("\\123", fg(TokenScopeId::ESCAPE_OCTAL)),
+                ("\\c", fg(TokenScopeId::ESCAPE_CONTROL)),
+                ("i", fg(TokenScopeId::PARAM), ns),
+                ("\\n", fg(TokenScopeId::ESCAPE)),
             );
 
             validate!(
@@ -1688,15 +1726,15 @@ mod tests {
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("\\UFDFD", fg(TokenScopeId::ESCAPE)),
+                ("\\UFDFD", fg(TokenScopeId::ESCAPE_UNICODE)),
             );
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("\\U10FFFF", fg(TokenScopeId::ESCAPE)),
+                ("\\U10FFFF", fg(TokenScopeId::ESCAPE_UNICODE)),
             );
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("\\U110000", fg(TokenScopeId::ERROR)),
+                ("\\U110000", fg(TokenScopeId::ESCAPE_INVALID)),
             );
 
             validate!(
