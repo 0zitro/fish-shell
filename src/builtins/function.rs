@@ -11,7 +11,7 @@ use crate::parse_tree::NodeRef;
 use crate::parser_keywords::parser_keywords_is_reserved;
 use crate::proc::{InternalJobId, Pid};
 use crate::signal::RawSignal;
-use crate::{err_fmt, err_str, function};
+use crate::{err_fmt, err_str, function, function_header};
 use nix::unistd::getpid;
 use std::sync::Arc;
 
@@ -39,24 +39,6 @@ impl Default for Options {
     }
 }
 
-// This command is atypical in using the "-" (RETURN_IN_ORDER) option for flag parsing.
-// This is needed due to the semantics of the -a/--argument-names flag.
-const SHORT_OPTIONS: &wstr = L!("-a:d:e:hj:p:s:v:w:SV:");
-#[rustfmt::skip]
-const LONG_OPTIONS: &[WOption] = &[
-    wopt(L!("description"), ArgType::RequiredArgument, 'd'),
-    wopt(L!("on-signal"), ArgType::RequiredArgument, 's'),
-    wopt(L!("on-job-exit"), ArgType::RequiredArgument, 'j'),
-    wopt(L!("on-process-exit"), ArgType::RequiredArgument, 'p'),
-    wopt(L!("on-variable"), ArgType::RequiredArgument, 'v'),
-    wopt(L!("on-event"), ArgType::RequiredArgument, 'e'),
-    wopt(L!("wraps"), ArgType::RequiredArgument, 'w'),
-    wopt(L!("help"), ArgType::NoArgument, 'h'),
-    wopt(L!("argument-names"), ArgType::RequiredArgument, 'a'),
-    wopt(L!("no-scope-shadowing"), ArgType::NoArgument, 'S'),
-    wopt(L!("inherit-variable"), ArgType::RequiredArgument, 'V'),
-];
-
 /// Return the internal_job_id for a pid, or None if none.
 /// This looks through both active and finished jobs.
 fn job_id_for_pid(pid: Pid, parser: &Parser) -> Option<InternalJobId> {
@@ -70,6 +52,8 @@ fn job_id_for_pid(pid: Pid, parser: &Parser) -> Option<InternalJobId> {
     }
 }
 
+// This command is atypical in using the "-" (RETURN_IN_ORDER) option for flag parsing.
+// This is needed due to the semantics of the -a/--argument-names flag.
 /// Parses options to builtin function, populating opts.
 /// Returns an exit status.
 fn parse_cmd_opts(
@@ -81,7 +65,9 @@ fn parse_cmd_opts(
     let cmd = L!("function");
     let print_hints = false;
     let mut handling_named_arguments = false;
-    let mut w = WGetopter::new(SHORT_OPTIONS, LONG_OPTIONS, argv);
+    let short_options = function_header::header_short_options();
+    let options = function_header::header_options();
+    let mut w = WGetopter::new(&short_options, &options, argv);
 
     let mut validate_variable_name =
         |streams: &mut IoStreams, varname: &wstr, read_only_ok: bool| {

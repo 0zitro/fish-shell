@@ -2143,6 +2143,17 @@ mod tests {
             (L!("while true; echo b; end"), L!("echo"), loop_while),
             (L!("function f; echo b; end"), L!("echo"), function),
             (L!("function f -S; echo b; end"), L!("echo"), no_shadowing),
+            // A word that an option takes as its value is not an option.
+            (
+                L!("function f --description -S; echo b; end"),
+                L!("echo"),
+                function,
+            ),
+            (
+                L!("function f --description d -S; echo b; end"),
+                L!("echo"),
+                no_shadowing,
+            ),
             (L!("echo a | cat"), L!("cat"), pipeline),
             (L!("true; and false"), L!("false"), and_or),
             // An and-or list with no conjunction and a pipeline with no pipe own no region.
