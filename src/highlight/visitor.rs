@@ -144,17 +144,17 @@ fn command_scope(
 
     // Abbreviations
     if abbreviation_ok && with_abbrs(|set| set.has_match(cmd, abbrs::Position::Command, L!(""))) {
-        return Some(TokenScopeId::COMMAND);
+        return Some(TokenScopeId::COMMAND_ABBREVIATION);
     }
 
     // Regular commands
     if command_ok && path_get_path(cmd, vars).is_some() {
-        return Some(TokenScopeId::COMMAND);
+        return Some(TokenScopeId::COMMAND_EXTERNAL);
     }
 
     // Implicit cd
     if implicit_cd_ok && path_as_implicit_cd(cmd, working_directory, vars).is_some() {
-        return Some(TokenScopeId::COMMAND);
+        return Some(TokenScopeId::COMMAND_IMPLICIT_CD);
     }
 
     None
@@ -978,7 +978,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 }
             }
             Err(..) => {
-                let invalid = self.classification_of(TokenScopeId::ERROR);
+                let invalid = self.classification_of(TokenScopeId::ERROR_PATH);
                 self.classify_node(arg, invalid);
             }
         }
@@ -994,7 +994,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         // It may have parsed successfully yet still be invalid (e.g. 9999999999999>&1)
         // If so, classify the whole thing invalid and stop.
         if !oper.is_valid() {
-            let invalid = self.classification_of(TokenScopeId::ERROR);
+            let invalid = self.classification_of(TokenScopeId::ERROR_REDIRECTION);
             self.classify_node(redir, invalid);
             return;
         }
@@ -1026,7 +1026,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             {
                 (TokenScopeId::REDIRECTION, file_exists)
             } else {
-                (TokenScopeId::ERROR, false)
+                (TokenScopeId::ERROR_REDIRECTION, false)
             }
         };
         let classification = self.classification_of(scope);
@@ -1078,16 +1078,19 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
         let mut expanded_cmd = WString::new();
         let mut cmd_scope = None;
+        let mut unresolved_command = false;
         if !has_cmdsub_without_dollar(cmd) {
             // We cannot check a command substitution without executing it, so assume it is valid.
             if !self.whether_io_permitted()
                 || variable_assignment_equals_pos(cmd).is_some()
                 || has_cmdsub(cmd)
             {
+                // A command whose kind this pass cannot determine: the family node is the
+                // only scope that claims no kind.
                 cmd_scope = Some(TokenScopeId::COMMAND);
             } else {
                 // Check to see if the command is valid.
-                // Try expanding it. If we cannot, it's an error.
+                // Try expanding it. If we cannot, the statement is a syntax error.
                 if let Some(expanded) =
                     statement_get_expanded_command(self.buff, stmt, self.file_tester.ctx)
                 {
@@ -1099,6 +1102,9 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                             self.working_directory,
                             self.file_tester.ctx.vars(),
                         );
+                        // The word expanded, so no command-position test matching it is a
+                        // fact about the word rather than about the parse.
+                        unresolved_command = cmd_scope.is_none();
                     }
                 }
             }
@@ -1108,7 +1114,12 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         if let Some(cmd_scope) = cmd_scope {
             self.classify_command_word(&stmt.command, cmd_scope);
         } else {
-            let invalid = self.classification_of(TokenScopeId::ERROR);
+            let scope = if unresolved_command {
+                TokenScopeId::ERROR_COMMAND
+            } else {
+                TokenScopeId::ERROR
+            };
+            let invalid = self.classification_of(scope);
             self.classify_node(&stmt.command, invalid);
         }
 
@@ -1436,7 +1447,7 @@ mod tests {
 
             validate!(
                 ("command", fg(TokenScopeId::KEYWORD_COMMAND)),
-                ("echo", fg(TokenScopeId::COMMAND)),
+                ("echo", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("abc", fg(TokenScopeId::PARAM)),
                 ("foo", param_valid_path),
                 ("&", fg(TokenScopeId::END)),
@@ -1454,12 +1465,15 @@ mod tests {
             validate!(
                 ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("command", fg(TokenScopeId::KEYWORD_COMMAND)),
-                ("ls", fg(TokenScopeId::COMMAND)),
+                ("ls", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("; ", fg(TokenScopeId::END)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("abc", fg(TokenScopeId::PARAM)),
                 ("; ", fg(TokenScopeId::END)),
-                ("/bin/definitely_not_a_command", fg(TokenScopeId::ERROR)),
+                (
+                    "/bin/definitely_not_a_command",
+                    fg(TokenScopeId::ERROR_COMMAND)
+                ),
                 ("; ", fg(TokenScopeId::END)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
@@ -1479,20 +1493,23 @@ mod tests {
 
             validate!(
                 ("cd", fg(TokenScopeId::BUILTIN)),
-                ("foo", fg(TokenScopeId::ERROR)),
+                ("foo", fg(TokenScopeId::ERROR_PATH)),
             );
 
             validate!(
                 ("cd", fg(TokenScopeId::BUILTIN)),
                 ("--help", fg(TokenScopeId::OPTION_LONG)),
                 ("-h", fg(TokenScopeId::OPTION_SHORT)),
-                ("definitely_not_a_directory", fg(TokenScopeId::ERROR)),
+                ("definitely_not_a_directory", fg(TokenScopeId::ERROR_PATH)),
             );
 
             validate!(
                 ("cd", fg(TokenScopeId::BUILTIN)),
                 ("--logical", fg(TokenScopeId::OPTION_LONG)),
-                ("still_definitely_not_a_directory", fg(TokenScopeId::ERROR)),
+                (
+                    "still_definitely_not_a_directory",
+                    fg(TokenScopeId::ERROR_PATH)
+                ),
             );
 
             validate!(
@@ -1515,7 +1532,7 @@ mod tests {
                 ("param2", fg(TokenScopeId::PARAM)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("|", fg(TokenScopeId::END)),
-                ("cat", fg(TokenScopeId::COMMAND)),
+                ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
             );
             validate!(
                 ("true", fg(TokenScopeId::BUILTIN)),
@@ -1558,22 +1575,28 @@ mod tests {
                 ("1>&2", fg(TokenScopeId::REDIRECTION)),
                 // Output redirection to an invalid fd.
                 ("2>&", fg(TokenScopeId::REDIRECTION)),
-                ("LO", fg(TokenScopeId::ERROR)),
+                ("LO", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Just a param, not a redirection.
                 ("test/blah", fg(TokenScopeId::PARAM)),
                 // Input redirection from directory.
                 ("<", fg(TokenScopeId::REDIRECTION)),
-                ("test/", fg(TokenScopeId::ERROR)),
+                ("test/", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Output redirection to an invalid path.
                 ("3>", fg(TokenScopeId::REDIRECTION)),
-                ("/not/a/valid/path/nope", fg(TokenScopeId::ERROR)),
+                (
+                    "/not/a/valid/path/nope",
+                    fg(TokenScopeId::ERROR_REDIRECTION)
+                ),
                 // Output redirection to directory.
                 ("3>", fg(TokenScopeId::REDIRECTION)),
-                ("test/nope/", fg(TokenScopeId::ERROR)),
+                ("test/nope/", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Redirections to overflow fd.
-                ("99999999999999999999>&2", fg(TokenScopeId::ERROR)),
+                (
+                    "99999999999999999999>&2",
+                    fg(TokenScopeId::ERROR_REDIRECTION)
+                ),
                 ("2>&", fg(TokenScopeId::REDIRECTION)),
-                ("99999999999999999999", fg(TokenScopeId::ERROR)),
+                ("99999999999999999999", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Output redirection containing a command substitution.
                 ("4>", fg(TokenScopeId::REDIRECTION)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
@@ -1628,9 +1651,12 @@ mod tests {
                 (">", fg(TokenScopeId::REDIRECTION)),
                 ("$x", fg(TokenScopeId::REDIRECTION)),
                 ("2>", fg(TokenScopeId::REDIRECTION)),
-                ("$totally_not_x", fg(TokenScopeId::ERROR)),
+                ("$totally_not_x", fg(TokenScopeId::ERROR_REDIRECTION)),
                 ("<", fg(TokenScopeId::REDIRECTION)),
-                ("$x_but_its_an_impostor", fg(TokenScopeId::ERROR)),
+                (
+                    "$x_but_its_an_impostor",
+                    fg(TokenScopeId::ERROR_REDIRECTION)
+                ),
             );
 
             validate!(
@@ -1747,17 +1773,17 @@ mod tests {
             );
 
             validate!(
-                ("cat", fg(TokenScopeId::COMMAND)),
+                ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("/dev/null", param_valid_path),
                 ("|", fg(TokenScopeId::END)),
                 // This is bogus, but we used to use "less" here and that doesn't have to be installed.
-                ("cat", fg(TokenScopeId::COMMAND)),
+                ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("2>", fg(TokenScopeId::REDIRECTION)),
             );
 
             // Highlight path-prefixes only at the cursor.
             validate!(
-                ("cat", fg(TokenScopeId::COMMAND)),
+                ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("/dev/nu", fg(TokenScopeId::PARAM)),
                 ("/dev/nu", param_valid_path),
             );
@@ -1833,7 +1859,7 @@ mod tests {
                 validate!(
                     (decorator, fg(scope)),
                     ("--", fg(TokenScopeId::OPTION)),
-                    ("/bin/cat", fg(TokenScopeId::COMMAND)),
+                    ("/bin/cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
                     ("-n", fg(TokenScopeId::OPTION_SHORT)),
                     ("--", fg(TokenScopeId::OPTION)),
                     ("-s", fg(TokenScopeId::PARAM)),
@@ -1864,7 +1890,7 @@ mod tests {
             // Overlong paths don't crash (#7837).
             let overlong = get_overlong_path();
             validate!(
-                ("touch", fg(TokenScopeId::COMMAND)),
+                ("touch", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 (&overlong, fg(TokenScopeId::PARAM)),
             );
 
@@ -1883,17 +1909,17 @@ mod tests {
 
             // NOTE: we assume /usr/bin/env exists on the system here
             validate!(
-                ("/usr/bin/en", fg(TokenScopeId::COMMAND), ns),
+                ("/usr/bin/en", fg(TokenScopeId::COMMAND_EXTERNAL), ns),
                 ("*", fg(TokenScopeId::OPERATOR_GLOB), ns)
             );
 
             validate!(
-                ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
+                ("/usr/bin/e", fg(TokenScopeId::COMMAND_EXTERNAL), ns),
                 ("*", fg(TokenScopeId::OPERATOR_GLOB), ns)
             );
 
             validate!(
-                ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
+                ("/usr/bin/e", fg(TokenScopeId::COMMAND_EXTERNAL), ns),
                 ("{", fg(TokenScopeId::OPERATOR_BRACE), ns),
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
                 ("VARIABLE_IN_COMMAND", fg(TokenScopeId::VARIABLE), ns),
@@ -1902,13 +1928,13 @@ mod tests {
             );
 
             validate!(
-                ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
+                ("/usr/bin/e", fg(TokenScopeId::COMMAND_EXTERNAL), ns),
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
                 ("VARIABLE_IN_COMMAND2", fg(TokenScopeId::VARIABLE), ns)
             );
 
-            validate!(("$EMPTY_VARIABLE", fg(TokenScopeId::ERROR)));
-            validate!(("\"$EMPTY_VARIABLE\"", fg(TokenScopeId::ERROR)));
+            validate!(("$EMPTY_VARIABLE", fg(TokenScopeId::ERROR_COMMAND)));
+            validate!(("\"$EMPTY_VARIABLE\"", fg(TokenScopeId::ERROR_COMMAND)));
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),

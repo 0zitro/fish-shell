@@ -128,6 +128,12 @@ The following variables are available to change the highlighting colors in fish:
     default color
 .. envvar:: fish_color_command
     commands like echo
+.. envvar:: fish_color_command_external
+    a command found on the ``PATH``
+.. envvar:: fish_color_command_abbreviation
+    a command that an abbreviation expands to
+.. envvar:: fish_color_command_implicit_cd
+    a directory named in command position, which changes directory
 .. envvar:: fish_color_builtin
     builtin commands like cd and set - this falls back on the command color if unset
 .. envvar:: fish_color_function
@@ -188,6 +194,12 @@ The following variables are available to change the highlighting colors in fish:
     process separators like ``;`` and ``&``
 .. envvar:: fish_color_error
     syntax errors
+.. envvar:: fish_color_error_command
+    a command word that names no command
+.. envvar:: fish_color_error_path
+    a ``cd`` argument that is not a path
+.. envvar:: fish_color_error_redirection
+    a redirection target that cannot be used
 .. envvar:: fish_color_param
     ordinary command parameters
 .. envvar:: fish_color_valid_path
