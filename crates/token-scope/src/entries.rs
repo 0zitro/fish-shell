@@ -52,6 +52,11 @@ pub struct TokenScopeEntry {
     pub scope: TokenScopeId,
     /// The dotted path, root-first: `string.quoted.single`.
     pub path: &'static str,
+    /// What the scope is, in the words the declaration states it in.
+    ///
+    /// The words are Markdown: the same description is the constant's own
+    /// documentation and the entry's line in the generated documentation.
+    pub description: &'static str,
     /// The variable that colors it.  Every entry has one: an entry is declared
     /// inside a namespace, and the namespace supplies the prefix.
     pub variable_name: ColorVariableName,
@@ -62,95 +67,144 @@ pub struct TokenScopeEntry {
 
 declare_scope_entries! {
     namespace "fish_color_" {
-        "source" normal root;
-        "comment";
+        "source" /** the default color */ normal root;
+        "comment" /** comments like ``# important`` */;
 
-        "keyword" ["command"];
-        sum "keyword" { begin builtin case command else end exec for function if in switch while };
-        "keyword.modifier" ["operator"];
-        sum "keyword.modifier" keyword { and or not exclam time };
-
-        "command";
-        "command.external";
-        "command.builtin" builtin;
-        "command.function" function;
-        "command.abbreviation";
-        "command.implicit_cd";
-
-        "argument" param;
-        "argument.option" option;
-        sum "argument.option" { short long gnu };
-        "argument.option.numeric" option_numeric ["argument"];
-        product "variable.definition" ["argument"] {
-            sum { local function global universal }
-            sum { exported unexported }
-            sum { path non_path }
+        "keyword" /** keywords, falling back on the command color */ ["command"];
+        sum "keyword" {
+            begin /** the ``begin`` keyword */
+            builtin /** the ``builtin`` decorator */
+            case /** the ``case`` keyword */
+            command /** the ``command`` decorator */
+            else /** the ``else`` keyword */
+            end /** the ``end`` keyword */
+            exec /** the ``exec`` decorator */
+            for /** the ``for`` keyword */
+            function /** the ``function`` keyword */
+            if /** the ``if`` keyword */
+            in /** the ``in`` keyword */
+            switch /** the ``switch`` keyword */
+            while /** the ``while`` keyword */
+        };
+        "keyword.modifier" /** ``and``, ``or``, ``not``, ``!`` and ``time``, as a group */ ["operator"];
+        sum "keyword.modifier" keyword {
+            and /** the ``and`` keyword */
+            or /** the ``or`` keyword */
+            not /** the ``not`` keyword */
+            exclam /** the ``!`` keyword */
+            time /** the ``time`` decorator */
         };
 
-        "string.quoted" quote;
-        sum "string.quoted" { single double };
-        sum "string.quoted.single" { delimiter };
-        sum "string.quoted.double" { delimiter };
-        "string.escape" escape;
-        sum "string.escape" { unicode octal control };
-        "string.escape.invalid" escape_invalid ["invalid"];
+        "command" /** commands, every kind falling back on this */;
+        "command.external" /** a command found on the ``PATH`` */;
+        "command.builtin" /** builtin commands like ``cd`` and ``set`` */ builtin;
+        "command.function" /** user-defined functions */ function;
+        "command.abbreviation" /** a command an abbreviation expands to */;
+        "command.implicit_cd" /** a directory named in command position, which changes directory */;
 
-        "variable" ["operator"];
-        "variable.sigil";
-        "variable.sigil.dereference";
-        "variable.slice";
-        "variable.parameter";
-        "variable.parameter.argv";
-        "variable.parameter.named";
+        "argument" /** ordinary command parameters */ param;
+        "argument.option" /** options starting with ``-``, up to the first ``--`` */ option;
+        sum "argument.option" {
+            short /** ``-`` and one character: ``-s`` */
+            long /** ``--`` and a name: ``--long`` */
+            gnu /** ``-`` and several characters: ``-option`` or ``-abc`` */
+        };
+        "argument.option.numeric" /** ``-`` and digits, which is a negative number rather than an option: ``-5`` */ option_numeric ["argument"];
+        product "variable.definition" ["argument"] /** a name a command defines */ {
+            sum { local /** local */ function /** function */ global /** global */ universal /** universal */ }
+            sum { exported /** exported */ unexported /** unexported */ }
+            sum { path /** a path variable */ non_path /** not a path variable */ }
+        };
 
-        "operator";
-        "operator.glob";
-        "operator.brace";
-        "operator.parenthesis";
-        "operator.tilde";
-        "operator.dollar";
-        "operator.logical";
-        "operator.assignment";
+        "string.quoted" /** quoted text like ``"abc"`` */ quote;
+        sum "string.quoted" {
+            single /** the text of a single-quoted run */
+            double /** the text of a double-quoted run */
+        };
+        sum "string.quoted.single" {
+            delimiter /** the ``'`` marks around a single-quoted run */
+        };
+        sum "string.quoted.double" {
+            delimiter /** the quote marks around a double-quoted run */
+        };
+        "string.escape" /** character escapes like ``\n`` and ``\x70`` */ escape;
+        sum "string.escape" {
+            unicode /** a ``\u``, ``\U``, ``\x`` or ``\X`` escape */
+            octal /** a ``\`` and the octal digits after it */
+            control /** a ``\c`` escape */
+        };
+        "string.escape.invalid" /** an escape whose value is out of range */ escape_invalid ["invalid"];
 
-        "redirection";
-        sum "redirection" { input output append fd };
+        "variable" /** a variable name in a reference */ ["operator"];
+        "variable.sigil" /** the ``$`` before a name */;
+        "variable.sigil.dereference" /** a ``$`` that dereferences the one after it */;
+        "variable.slice" /** the brackets of a slice */;
+        "variable.parameter" /** a parameter of the enclosing function definition */;
+        "variable.parameter.argv" /** ``argv`` */;
+        "variable.parameter.named" /** a name the enclosing definition declares with ``-a`` */;
 
-        "terminator" end;
-        sum "terminator" { pipe background semicolon newline };
+        "operator" /** parameter expansion operators */;
+        "operator.glob" /** ``*``, and ``?`` where a question mark globs */;
+        "operator.brace" /** the ``{``, ``}`` and ``,`` of a brace expansion */;
+        "operator.parenthesis" /** ``(`` and ``)`` */;
+        "operator.tilde" /** ``~`` at the start of a word */;
+        "operator.dollar" /** the ``$`` of ``$(command)`` */;
+        "operator.logical" /** ``&&`` and ``||`` */;
+        "operator.assignment" /** the ``=`` that separates a name from its value */;
 
-        "invalid" error;
-        sum "invalid" { command path redirection };
+        "redirection" /** IO redirections */;
+        sum "redirection" {
+            input /** a redirection that reads: ``<`` */
+            output /** a redirection that writes: ``>`` */
+            append /** a redirection that appends: ``>>`` */
+            fd /** a redirection whose target is a file descriptor: ``>&`` */
+        };
+
+        "terminator" /** process separators like ``;`` and ``&`` */ end;
+        sum "terminator" {
+            pipe /** ``|`` */
+            background /** ``&`` */
+            semicolon /** ``;`` */
+            newline /** a newline */
+        };
+
+        "invalid" /** syntax errors */ error;
+        sum "invalid" {
+            command /** a command word that names no command */
+            path /** a ``cd`` argument that is not a path */
+            redirection /** a redirection target that cannot be used */
+        };
 
         // The scopes an enclosing construct contributes.  They are entries like the
         // rest; a character's set places them after its leaf's chain and before the
         // root, and what makes one enclosing is that position, not its declaration.
-        "meta.function.no_shadowing" enclosing;
-        "meta.function" enclosing;
-        "meta.command_substitution" enclosing;
-        "meta.block" enclosing;
-        "meta.if" enclosing;
-        "meta.case" enclosing;
-        "meta.loop.for" enclosing;
-        "meta.loop.while" enclosing;
-        "meta.loop" enclosing;
-        "meta.pipeline" enclosing;
-        "meta.and_or" enclosing;
+        "meta.function.no_shadowing" /** the body of a function definition whose header declares ``-S`` */ enclosing;
+        "meta.function" /** the body of a function definition */ enclosing;
+        "meta.command_substitution" /** the inside of a command substitution */ enclosing;
+        "meta.block" /** the body of a ``begin`` block or a brace block */ enclosing;
+        "meta.if" /** the body of an ``if``, ``else if`` or ``else`` branch */ enclosing;
+        "meta.case" /** the body of a ``case`` clause */ enclosing;
+        "meta.loop.for" /** a ``for`` loop's body */ enclosing;
+        "meta.loop.while" /** a ``while`` loop's body */ enclosing;
+        "meta.loop" /** every loop's body */ enclosing;
+        "meta.pipeline" /** the commands of a pipeline */ enclosing;
+        "meta.and_or" /** the commands of an ``and``/``or`` list */ enclosing;
     }
 
     namespace "fish_pager_color_" {
-        "progress";
-        "background";
-        "prefix";
-        "completion";
-        "description";
-        "secondary.background"  ["background"];
-        "secondary.prefix"      ["prefix"];
-        "secondary.completion"  ["completion"];
-        "secondary.description" ["description"];
-        "selected.background"   ["background", @SearchMatch];
-        "selected.prefix"       ["prefix"];
-        "selected.completion"   ["completion"];
-        "selected.description"  ["description"];
+        "progress" /** the pager's status line, like ``and 3 more rows`` */;
+        "background" /** the background of a row */;
+        "prefix" /** the prefix of a row */;
+        "completion" /** the completion text of a row */;
+        "description" /** the description of a row */;
+        "secondary.background" /** the background of a secondary row */ ["background"];
+        "secondary.prefix" /** the prefix of a secondary row */ ["prefix"];
+        "secondary.completion" /** the completion text of a secondary row */ ["completion"];
+        "secondary.description" /** the description of a secondary row */ ["description"];
+        "selected.background" /** the background of the selected row */ ["background", @SearchMatch];
+        "selected.prefix" /** the prefix of the selected row */ ["prefix"];
+        "selected.completion" /** the completion text of the selected row */ ["completion"];
+        "selected.description" /** the description of the selected row */ ["description"];
     }
 }
 
@@ -169,6 +223,40 @@ mod tests {
                 entry.path
             );
         }
+    }
+
+    #[test]
+    fn every_scope_states_what_it_is() {
+        for entry in TOKEN_SCOPE_ENTRIES {
+            assert!(
+                !entry.description.is_empty(),
+                "the scope `{}` states no description",
+                entry.path
+            );
+            assert!(
+                !entry.description.contains('\n'),
+                "the description of `{}` is one line",
+                entry.path
+            );
+        }
+    }
+
+    #[test]
+    fn a_product_leaf_states_the_values_it_takes() {
+        let leaf = TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED.entry();
+        assert!(leaf.description.contains("local"), "{}", leaf.description);
+        assert!(
+            leaf.description.contains("exported"),
+            "{}",
+            leaf.description
+        );
+
+        let root = TokenScopeId::VARIABLE_DEFINITION.entry();
+        assert!(
+            !root.description.contains("local"),
+            "the fully absent leaf states the family alone: {}",
+            root.description
+        );
     }
 
     #[test]
