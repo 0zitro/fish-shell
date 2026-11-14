@@ -13,6 +13,7 @@ use fish_wcstringutil::string_prefixes_string;
 /// definitions nest lists; a reference resolves against the innermost list alone.
 pub struct FunctionParameterList {
     argument_names: Vec<WString>,
+    no_scope_shadowing: bool,
 }
 
 impl FunctionParameterList {
@@ -28,7 +29,15 @@ impl FunctionParameterList {
 
         Self {
             argument_names: declared_argument_names(&words),
+            no_scope_shadowing: words
+                .iter()
+                .any(|word| *word == "-S" || *word == "--no-scope-shadowing"),
         }
+    }
+
+    /// Whether the definition's header declares that its body shares the calling scope.
+    pub fn whether_no_scope_shadowing(&self) -> bool {
+        self.no_scope_shadowing
     }
 
     /// The scope that classifies a reference to `name`, or none when the name is not a

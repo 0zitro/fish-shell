@@ -741,6 +741,29 @@ mod tests {
 
     #[test]
     #[serial]
+    fn an_enclosing_scope_falls_back_after_the_leaf() {
+        let brblue = color(L!("brblue"));
+
+        // echo a | cat — the pipeline encloses both commands, and its variable supplies a
+        // field the leaf's chain names nothing for.
+        let colors = Colors::new();
+        colors.set(L!("fish_color_meta_pipeline"), &[L!("brblue")]);
+        let classifications = colors.classify(L!("echo a | cat"));
+        assert_eq!(colors.style_of(classifications[0]).fg, brblue);
+        assert_eq!(colors.style_of(classifications[9]).fg, brblue);
+
+        // A command outside the pipeline is inside no such scope.
+        let classifications = colors.classify(L!("echo a"));
+        assert_ne!(colors.style_of(classifications[0]).fg, brblue);
+
+        // The leaf's own chain precedes the enclosing scope, so it wins a field it names.
+        colors.set(L!("fish_color_command"), &[L!("green")]);
+        let classifications = colors.classify(L!("echo a | cat"));
+        assert_eq!(colors.style_of(classifications[0]).fg, color(L!("green")));
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);

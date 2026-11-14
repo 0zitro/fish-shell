@@ -260,6 +260,28 @@ The following variables are available to change the highlighting colors in fish:
     a name the enclosing definition declares with ``-a``
 .. envvar:: fish_color_variable_definition
     a name a command defines: ``x=...``, ``set x``, ``for x``
+.. envvar:: fish_color_meta_function
+    the body of a function definition
+.. envvar:: fish_color_meta_function_no_shadowing
+    the body of a function definition whose header declares ``-S``
+.. envvar:: fish_color_meta_command_substitution
+    the inside of a command substitution
+.. envvar:: fish_color_meta_block
+    the body of a ``begin`` block or a brace block
+.. envvar:: fish_color_meta_if
+    the body of an ``if``, ``else if`` or ``else`` branch
+.. envvar:: fish_color_meta_case
+    the body of a ``case`` clause
+.. envvar:: fish_color_meta_loop
+    every loop's body
+.. envvar:: fish_color_meta_loop_for
+    a ``for`` loop's body
+.. envvar:: fish_color_meta_loop_while
+    a ``while`` loop's body
+.. envvar:: fish_color_meta_pipeline
+    the commands of a pipeline
+.. envvar:: fish_color_meta_and_or
+    the commands of an ``and``/``or`` list
 .. envvar:: fish_color_autosuggestion
     autosuggestions (the proposed rest of a command)
 .. envvar:: fish_color_cwd
@@ -286,10 +308,14 @@ names nothing, and the color of a piece of text is composed from several variabl
 once. Each character belongs to a scope — the class of text it is — and the color is
 composed from the most general scope toward the most specific one: the color of a
 builtin command is composed from ``$fish_color_normal``, then ``$fish_color_command``,
-then ``$fish_color_builtin``. A field that a more specific variable names replaces the
-field a less specific variable named, and a field that no variable names is drawn as the
-terminal draws it. A value that carries ``--reset`` clears what the less specific
-variables named before it.
+then ``$fish_color_builtin``. A construct that encloses the character contributes its
+scope between the root and the character's own: a command inside a pipeline is composed
+from ``$fish_color_normal``, then ``$fish_color_meta_pipeline``, then
+``$fish_color_command``, then the command's kind, so the enclosing scope supplies a
+field that nothing more specific names. A field that a more specific variable names
+replaces the field a less specific variable named, and a field that no variable names is
+drawn as the terminal draws it. A value that carries ``--reset`` clears what the less
+specific variables named before it.
 
 Four variables are overlays applied after that composition:
 
