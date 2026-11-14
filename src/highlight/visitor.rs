@@ -21,6 +21,7 @@ use crate::{
     },
     parse_util::{get_process_first_token_offset, locate_cmdsubst_range, slice_length},
     path::{path_as_implicit_cd, path_get_cdpath, path_get_path, paths_are_same_file},
+    redirection::RedirectionMode,
     terminal::Outputter,
     text_style::TextStyle,
     threads::assert_is_background_thread,
@@ -848,6 +849,16 @@ fn definition_mode<'a>(
     Some(mode)
 }
 
+/// The scope a redirection's mode denotes.
+fn redirection_mode_scope(mode: RedirectionMode) -> TokenScopeId {
+    match mode {
+        RedirectionMode::Input | RedirectionMode::TryInput => TokenScopeId::REDIRECTION_INPUT,
+        RedirectionMode::Overwrite | RedirectionMode::NoClob => TokenScopeId::REDIRECTION_OUTPUT,
+        RedirectionMode::Append => TokenScopeId::REDIRECTION_APPEND,
+        RedirectionMode::Fd => TokenScopeId::REDIRECTION_FD,
+    }
+}
+
 /// The parse tree's visitor: every character is classified as the traversal
 /// reaches it.
 struct HighlightVisitor<'src, 'wd, 'ctx> {
@@ -959,7 +970,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
         // Classify every extra semi.
         for range in &extras.semis {
-            self.classify_span(*range, self.classification_of(TokenScopeId::END));
+            self.classify_terminator_span(*range);
         }
 
         // Classify every error range.
@@ -1147,9 +1158,10 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
     fn visit_token(&mut self, tok: &dyn Token) {
         let scope = match tok.token_type() {
-            ParseTokenType::End | ParseTokenType::Pipe | ParseTokenType::Background => {
-                TokenScopeId::END
-            }
+            ParseTokenType::Pipe => TokenScopeId::END_PIPE,
+            ParseTokenType::Background => TokenScopeId::END_BACKGROUND,
+            // An end token is a terminator, and its characters decide which one.
+            ParseTokenType::End => TokenScopeId::END,
             ParseTokenType::LeftBrace | ParseTokenType::RightBrace => TokenScopeId::KEYWORD,
             ParseTokenType::AndAnd | ParseTokenType::OrOr => TokenScopeId::OPERATOR_LOGICAL,
             ParseTokenType::String => {
@@ -1216,8 +1228,8 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             return;
         }
 
-        // Classify the operator part like 2>.
-        let redirection = self.classification_of(TokenScopeId::REDIRECTION);
+        // The mode the operator spells classifies both the operator and its target.
+        let redirection = self.classification_of(redirection_mode_scope(oper.mode));
         self.classify_node(&redir.oper, redirection);
 
         // Classify the target part.
@@ -1232,16 +1244,16 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         let (scope, file_exists) = if !self.whether_io_permitted() {
             // I/O is disallowed, so we don't have much hope of catching anything but gross
             // errors. Assume it's valid.
-            (TokenScopeId::REDIRECTION, false)
+            (redirection_mode_scope(oper.mode), false)
         } else if contains_pending_variable(&self.pending_variable_names, &target) {
             // Target uses a variable defined by the current commandline. Assume it's valid.
-            (TokenScopeId::REDIRECTION, false)
+            (redirection_mode_scope(oper.mode), false)
         } else {
             // Validate the redirection target..
             if let Ok(IsFile(file_exists)) =
                 self.file_tester.test_redirection_target(&target, oper.mode)
             {
-                (TokenScopeId::REDIRECTION, file_exists)
+                (redirection_mode_scope(oper.mode), file_exists)
             } else {
                 (TokenScopeId::ERROR_REDIRECTION, false)
             }
@@ -1273,8 +1285,18 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
     }
 
     fn visit_semi_nl(&mut self, node: &dyn Node) {
-        let terminator = self.classification_of(TokenScopeId::END);
-        self.classify_node(node, terminator);
+        self.classify_terminator_span(node.source_range());
+    }
+
+    /// Classify a terminator's characters: a semicolon and a newline part company.
+    fn classify_terminator_span(&mut self, range: SourceRange) {
+        let semicolon = self.classification_of(TokenScopeId::END_SEMICOLON);
+        let newline = self.classification_of(TokenScopeId::END_NEWLINE);
+        let text = self.source_slice(range);
+        let classifications = &mut self.classifications[range.as_usize()];
+        for (index, character) in text.chars().enumerate() {
+            classifications[index] = if character == ';' { semicolon } else { newline };
+        }
     }
 
     fn visit_decorated_statement(&mut self, stmt: &DecoratedStatement) {
@@ -1711,8 +1733,9 @@ mod tests {
         let param_valid_path = HighlightClassification::from(TokenScopeId::PARAM)
             .with_attribute(HighlightAttribute::PathExisting);
 
-        let redirection_valid_path = HighlightClassification::from(TokenScopeId::REDIRECTION)
-            .with_attribute(HighlightAttribute::PathExisting);
+        let redirection_valid_path = |scope: TokenScopeId| {
+            HighlightClassification::from(scope).with_attribute(HighlightAttribute::PathExisting)
+        };
 
         with_overridden_feature(FeatureFlag::AmpersandNoBgInToken, true, || {
             let fg = HighlightClassification::from;
@@ -1734,7 +1757,7 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("./foo", param_valid_path),
-                ("&", fg(TokenScopeId::END)),
+                ("&", fg(TokenScopeId::END_BACKGROUND)),
             );
 
             validate!(
@@ -1742,41 +1765,41 @@ mod tests {
                 ("echo", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("abc", fg(TokenScopeId::PARAM)),
                 ("foo", param_valid_path),
-                ("&", fg(TokenScopeId::END)),
+                ("&", fg(TokenScopeId::END_BACKGROUND)),
             );
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("foo&bar", fg(TokenScopeId::PARAM)),
                 ("foo", fg(TokenScopeId::PARAM), ns),
-                ("&", fg(TokenScopeId::END)),
+                ("&", fg(TokenScopeId::END_BACKGROUND)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("&>", fg(TokenScopeId::REDIRECTION)),
+                ("&>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
             );
 
             validate!(
                 ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("command", fg(TokenScopeId::KEYWORD_COMMAND)),
                 ("ls", fg(TokenScopeId::COMMAND_EXTERNAL)),
-                ("; ", fg(TokenScopeId::END)),
+                ("; ", fg(TokenScopeId::END_SEMICOLON)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("abc", fg(TokenScopeId::PARAM)),
-                ("; ", fg(TokenScopeId::END)),
+                ("; ", fg(TokenScopeId::END_SEMICOLON)),
                 (
                     "/bin/definitely_not_a_command",
                     fg(TokenScopeId::ERROR_COMMAND)
                 ),
-                ("; ", fg(TokenScopeId::END)),
+                ("; ", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
             validate!(
                 ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("else", fg(TokenScopeId::KEYWORD_ELSE)),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
@@ -1823,7 +1846,7 @@ mod tests {
                 ("-l", fg(TokenScopeId::PARAM)),
                 ("param2", fg(TokenScopeId::PARAM)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
-                ("|", fg(TokenScopeId::END)),
+                ("|", fg(TokenScopeId::END_PIPE)),
                 ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
             );
             validate!(
@@ -1861,36 +1884,39 @@ mod tests {
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("param1", fg(TokenScopeId::PARAM)),
                 // Input redirection.
-                ("<", fg(TokenScopeId::REDIRECTION)),
-                ("/dev/null", redirection_valid_path),
+                ("<", fg(TokenScopeId::REDIRECTION_INPUT)),
+                (
+                    "/dev/null",
+                    redirection_valid_path(TokenScopeId::REDIRECTION_INPUT)
+                ),
                 // Output redirection to a valid fd.
-                ("1>&2", fg(TokenScopeId::REDIRECTION)),
+                ("1>&2", fg(TokenScopeId::REDIRECTION_FD)),
                 // Output redirection to an invalid fd.
-                ("2>&", fg(TokenScopeId::REDIRECTION)),
+                ("2>&", fg(TokenScopeId::REDIRECTION_FD)),
                 ("LO", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Just a param, not a redirection.
                 ("test/blah", fg(TokenScopeId::PARAM)),
                 // Input redirection from directory.
-                ("<", fg(TokenScopeId::REDIRECTION)),
+                ("<", fg(TokenScopeId::REDIRECTION_INPUT)),
                 ("test/", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Output redirection to an invalid path.
-                ("3>", fg(TokenScopeId::REDIRECTION)),
+                ("3>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
                 (
                     "/not/a/valid/path/nope",
                     fg(TokenScopeId::ERROR_REDIRECTION)
                 ),
                 // Output redirection to directory.
-                ("3>", fg(TokenScopeId::REDIRECTION)),
+                ("3>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
                 ("test/nope/", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Redirections to overflow fd.
                 (
                     "99999999999999999999>&2",
                     fg(TokenScopeId::ERROR_REDIRECTION)
                 ),
-                ("2>&", fg(TokenScopeId::REDIRECTION)),
+                ("2>&", fg(TokenScopeId::REDIRECTION_FD)),
                 ("99999999999999999999", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Output redirection containing a command substitution.
-                ("4>", fg(TokenScopeId::REDIRECTION)),
+                ("4>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("test/somewhere", fg(TokenScopeId::PARAM)),
@@ -1901,10 +1927,13 @@ mod tests {
 
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                (">", fg(TokenScopeId::REDIRECTION)),
-                ("-no-such-file", fg(TokenScopeId::REDIRECTION)),
-                (">", fg(TokenScopeId::REDIRECTION)),
-                ("-filename-starting-with-dash", redirection_valid_path),
+                (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("-no-such-file", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                (
+                    "-filename-starting-with-dash",
+                    redirection_valid_path(TokenScopeId::REDIRECTION_OUTPUT)
+                ),
             );
 
             validate!(
@@ -1926,11 +1955,11 @@ mod tests {
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("set-by-for-1", fg(TokenScopeId::PARAM)),
                 ("set-by-for-2", fg(TokenScopeId::PARAM)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                (">", fg(TokenScopeId::REDIRECTION)),
-                ("$x", fg(TokenScopeId::REDIRECTION)),
-                (";", fg(TokenScopeId::END)),
+                (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("$x", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
@@ -1938,13 +1967,13 @@ mod tests {
                 ("set", fg(TokenScopeId::BUILTIN)),
                 ("x", fg(TokenScopeId::VARIABLE_DEFINITION)),
                 ("set-by-set", fg(TokenScopeId::PARAM)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                (">", fg(TokenScopeId::REDIRECTION)),
-                ("$x", fg(TokenScopeId::REDIRECTION)),
-                ("2>", fg(TokenScopeId::REDIRECTION)),
+                (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("$x", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("2>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
                 ("$totally_not_x", fg(TokenScopeId::ERROR_REDIRECTION)),
-                ("<", fg(TokenScopeId::REDIRECTION)),
+                ("<", fg(TokenScopeId::REDIRECTION_INPUT)),
                 (
                     "$x_but_its_an_impostor",
                     fg(TokenScopeId::ERROR_REDIRECTION)
@@ -1960,13 +1989,13 @@ mod tests {
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("set-by-variable-override", fg(TokenScopeId::PARAM), ns),
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                (">", fg(TokenScopeId::REDIRECTION)),
-                ("$x", fg(TokenScopeId::REDIRECTION)),
+                (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("$x", fg(TokenScopeId::REDIRECTION_OUTPUT)),
             );
 
             validate!(
                 ("end", fg(TokenScopeId::ERROR)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("if", fg(TokenScopeId::KEYWORD_IF)),
                 ("end", fg(TokenScopeId::ERROR)),
             );
@@ -2050,7 +2079,7 @@ mod tests {
                 ("i", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
                 ("1 2 3", fg(TokenScopeId::PARAM)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
@@ -2071,10 +2100,10 @@ mod tests {
             validate!(
                 ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
                 ("/dev/null", param_valid_path),
-                ("|", fg(TokenScopeId::END)),
+                ("|", fg(TokenScopeId::END_PIPE)),
                 // This is bogus, but we used to use "less" here and that doesn't have to be installed.
                 ("cat", fg(TokenScopeId::COMMAND_EXTERNAL)),
-                ("2>", fg(TokenScopeId::REDIRECTION)),
+                ("2>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
             );
 
             // Highlight path-prefixes only at the cursor.
@@ -2089,17 +2118,17 @@ mod tests {
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("&&", fg(TokenScopeId::OPERATOR_LOGICAL)),
                 ("false", fg(TokenScopeId::BUILTIN)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("or", fg(TokenScopeId::KEYWORD_OR)),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 ("||", fg(TokenScopeId::OPERATOR_LOGICAL)),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("and", fg(TokenScopeId::KEYWORD_AND)),
                 ("not", fg(TokenScopeId::KEYWORD_NOT)),
                 ("!", fg(TokenScopeId::KEYWORD_EXCLAM)),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
@@ -2112,7 +2141,7 @@ mod tests {
 
             validate!(
                 ("false", fg(TokenScopeId::BUILTIN)),
-                ("&|", fg(TokenScopeId::END)),
+                ("&|", fg(TokenScopeId::END_PIPE)),
                 ("true", fg(TokenScopeId::BUILTIN)),
             );
 
@@ -2126,7 +2155,7 @@ mod tests {
                 ("VAR", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("false", fg(TokenScopeId::BUILTIN)),
-                ("|&", fg(TokenScopeId::END)),
+                ("|&", fg(TokenScopeId::END_PIPE)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("stuff", fg(TokenScopeId::PARAM)),
             );
@@ -2171,7 +2200,7 @@ mod tests {
                 ("f", fg(TokenScopeId::PARAM)),
                 ("-a", fg(TokenScopeId::OPTION_SHORT)),
                 ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
-                (";", fg(TokenScopeId::END)),
+                (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
 
