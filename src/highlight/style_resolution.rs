@@ -536,6 +536,28 @@ mod tests {
 
     #[test]
     #[serial]
+    fn an_operator_shape_resolves_through_the_operator_family() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_operator"), &[L!("brblue")]);
+
+        // echo * ~/src {a,b} (cmd) — the shapes agree with the family until one is set.
+        let classifications = colors.classify(L!("echo * ~/src {a,b} (cmd)"));
+        for index in [5, 7, 13, 15, 17, 19, 23] {
+            assert_eq!(
+                colors.style_of(classifications[index]).fg,
+                color(L!("brblue")),
+                "the operator at {index}"
+            );
+        }
+
+        // Its own variable splits one shape off.
+        colors.set(L!("fish_color_operator_glob"), &[L!("green")]);
+        let classifications = colors.classify(L!("echo *"));
+        assert_eq!(colors.style_of(classifications[5]).fg, color(L!("green")));
+    }
+
+    #[test]
+    #[serial]
     fn a_cached_style_is_the_style_a_fresh_resolver_gives() {
         let colors = Colors::new();
         colors.set(L!("fish_color_command"), &[L!("red"), L!("--bold")]);

@@ -282,6 +282,7 @@ pub fn autosuggest_validate_from_history(
 fn classify_variable(inp: &wstr, classifications: &mut [HighlightClassification]) -> usize {
     assert_eq!(inp.char_at(0), '$');
     let operator = HighlightClassification::from(TokenScopeId::OPERATOR);
+    let dollar = HighlightClassification::from(TokenScopeId::OPERATOR_DOLLAR);
     let invalid = HighlightClassification::from(TokenScopeId::ERROR);
 
     // Handle an initial run of $s.
@@ -293,7 +294,9 @@ fn classify_variable(inp: &wstr, classifications: &mut [HighlightClassification]
         if next == '$' || valid_var_name_char(next) {
             classifications[idx] = operator;
         } else if next == '(' {
-            classifications[idx] = operator;
+            // The dollar opens a command substitution; the parenthesis after it is
+            // the substitution's own operator.
+            classifications[idx] = dollar;
             return idx + 1;
         } else {
             classifications[idx] = invalid;
@@ -354,6 +357,10 @@ fn classify_word(
     let operator = HighlightClassification::from(TokenScopeId::OPERATOR);
     let invalid = HighlightClassification::from(TokenScopeId::ERROR);
     let escape = HighlightClassification::from(TokenScopeId::ESCAPE);
+    let glob = HighlightClassification::from(TokenScopeId::OPERATOR_GLOB);
+    let brace = HighlightClassification::from(TokenScopeId::OPERATOR_BRACE);
+    let parenthesis = HighlightClassification::from(TokenScopeId::OPERATOR_PARENTHESIS);
+    let tilde = HighlightClassification::from(TokenScopeId::OPERATOR_TILDE);
     let delimiter_single = HighlightClassification::from(TokenScopeId::QUOTE_SINGLE_DELIMITER);
     let delimiter_double = HighlightClassification::from(TokenScopeId::QUOTE_DOUBLE_DELIMITER);
     let quoted_single = HighlightClassification::from(TokenScopeId::QUOTE_SINGLE);
@@ -478,7 +485,7 @@ fn classify_word(
                     // Not a backslash.
                     match c {
                         '~' if in_pos == 0 => {
-                            classifications[in_pos] = operator;
+                            classifications[in_pos] = tilde;
                         }
                         '$' => {
                             assert!(in_pos < buff_len);
@@ -490,21 +497,24 @@ fn classify_word(
                             in_pos -= 1;
                         }
                         '?' if !feature_test(FeatureFlag::QuestionMarkNoGlob) => {
-                            classifications[in_pos] = operator;
+                            classifications[in_pos] = glob;
                         }
-                        '*' | '(' | ')' => {
-                            classifications[in_pos] = operator;
+                        '*' => {
+                            classifications[in_pos] = glob;
+                        }
+                        '(' | ')' => {
+                            classifications[in_pos] = parenthesis;
                         }
                         '{' => {
-                            classifications[in_pos] = operator;
+                            classifications[in_pos] = brace;
                             bracket_count += 1;
                         }
                         '}' => {
-                            classifications[in_pos] = operator;
+                            classifications[in_pos] = brace;
                             bracket_count -= 1;
                         }
                         ',' if bracket_count > 0 => {
-                            classifications[in_pos] = operator;
+                            classifications[in_pos] = brace;
                         }
                         '\'' => {
                             classifications[in_pos] = delimiter_single;
@@ -743,9 +753,9 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             // Classify the parens. The open parens must exist; the closed paren may not if it was
             // incomplete.
             assert!(cmdsub.opening_paren_offset() < arg_str.len());
-            let operator = self.classification_of(TokenScopeId::OPERATOR);
-            self.classifications[arg_start..][cmdsub.opening_paren_range()].fill(operator);
-            self.classifications[arg_start..][cmdsub.closing_paren_range()].fill(operator);
+            let parenthesis = self.classification_of(TokenScopeId::OPERATOR_PARENTHESIS);
+            self.classifications[arg_start..][cmdsub.opening_paren_range()].fill(parenthesis);
+            self.classifications[arg_start..][cmdsub.closing_paren_range()].fill(parenthesis);
 
             // Classify it recursively.
             let arg_cursor = self
@@ -819,7 +829,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 TokenScopeId::END
             }
             ParseTokenType::LeftBrace | ParseTokenType::RightBrace => TokenScopeId::KEYWORD,
-            ParseTokenType::AndAnd | ParseTokenType::OrOr => TokenScopeId::OPERATOR,
+            ParseTokenType::AndAnd | ParseTokenType::OrOr => TokenScopeId::OPERATOR_LOGICAL,
             ParseTokenType::String => {
                 // Assume all strings are params. This handles e.g. the variables a for header or
                 // function header. Other strings (like arguments to commands) need more complex
@@ -926,11 +936,11 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
     fn visit_variable_assignment(&mut self, varas: &VariableAssignment) {
         self.classify_as_argument(varas, true);
-        // Classify the '=' in variable assignments as an operator.
+        // Classify the '=' in variable assignments as an assignment operator.
         if let Some(offset) = variable_assignment_equals_pos(varas.source(self.buff)) {
             let equals_loc = varas.source_range().start() + offset;
-            let operator = self.classification_of(TokenScopeId::OPERATOR);
-            self.classifications[equals_loc] = operator;
+            let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
+            self.classifications[equals_loc] = assignment;
             let var_name = &varas.source(self.buff)[..offset];
             self.pending_variable_names.push(var_name);
         }
@@ -1363,30 +1373,32 @@ mod tests {
                 ("-l", fg(TokenScopeId::OPTION)),
                 ("--", fg(TokenScopeId::OPTION)),
                 ("-l", fg(TokenScopeId::PARAM)),
-                ("(", fg(TokenScopeId::OPERATOR)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("ls", fg(TokenScopeId::FUNCTION)),
                 ("-l", fg(TokenScopeId::OPTION)),
                 ("--", fg(TokenScopeId::OPTION)),
                 ("-l", fg(TokenScopeId::PARAM)),
                 ("param2", fg(TokenScopeId::PARAM)),
-                (")", fg(TokenScopeId::OPERATOR)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("|", fg(TokenScopeId::END)),
                 ("cat", fg(TokenScopeId::COMMAND)),
             );
             validate!(
                 ("true", fg(TokenScopeId::BUILTIN)),
-                ("$(", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (")", fg(TokenScopeId::OPERATOR)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
             );
             validate!(
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
                 ("before", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("$(", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("param1", fg(TokenScopeId::PARAM)),
-                (")", fg(TokenScopeId::OPERATOR)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("after", fg(TokenScopeId::QUOTE_DOUBLE), ns),
                 ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
                 ("param2", fg(TokenScopeId::PARAM)),
@@ -1395,9 +1407,10 @@ mod tests {
                 ("true", fg(TokenScopeId::BUILTIN)),
                 ("\"", fg(TokenScopeId::ERROR)),
                 ("unclosed quote", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("$(", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (")", fg(TokenScopeId::OPERATOR)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
             );
 
             // Redirections substitutions.
@@ -1429,10 +1442,10 @@ mod tests {
                 ("99999999999999999999", fg(TokenScopeId::ERROR)),
                 // Output redirection containing a command substitution.
                 ("4>", fg(TokenScopeId::REDIRECTION)),
-                ("(", fg(TokenScopeId::OPERATOR)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("test/somewhere", fg(TokenScopeId::PARAM)),
-                (")", fg(TokenScopeId::OPERATOR)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 // Just another param.
                 ("param2", fg(TokenScopeId::PARAM)),
             );
@@ -1446,9 +1459,10 @@ mod tests {
             );
 
             validate!(
-                ("$(", fg(TokenScopeId::OPERATOR)),
+                ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                (")", fg(TokenScopeId::OPERATOR)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
             );
             validate!(
                 ("(", fg(TokenScopeId::ERROR)),
@@ -1487,7 +1501,7 @@ mod tests {
 
             validate!(
                 ("x", fg(TokenScopeId::PARAM), ns),
-                ("=", fg(TokenScopeId::OPERATOR), ns),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("set-by-variable-override", fg(TokenScopeId::PARAM), ns),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 (">", fg(TokenScopeId::REDIRECTION)),
@@ -1587,12 +1601,12 @@ mod tests {
             validate!(
                 ("if", fg(TokenScopeId::KEYWORD)),
                 ("true", fg(TokenScopeId::BUILTIN)),
-                ("&&", fg(TokenScopeId::OPERATOR)),
+                ("&&", fg(TokenScopeId::OPERATOR_LOGICAL)),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
                 ("or", fg(TokenScopeId::OPERATOR)),
                 ("false", fg(TokenScopeId::BUILTIN)),
-                ("||", fg(TokenScopeId::OPERATOR)),
+                ("||", fg(TokenScopeId::OPERATOR_LOGICAL)),
                 ("true", fg(TokenScopeId::BUILTIN)),
                 (";", fg(TokenScopeId::END)),
                 ("and", fg(TokenScopeId::OPERATOR)),
@@ -1618,13 +1632,13 @@ mod tests {
 
             validate!(
                 ("HOME", fg(TokenScopeId::PARAM)),
-                ("=", fg(TokenScopeId::OPERATOR), ns),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 (".", fg(TokenScopeId::PARAM), ns),
                 ("VAR1", fg(TokenScopeId::PARAM)),
-                ("=", fg(TokenScopeId::OPERATOR), ns),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("VAL1", fg(TokenScopeId::PARAM), ns),
                 ("VAR", fg(TokenScopeId::PARAM)),
-                ("=", fg(TokenScopeId::OPERATOR), ns),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("false", fg(TokenScopeId::BUILTIN)),
                 ("|&", fg(TokenScopeId::END)),
                 ("true", fg(TokenScopeId::BUILTIN)),
@@ -1689,7 +1703,7 @@ mod tests {
 
             validate!(
                 ("a", fg(TokenScopeId::PARAM)),
-                ("=", fg(TokenScopeId::OPERATOR), ns),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
             );
 
             // Highlighting works across escaped line breaks (#8444).
@@ -1702,18 +1716,20 @@ mod tests {
             // NOTE: we assume /usr/bin/env exists on the system here
             validate!(
                 ("/usr/bin/en", fg(TokenScopeId::COMMAND), ns),
-                ("*", fg(TokenScopeId::OPERATOR), ns)
+                ("*", fg(TokenScopeId::OPERATOR_GLOB), ns)
             );
 
             validate!(
                 ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
-                ("*", fg(TokenScopeId::OPERATOR), ns)
+                ("*", fg(TokenScopeId::OPERATOR_GLOB), ns)
             );
 
             validate!(
                 ("/usr/bin/e", fg(TokenScopeId::COMMAND), ns),
-                ("{$VARIABLE_IN_COMMAND}", fg(TokenScopeId::OPERATOR), ns),
-                ("*", fg(TokenScopeId::OPERATOR), ns)
+                ("{", fg(TokenScopeId::OPERATOR_BRACE), ns),
+                ("$VARIABLE_IN_COMMAND", fg(TokenScopeId::OPERATOR), ns),
+                ("}", fg(TokenScopeId::OPERATOR_BRACE), ns),
+                ("*", fg(TokenScopeId::OPERATOR_GLOB), ns)
             );
 
             validate!(
