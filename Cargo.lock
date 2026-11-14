@@ -513,6 +513,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fish-token-scope"
+version = "0.0.0"
+dependencies = [
+ "fish-token-scope-macros",
+ "fish-widestring",
+]
+
+[[package]]
+name = "fish-token-scope-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
 name = "fish-util"
 version = "0.0.0"
 dependencies = [
