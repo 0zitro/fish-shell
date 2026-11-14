@@ -395,26 +395,140 @@ tt {
     position: relative; /* so that our absolutely positioned elements work */
 }
 
+/* A pickable line is outlined on hover, never bordered: picking must not move the
+   text it marks. */
 .cs_clickable {
-    border: dotted 1px #777;
-    padding: 4px;
-    margin: -5px;
+    cursor: pointer;
+}
+
+.cs_clickable:hover {
+    outline: 1px dashed #777;
+    outline-offset: 1px;
 }
 
 .cs_editing {
-    border: solid 3px #3399ff;
-    padding: 4px;
-    margin: -7px;
+    outline: 2px solid #3399ff;
+    outline-offset: 1px;
 }
 
-/* The sample is one classified snippet, so it wraps like source. */
+/* The sample rests undecorated.  The run under the pointer and the picked run carry
+   a mark, and the mark is drawn outside the layout: `outline` and `box-shadow` do
+   not move what they mark, so neighbouring runs never touch. */
 .colour_sample_rows {
     margin-top: 45px;
-    max-height: 16em;
+    max-height: 60vh;
     overflow-y: auto;
     line-height: 1.5em;
     white-space: pre-wrap;
     text-align: left;
+}
+
+.colour_sample_with_rail {
+    margin-right: 22em;
+}
+
+.colour_sample_piece:hover {
+    outline: 1px dashed #888;
+    outline-offset: -1px;
+}
+
+.colour_sample_piece.cs_editing {
+    outline: 2px solid #3399ff;
+    outline-offset: -1px;
+}
+
+/* A run that the active scope of the specificity rail covers. */
+.colour_scope_extent {
+    box-shadow: inset 0 -3px 0 rgba(51, 153, 255, 0.55);
+}
+
+/* The scopes that colour the picked run, most specific at the top, each label drawn in
+   the style its own variable resolves to.  Clicking a stop is what the picker edits. */
+.colour_specificity {
+    position: absolute;
+    right: 10px;
+    top: 55px;
+    max-height: 70%;
+    width: 20em;
+    overflow: auto;
+    font-family: monospace;
+    line-height: 1.6em;
+    font-size: 1em;
+    padding: 6px 10px;
+    border-left: 1px solid #555;
+    background: rgba(0, 0, 0, 0.35);
+    color: #999;
+    text-align: left;
+}
+
+/* The rail's own line, drawn in the same monospace column as the markers. */
+.colour_specificity_graphic {
+    color: #999;
+    padding-left: 2ch;
+}
+
+.colour_specificity_stop {
+    cursor: pointer;
+    white-space: pre;
+}
+
+.colour_specificity_stop:hover {
+    outline: 1px dashed #888;
+    outline-offset: 0;
+}
+
+.colour_specificity_selected {
+    outline: 2px solid #3399ff;
+    outline-offset: 0;
+}
+
+/* A stop whose variable names nothing: it is what it inherits, and clicking it is how
+   the override is made.  Only the label dims: the marker and the selection column are
+   the rail's own graphics and stay at full strength. */
+.colour_specificity_unset .colour_specificity_label {
+    opacity: 0.55;
+}
+
+.colour_specificity_indicator,
+.colour_specificity_bullet,
+.colour_specificity_label {
+    white-space: pre;
+}
+
+/* The value the picker's field has now, beside the picker's message. */
+.colour_field_value {
+    display: inline-block;
+    width: 1.6em;
+    height: 1em;
+    vertical-align: middle;
+    border: 1px solid #777;
+    border-radius: 2px;
+}
+
+.colour_field_value_unset {
+    border-style: dashed;
+}
+
+/* The field controls of the picker, each drawn on the preview's background in the
+   style it sets. */
+.colour_field_buttons {
+    margin: 0 20px 8px 35px;
+    display: flex;
+    gap: 6px;
+}
+
+.colour_field_button {
+    font-family: monospace;
+    font-size: 1em;
+    min-width: 2.2em;
+    padding: 4px 8px;
+    border: 1px solid #777;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.colour_field_button_selected {
+    box-shadow: 0 0 0 2px #3399ff;
 }
 
 /* The variables the sample does not exercise, so that all of them are reachable. */

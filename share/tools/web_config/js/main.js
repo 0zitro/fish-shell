@@ -36,9 +36,326 @@ document.addEventListener("alpine:init", () => {
                 .map((attribute) => [attribute.variable, attribute])),
         // The sample, classified by the highlighting pass itself.
         colourSample: [],
+        // The run the user picked, the scopes it resolves through, and which of them the
+        // picker edits.  Nothing is picked until the sample is clicked, so the sample rests
+        // undecorated.
+        pickedPieceIndex: null,
+        pickedStops: [],
+        selectedStopIndex: 0,
+        hoveredStopIndex: null,
+        // The variable a row of the variable list is under the pointer, if any.
+        hoveredVariable: null,
+        // Which field of the selected variable the colour grid writes.
+        editingField: "foreground",
 
         variableForPiece(piece) {
             return this.variableOfPath[piece.path];
+        },
+
+        // Pick the run at `pieceIndex`, and edit the most specific scope that colours it.
+        pickPiece(pieceIndex) {
+            const piece = this.colourSample[pieceIndex];
+            if (!piece) return;
+            this.pickedPieceIndex = pieceIndex;
+            this.pickedStops = this.stopsForPiece(piece);
+            this.hoveredStopIndex = null;
+            this.selectStop(0);
+            this.$nextTick(() => {
+                if (this.$refs.specificity) this.$refs.specificity.focus();
+            });
+        },
+
+        // The scopes that colour one run, most specific first: the run's own scope, the
+        // chain it resolves through, the scopes that enclose it, and the root.
+        stopsForPiece(piece) {
+            return this.stopsFor(this.variableForPiece(piece), piece.enclosing);
+        },
+
+        // The scopes that colour a variable, most specific first.  A variable chosen from
+        // the list has no run and so no scopes around it, but the chain it resolves
+        // through is the same.
+        stopsFor(variable, enclosingPaths) {
+            const stops = [];
+            const seen = new Set();
+            const add = (candidate, kind, path) => {
+                if (!candidate || seen.has(candidate)) return;
+                seen.add(candidate);
+                const entry = this.colourVariableOf[candidate];
+                stops.push({
+                    variable: candidate,
+                    kind,
+                    path: path || (entry ? entry.path : null) || candidate,
+                });
+            };
+            const entry = this.colourVariableOf[variable];
+            add(variable, "leaf", entry ? entry.path : null);
+            for (const step of entry ? entry.chain : []) {
+                if (step !== "fish_color_normal") add(step, "chain", null);
+            }
+            for (const enclosing of (enclosingPaths || []).slice().reverse()) {
+                add(this.variableOfPath[enclosing], "enclosing", enclosing);
+            }
+            add("fish_color_normal", "root", "source");
+            return stops;
+        },
+
+        // Move the specificity stop the picker edits.
+        selectStop(stopIndex) {
+            const stop = this.pickedStops[stopIndex];
+            if (!stop) return;
+            this.selectedStopIndex = stopIndex;
+            this.selectColorSetting(stop.variable);
+        },
+
+        // Walk the rail, which is what the arrows are for.
+        moveStop(delta) {
+            const stopIndex = this.selectedStopIndex + delta;
+            if (stopIndex < 0 || stopIndex >= this.pickedStops.length) return;
+            this.selectStop(stopIndex);
+        },
+
+        // Whether the stop's own variable names anything: an unset one is what it
+        // inherits, and is drawn dimmer so that the rail shows which overrides exist.
+        stopIsSet(stop) {
+            return !!this.currentColorScheme().colordata[stop.variable];
+        },
+
+        selectedStop() {
+            return this.pickedStops[this.selectedStopIndex];
+        },
+
+        // The scope path the picker is editing, when a stop is selected.
+        selectedStopPath() {
+            const stop = this.selectedStop();
+            return stop ? stop.path : "";
+        },
+
+        clearPicked() {
+            this.pickedPieceIndex = null;
+            this.pickedStops = [];
+            this.selectedStopIndex = 0;
+            this.hoveredStopIndex = null;
+        },
+
+        // Select a variable from outside the sample.  There is no run to walk, but the
+        // chain it resolves through is the same, so the rail opens on it.
+        selectVariable(variable) {
+            this.pickedPieceIndex = null;
+            this.hoveredStopIndex = null;
+            this.pickedStops = this.stopsFor(variable, []);
+            this.selectStop(0);
+            this.beginCustomizationWithSetting(variable);
+        },
+
+        // Hovering a row of the variable list marks every run that variable colours, the
+        // same mark the rail leaves on the runs a scope covers.
+        hoverVariable(variable) {
+            this.hoveredVariable = variable;
+        },
+
+        clearHoveredVariable() {
+            this.hoveredVariable = null;
+        },
+
+        // Whether a run is one the active stop covers: the picked run for the run's own
+        // scope, every run resolving through a chain step, every run a side of the
+        // enclosing scope, and every run for the root.  A hovered variable takes over the
+        // mark while the pointer is on it.
+        pieceInActiveStop(pieceIndex) {
+            const piece = this.colourSample[pieceIndex];
+            if (this.hoveredVariable) {
+                return this.resolutionOf(piece).includes(this.hoveredVariable);
+            }
+            const stop = this.pickedStops[this.hoveredStopIndex ?? this.selectedStopIndex];
+            if (!stop) return false;
+            switch (stop.kind) {
+                case "leaf":
+                    // A run picked in the sample is one run; a variable picked from the
+                    // list is every run the pass gave that scope.
+                    return this.pickedPieceIndex !== null
+                        ? pieceIndex === this.pickedPieceIndex
+                        : this.variableForPiece(piece) === stop.variable;
+                case "root":
+                    return true;
+                case "enclosing":
+                    return piece.enclosing.includes(stop.path);
+                case "chain":
+                    return this.resolutionOf(piece).includes(stop.variable);
+            }
+            return false;
+        },
+
+        // The style a stop's own variable draws: its value, else the chain it resolves
+        // through, else the root.  A stop whose variable names nothing is drawn by what it
+        // inherits, which is what it would change.
+        effectiveStyleOf(variable) {
+            const colours = this.currentColorScheme().colordata;
+            const entry = this.colourVariableOf[variable];
+            const resolution = ["fish_color_normal"];
+            for (const step of (entry ? entry.chain : []).slice().reverse()) {
+                if (step !== "fish_color_normal") resolution.push(step);
+            }
+            resolution.push(variable);
+            let named = {};
+            for (const step of resolution) {
+                named = this.writeFields(named, step, colours, this.channelFields);
+            }
+            return this.styleOf(named);
+        },
+
+        selectedSpecification() {
+            return this.currentColorScheme().colordata[this.selectedColorSetting];
+        },
+
+        // The specification the picker writes: the variable's own value, or a value that
+        // names nothing yet, which is what setting an override starts from.  A scope the
+        // theme says nothing about writes nothing until a field is set, so the sample draws
+        // it by what it inherits either way.
+        writtenSpecification() {
+            const variable = this.selectedColorSetting;
+            if (!variable) return undefined;
+            const colourScheme = this.currentColorScheme();
+            if (!colourScheme.colordata[variable]) {
+                colourScheme.colordata[variable] = {
+                    name: variable,
+                    color: "",
+                    background: "",
+                    "underline-color": "",
+                    bold: false,
+                    underline: null,
+                    italics: false,
+                    dim: false,
+                    reverse: false,
+                    strikethrough: false,
+                    reset: false,
+                };
+                colourScheme.colors[variable] = "";
+            }
+            return colourScheme.colordata[variable];
+        },
+
+        // The colour the grid marks as chosen, for the field it writes.
+        selectedFieldColour() {
+            const specification = this.selectedSpecification();
+            if (!specification) return "";
+            switch (this.editingField) {
+                case "foreground":
+                    return specification.color;
+                case "background":
+                    return specification.background;
+                case "underline_colour":
+                    return specification["underline-color"];
+            }
+            return "";
+        },
+
+        // What the picker is setting: the field of the selected variable, and the colour
+        // that field has now.
+        fieldTitle() {
+            switch (this.editingField) {
+                case "background":
+                    return "a background color";
+                case "underline_colour":
+                    return "an underline color";
+            }
+            return "a foreground color";
+        },
+
+        fieldValueStyle() {
+            const colour = this.selectedFieldColour();
+            return {
+                "background-color": colour ? interpret_color(colour) : this.previewBackgroundColour(),
+            };
+        },
+
+        fieldValueTitle() {
+            const colour = this.selectedFieldColour();
+            return colour ? colour : "no value yet";
+        },
+
+        selectField(field) {
+            this.editingField = field;
+        },
+
+        selectedFlag(flag) {
+            const specification = this.selectedSpecification();
+            return !!(specification && specification[flag]);
+        },
+
+        // Switch one flag of the selected variable on or off.  The flags are one field of
+        // a `set_color` value, so the value states all of them; turning the underline on
+        // makes the grid write the underline colour.
+        toggleFlag(flag) {
+            const specification = this.writtenSpecification();
+            if (!specification) return;
+            if (flag === "underline") {
+                specification.underline = specification.underline ? null : "single";
+                if (specification.underline) this.editingField = "underline_colour";
+            } else {
+                specification[flag] = !specification[flag];
+            }
+            this.noteThemeChanged();
+        },
+
+        // The page's own text colour, which a variable that names no foreground inherits.
+        defaultTextColour() {
+            return "#" + text_color_for_color(this.actualTerminalBackgroundColor);
+        },
+
+        // The controls sit on the background the sample preview draws on, so that they read
+        // as part of the preview rather than as swatches of their own.
+        previewBackgroundColour() {
+            return this.actualTerminalBackgroundColor;
+        },
+
+        // The `Aa` control of each field, drawn in the field's own colour on the preview's
+        // background.
+        foregroundButtonStyle() {
+            const style = this.effectiveStyleOf(this.selectedColorSetting);
+            return {
+                "color": style.color || this.defaultTextColour(),
+                "background-color": this.previewBackgroundColour(),
+            };
+        },
+
+        // The background control is the one control whose chip is the field itself.
+        backgroundButtonStyle() {
+            const style = this.effectiveStyleOf(this.selectedColorSetting);
+            const background = style["background-color"] || this.previewBackgroundColour();
+            return {
+                "color": contrasting_color(background, this.defaultTextColour()),
+                "background-color": background,
+            };
+        },
+
+        underlineButtonStyle() {
+            const style = this.effectiveStyleOf(this.selectedColorSetting);
+            const specification = this.selectedSpecification();
+            const underlined = !!(specification && specification.underline);
+            // The glyph shows the underline's own color when it names one, so that the
+            // control reads as the underline rather than a second foreground.
+            const glyph =
+                (underlined && interpret_color(specification["underline-color"])) ||
+                style.color ||
+                this.defaultTextColour();
+            return {
+                "color": glyph,
+                "background-color": this.previewBackgroundColour(),
+                "text-decoration": underlined ? "underline " + css_underline_style(specification.underline) : "none",
+                "text-decoration-color": interpret_color(specification ? specification["underline-color"] : ""),
+            };
+        },
+
+        flagButtonStyle(flag) {
+            const style = this.effectiveStyleOf(this.selectedColorSetting);
+            const css = {
+                "color": style.color || this.defaultTextColour(),
+                "background-color": this.previewBackgroundColour(),
+            };
+            if (flag === "bold") css["font-weight"] = "bold";
+            if (flag === "italics") css["font-style"] = "italic";
+            if (flag === "dim") css["opacity"] = "0.6";
+            return css;
         },
 
         // The style a piece of the sample resolves to, composed as the shell composes it:
@@ -146,7 +463,7 @@ document.addEventListener("alpine:init", () => {
             if (flags.dim) css["opacity"] = "0.6";
             const decorations = [];
             if (flags.underline) {
-                decorations.push("underline " + (flags.underline === "single" ? "solid" : flags.underline));
+                decorations.push("underline " + css_underline_style(flags.underline));
             }
             if (flags.strikethrough) decorations.push("line-through");
             if (decorations.length) css["text-decoration"] = decorations.join(" ");
@@ -195,6 +512,7 @@ document.addEventListener("alpine:init", () => {
             this.selectedColorSetting = false;
             this.customizationActive = false;
             this.csEditingType = false;
+            this.clearPicked();
             //TODO: Save button should be shown only when colors are changed
             this.showSaveButton = true;
 
@@ -244,9 +562,21 @@ document.addEventListener("alpine:init", () => {
             }
         },
 
-        changeSelectedTextColor(color) {
-            this.currentColorScheme().colors[this.selectedColorSetting] = color;
-            this.currentColorScheme().colordata[this.selectedColorSetting].color = color;
+        changeSelectedColor(color) {
+            const specification = this.writtenSpecification();
+            if (!specification) return;
+            switch (this.editingField) {
+                case "foreground":
+                    specification.color = color;
+                    break;
+                case "background":
+                    specification.background = color;
+                    break;
+                case "underline_colour":
+                    specification["underline-color"] = color;
+                    break;
+            }
+            this.currentColorScheme().colors[this.selectedColorSetting] = specification.color;
             this.noteThemeChanged();
         },
 
