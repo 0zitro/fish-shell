@@ -31,6 +31,7 @@ pub mod flog;
 pub mod fork_exec;
 pub mod fs;
 pub mod function;
+pub mod function_header;
 pub mod global_safety;
 pub mod highlight;
 pub mod history;
