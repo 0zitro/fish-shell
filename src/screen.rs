@@ -50,7 +50,7 @@ pub enum CharOffset {
 }
 
 #[derive(Clone, Default)]
-pub struct HighlightedChar {
+pub struct HighlightCell {
     classification: HighlightClassification,
     character: char,
     // Logical offset within the command line.
@@ -59,14 +59,14 @@ pub struct HighlightedChar {
 
 /// A class representing a single line of a screen.
 #[derive(Clone, Default)]
-pub struct Line {
+pub struct HighlightLine {
     /// A pair of a character, and the classification with which to draw it.
-    pub text: Vec<HighlightedChar>,
+    pub text: Vec<HighlightCell>,
     pub is_soft_wrapped: bool,
     pub indentation: usize,
 }
 
-impl Line {
+impl HighlightLine {
     pub fn new() -> Self {
         Default::default()
     }
@@ -83,7 +83,7 @@ impl Line {
         classification: HighlightClassification,
         offset_in_cmdline: CharOffset,
     ) {
-        self.text.push(HighlightedChar {
+        self.text.push(HighlightCell {
             classification,
             character: rendered_character(character),
             offset_in_cmdline,
@@ -123,7 +123,7 @@ impl Line {
     }
 
     /// Append the contents of `line` to this line.
-    pub fn append_line(&mut self, line: &Line) {
+    pub fn append_line(&mut self, line: &HighlightLine) {
         self.text.extend_from_slice(&line.text);
     }
 
@@ -148,8 +148,8 @@ pub struct Cursor {
 
 /// A class representing screen contents.
 #[derive(Clone, Default)]
-pub struct ScreenData {
-    line_datas: Vec<Line>,
+pub struct HighlightScreenContent {
+    line_datas: Vec<HighlightLine>,
 
     /// The width of the screen once we have rendered.
     screen_width: Option<usize>,
@@ -162,9 +162,9 @@ pub struct ScreenData {
     visible_prompt_lines: usize,
 }
 
-impl ScreenData {
-    pub fn add_line(&mut self) -> &mut Line {
-        self.line_datas.push(Line::new());
+impl HighlightScreenContent {
+    pub fn add_line(&mut self) -> &mut HighlightLine {
+        self.line_datas.push(HighlightLine::new());
         self.line_datas.last_mut().unwrap()
     }
 
@@ -176,24 +176,24 @@ impl ScreenData {
         self.line_datas.resize(size, Default::default());
     }
 
-    pub fn create_line(&mut self, idx: usize) -> &mut Line {
+    pub fn create_line(&mut self, idx: usize) -> &mut HighlightLine {
         if idx >= self.line_datas.len() {
             self.line_datas.resize(idx + 1, Default::default());
         }
         self.line_mut(idx)
     }
 
-    pub fn insert_line_at_index(&mut self, idx: usize) -> &mut Line {
+    pub fn insert_line_at_index(&mut self, idx: usize) -> &mut HighlightLine {
         assert!(idx <= self.line_datas.len());
         self.line_datas.insert(idx, Default::default());
         &mut self.line_datas[idx]
     }
 
-    pub fn line(&self, idx: usize) -> &Line {
+    pub fn line(&self, idx: usize) -> &HighlightLine {
         &self.line_datas[idx]
     }
 
-    pub fn line_mut(&mut self, idx: usize) -> &mut Line {
+    pub fn line_mut(&mut self, idx: usize) -> &mut HighlightLine {
         &mut self.line_datas[idx]
     }
 
@@ -201,7 +201,7 @@ impl ScreenData {
         self.line_datas.len()
     }
 
-    pub fn append_lines(&mut self, d: &ScreenData) {
+    pub fn append_lines(&mut self, d: &HighlightScreenContent) {
         self.line_datas.extend_from_slice(&d.line_datas);
     }
 
@@ -211,7 +211,7 @@ impl ScreenData {
 }
 
 /// The class representing the current and desired screen contents.
-pub struct Screen {
+pub struct HighlightScreen {
     /// Whether the last-drawn autosuggestion (if any) is truncated, or hidden entirely.
     pub autosuggestion_is_truncated: bool,
     /// True if the last rendering was so large we could only display part of the command line.
@@ -223,9 +223,9 @@ pub struct Screen {
     /// Vertical offset of the screen contents within the terminal window.
     viewport_y: Option<usize>,
     /// The internal representation of the desired screen contents.
-    desired: ScreenData,
+    desired: HighlightScreenContent,
     /// The internal representation of the actual screen contents.
-    actual: ScreenData,
+    actual: HighlightScreenContent,
     /// A string containing the prompt which was last printed to the screen.
     actual_left_prompt: Option<WString>,
     /// Last right prompt width.
@@ -248,7 +248,7 @@ pub struct Screen {
     mtime_stdout_stderr: (Option<SystemTime>, Option<SystemTime>),
 }
 
-impl Default for Screen {
+impl Default for HighlightScreen {
     fn default() -> Self {
         Self {
             autosuggestion_is_truncated: Default::default(),
@@ -268,7 +268,7 @@ impl Default for Screen {
     }
 }
 
-impl Screen {
+impl HighlightScreen {
     /// This is the main function for the screen output library. It is used to define the desired
     /// contents of the screen. The screen command will use its knowledge of the current contents of
     /// the screen in order to render the desired output using as few terminal commands as possible.
@@ -724,7 +724,7 @@ fn abandon_line_string(screen_width: Option<usize>) -> Vec<u8> {
     abandon_line_string.take_contents()
 }
 
-impl Screen {
+impl HighlightScreen {
     /// Stat stdout and stderr and save result as the current timestamp.
     /// This is used to avoid reacting to changes that we ourselves made to the screen.
     pub fn save_status(&mut self) {
@@ -1117,10 +1117,10 @@ impl Screen {
             self.actual_left_prompt = Some(left_prompt.to_owned());
         }
 
-        fn o_line(zelf: &Screen, i: usize) -> &Line {
+        fn o_line(zelf: &HighlightScreen, i: usize) -> &HighlightLine {
             zelf.desired.line(i)
         }
-        fn s_line(zelf: &Screen, i: usize) -> &Line {
+        fn s_line(zelf: &HighlightScreen, i: usize) -> &HighlightLine {
             zelf.actual.line(i)
         }
 
@@ -1781,7 +1781,7 @@ fn truncate_run(
 /// Returns the length of the "shared prefix" of the two lines, which is the run of matching text
 /// and classifications. If the prefix ends on a combining character, do not include the previous
 /// character in the prefix.
-fn line_shared_prefix(a: &Line, b: &Line) -> usize {
+fn line_shared_prefix(a: &HighlightLine, b: &HighlightLine) -> usize {
     let mut idx = 0;
     let max = std::cmp::min(a.len(), b.len());
     while idx < max {
