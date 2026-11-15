@@ -10,6 +10,12 @@ function runs_of
     $fish_indent --pygments | string split -- '\n' | string replace --regex -- '^(\d+),\d+,([^,]*),.*$' '$1 $2'
 end
 
+function enclosing_of
+    $fish_indent --pygments | string split -- '\n' \
+        | string replace --regex -- '^(\d+),[^,]*,[^,]*,([^,]*),.*$' '$1 $2' \
+        | string trim --right
+end
+
 printf '%s' 'set -gx name 1' | runs_of
 # CHECK: 0 command.builtin.set
 # CHECK: 3 source
@@ -53,25 +59,25 @@ printf '%s' 'echo hi >>"$(true)"__\'z\'' | runs_of
 # CHECK: 5 argument
 # CHECK: 7 source
 # CHECK: 8 redirection.append
-# CHECK: 10 string.quoted.double.delimiter
+# CHECK: 10 string.delimiter.double
 # CHECK: 11 operator.dollar
 # CHECK: 12 operator.parenthesis
 # CHECK: 13 command
 # CHECK: 17 operator.parenthesis
-# CHECK: 18 string.quoted.double.delimiter
+# CHECK: 18 string.delimiter.double
 # CHECK: 19 redirection.append.target
-# CHECK: 21 string.quoted.single.delimiter
-# CHECK: 22 string.quoted.single
-# CHECK: 23 string.quoted.single.delimiter
+# CHECK: 21 string.delimiter.single
+# CHECK: 22 meta.string.quoted.single
+# CHECK: 23 string.delimiter.single
 
 # A bare number and a bare boolean are arguments that narrow; the quoted forms are quotes.
 printf '%s' 'test "$x" -gt 123' | runs_of
 # CHECK: 0 command.builtin.test
 # CHECK: 4 source
-# CHECK: 5 string.quoted.double.delimiter
+# CHECK: 5 string.delimiter.double
 # CHECK: 6 variable.sigil
 # CHECK: 7 variable
-# CHECK: 8 string.quoted.double.delimiter
+# CHECK: 8 string.delimiter.double
 # CHECK: 9 source
 # CHECK: 10 argument.option.gnu
 # CHECK: 13 source
@@ -80,13 +86,13 @@ printf '%s' 'test "$x" -gt 123' | runs_of
 printf '%s' 'echo '\''123'\'' "true"' | runs_of
 # CHECK: 0 command
 # CHECK: 4 source
-# CHECK: 5 string.quoted.single.delimiter
-# CHECK: 6 string.quoted.single
-# CHECK: 9 string.quoted.single.delimiter
+# CHECK: 5 string.delimiter.single
+# CHECK: 6 meta.string.quoted.single
+# CHECK: 9 string.delimiter.single
 # CHECK: 10 source
-# CHECK: 11 string.quoted.double.delimiter
-# CHECK: 12 string.quoted.double
-# CHECK: 16 string.quoted.double.delimiter
+# CHECK: 11 string.delimiter.double
+# CHECK: 12 meta.string.quoted.double
+# CHECK: 16 string.delimiter.double
 
 # A slice's bounds are words of the slice: a signed number names a position.
 printf '%s' 'echo $x[-1..2]' | runs_of
@@ -173,8 +179,27 @@ printf '%s' 'function g -S; end' | runs_of
 # CHECK: 14 source
 # CHECK: 15 keyword.end
 
+# A quoted run is an enclosing construct: its own characters are its scope, and what it
+# expands — a reference, a substitution, an escape, its marks — is stated inside it.
+printf '%s' 'echo "$(true)"' | enclosing_of
+# CHECK: 0
+# CHECK: 4
+# CHECK: 5 meta.string.quoted+meta.string.quoted.double
+# CHECK: 6 meta.string.quoted+meta.string.quoted.double
+# CHECK: 7 meta.string.quoted+meta.string.quoted.double
+# CHECK: 8 meta.string.quoted+meta.string.quoted.double+meta.command_substitution
+# CHECK: 12 meta.string.quoted+meta.string.quoted.double
+# CHECK: 13 meta.string.quoted+meta.string.quoted.double
+
+printf '%s' "echo 'ab'" | enclosing_of
+# CHECK: 0
+# CHECK: 4
+# CHECK: 5 meta.string.quoted+meta.string.quoted.single
+# CHECK: 6
+# CHECK: 8 meta.string.quoted+meta.string.quoted.single
+
 printf '%s' "echo 'unterminated" | runs_of
 # CHECK: 0 command
 # CHECK: 4 source
 # CHECK: 5 invalid
-# CHECK: 6 string.quoted.single
+# CHECK: 6 meta.string.quoted.single

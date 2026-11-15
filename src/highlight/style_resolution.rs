@@ -485,12 +485,61 @@ mod tests {
             "the double run keeps the family's colour"
         );
 
-        // Setting the delimiter stem alone splits the marks off the content.
-        colors.set(L!("fish_color_quote_single_delimiter"), &[L!("brred")]);
+        // Setting the delimiter stem alone splits the marks off the content, and the family
+        // node states both styles at once.
+        colors.set(L!("fish_color_string_delimiter"), &[L!("brred")]);
         let classifications = colors.classify(L!("echo 'ab' \"cd\""));
         let style = |index: usize| colors.style_of(classifications[index]);
         assert_eq!(style(5).fg, color(L!("brred")), "the opening mark");
+        assert_eq!(style(10).fg, color(L!("brred")), "the other style's mark");
         assert_eq!(style(6).fg, color(L!("green")), "the content is untouched");
+
+        colors.set(L!("fish_color_string_delimiter_single"), &[L!("brmagenta")]);
+        let classifications = colors.classify(L!("echo 'ab' \"cd\""));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(5).fg, color(L!("brmagenta")), "one style's mark");
+        assert_eq!(style(10).fg, color(L!("brred")), "the style below it");
+    }
+
+    #[test]
+    #[serial]
+    fn a_quoted_run_supplies_a_field_nothing_inside_it_names() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_quote_double"), &[L!("green")]);
+
+        // echo "$x" — the sigil and the name reach the variable family, and an escape reaches
+        // the escape family; the run supplies the colour where neither names one.
+        let classifications = colors.classify(L!("echo \"$x\""));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(
+            style(6).fg,
+            color(L!("green")),
+            "the sigil is coloured by the run it is inside"
+        );
+        assert_eq!(style(7).fg, color(L!("green")), "the name too");
+
+        // The variable family stands in front of the run.
+        colors.set(L!("fish_color_variable"), &[L!("brblue")]);
+        let classifications = colors.classify(L!("echo \"$x\""));
+        let style = |index: usize| colors.style_of(classifications[index]);
+        assert_eq!(style(6).fg, color(L!("brblue")));
+        assert_eq!(style(7).fg, color(L!("brblue")));
+
+        // A substitution inside the run is inside it as well, so its characters reach the run
+        // when their own chain names nothing.
+        let classifications = colors.classify(L!("echo \"$(true)\""));
+        assert_eq!(
+            colors.style_of(classifications[7]).fg,
+            color(L!("green")),
+            "the substitution's operator is inside the run"
+        );
+        colors.set(L!("fish_color_operator"), &[L!("brred")]);
+        let classifications = colors.classify(L!("echo \"$(true)\""));
+        assert_eq!(
+            colors.style_of(classifications[7]).fg,
+            color(L!("brred")),
+            "the operator family stands in front of the run"
+        );
     }
 
     #[test]
