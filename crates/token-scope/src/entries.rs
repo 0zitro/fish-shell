@@ -221,6 +221,7 @@ declare_scope_entries! {
         "meta.function.no_shadowing" /** characters inside ``function … end -S`` */ enclosing;
         "meta.function" /** characters inside ``function … end`` */ enclosing;
         "meta.command_substitution" /** characters inside ``$(…)`` */ enclosing;
+        "meta.slice" /** characters inside a slice's brackets, like ``$x[1..2]`` */ enclosing;
         "meta.block.brace" /** characters inside ``{ … }`` */ enclosing;
         "meta.block" /** characters inside ``begin … end`` and ``{ … }`` */ enclosing;
         "meta.if" /** characters inside ``if … end`` */ enclosing;

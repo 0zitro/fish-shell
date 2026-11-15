@@ -197,6 +197,18 @@ printf '%s' 'begin -b echo hi; end' | runs_of
 # CHECK: 17 source
 # CHECK: 18 keyword.end
 
+# A slice encloses what stands between its brackets, and the brackets themselves state no
+# enclosing scope.
+printf '%s' 'echo $x[$i]' | enclosing_of
+# CHECK: 0
+# CHECK: 4
+# CHECK: 5
+# CHECK: 6
+# CHECK: 7
+# CHECK: 8 meta.slice
+# CHECK: 9 meta.slice
+# CHECK: 10
+
 # A brace clause is a block of its own: its marks name the pair, and its body is a block
 # and a brace clause in particular, where a begin block's body is only a block.
 printf '%s' '{ echo hi; }' | runs_of

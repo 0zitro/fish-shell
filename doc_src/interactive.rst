@@ -429,6 +429,8 @@ shell consults:
     characters inside ``function … end``
 .. envvar:: fish_color_meta_command_substitution
     characters inside ``$(…)``
+.. envvar:: fish_color_meta_slice
+    characters inside a slice's brackets, like ``$x[1..2]``
 .. envvar:: fish_color_meta_block_brace
     characters inside ``{ … }``
 .. envvar:: fish_color_meta_block

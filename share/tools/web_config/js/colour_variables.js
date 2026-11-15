@@ -152,6 +152,7 @@ window.__fish_colour_variables = [
     {variable: "fish_color_meta_function_no_shadowing", path: "meta.function.no_shadowing", description: "characters inside function … end -S", chain: ["fish_color_meta_function", "fish_color_normal"]},
     {variable: "fish_color_meta_function", path: "meta.function", description: "characters inside function … end", chain: ["fish_color_normal"]},
     {variable: "fish_color_meta_command_substitution", path: "meta.command_substitution", description: "characters inside $(…)", chain: ["fish_color_normal"]},
+    {variable: "fish_color_meta_slice", path: "meta.slice", description: "characters inside a slice's brackets, like $x[1..2]", chain: ["fish_color_normal"]},
     {variable: "fish_color_meta_block_brace", path: "meta.block.brace", description: "characters inside { … }", chain: ["fish_color_meta_block", "fish_color_normal"]},
     {variable: "fish_color_meta_block", path: "meta.block", description: "characters inside begin … end and { … }", chain: ["fish_color_normal"]},
     {variable: "fish_color_meta_if", path: "meta.if", description: "characters inside if … end", chain: ["fish_color_normal"]},
