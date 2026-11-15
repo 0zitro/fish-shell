@@ -215,6 +215,25 @@ printf '%s' 'set -e name' | runs_of
 # CHECK: 6 source
 # CHECK: 7 variable
 
+# A switch statement encloses its cases, and a case item the patterns it matches on as well
+# as the body it runs.
+printf '%s' 'switch $x; case a; echo; end' | enclosing_of
+# CHECK: 0
+# CHECK: 6
+# CHECK: 7
+# CHECK: 8
+# CHECK: 9
+# CHECK: 10
+# CHECK: 11 meta.switch
+# CHECK: 15
+# CHECK: 16 meta.switch+meta.case
+# CHECK: 17 meta.switch+meta.case
+# CHECK: 18
+# CHECK: 19 meta.switch+meta.case
+# CHECK: 23 meta.switch+meta.case
+# CHECK: 24
+# CHECK: 25
+
 # A slice encloses what stands between its brackets, and the brackets themselves state no
 # enclosing scope.
 printf '%s' 'echo $x[$i]' | enclosing_of

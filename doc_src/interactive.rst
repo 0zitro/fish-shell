@@ -437,8 +437,10 @@ shell consults:
     characters inside ``begin … end`` and ``{ … }``
 .. envvar:: fish_color_meta_if
     characters inside ``if … end``
+.. envvar:: fish_color_meta_switch
+    characters inside ``switch … end``
 .. envvar:: fish_color_meta_case
-    characters inside ``case … end``
+    characters inside ``case …``
 .. envvar:: fish_color_meta_loop_for
     characters inside ``for … end``
 .. envvar:: fish_color_meta_loop_while

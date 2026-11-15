@@ -2058,11 +2058,23 @@ impl<'src, 'wd, 'ctx, 'a> NodeVisitor<'a> for HighlightVisitor<'src, 'wd, 'ctx> 
                     visitor.visit(&node.body);
                 });
             }
+            Kind::SwitchStatement(node) => {
+                self.visit(&node.kw_switch);
+                self.visit(&node.argument);
+                self.visit(&node.semi_nl);
+                self.visit_inside(enclosing_of(TokenScopeId::META_SWITCH), |visitor| {
+                    visitor.visit(&node.cases);
+                });
+                self.visit(&node.end);
+                self.visit(&node.args_or_redirs);
+            }
             Kind::CaseItem(node) => {
                 self.visit(&node.kw_case);
-                self.visit(&node.arguments);
-                self.visit(&node.semi_nl);
+                // A case item is the construct: the patterns it matches on are inside it as
+                // well as the body it runs.
                 self.visit_inside(enclosing_of(TokenScopeId::META_CASE), |visitor| {
+                    visitor.visit(&node.arguments);
+                    visitor.visit(&node.semi_nl);
                     visitor.visit(&node.body);
                 });
             }
@@ -3483,6 +3495,35 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_switch_encloses_its_cases_and_a_case_its_patterns() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // switch $x; case a; echo; end — the statement encloses its cases, and a case item
+        // the patterns it matches on as well as the body it runs.
+        let classifications = classified_without_io(vars, L!("switch $x; case a; echo; end"));
+        let switch = EnclosingScopeSet::default().with_scope(TokenScopeId::META_SWITCH);
+        let case = switch.with_scope(TokenScopeId::META_CASE);
+        assert!(
+            classifications[0].enclosing().is_empty(),
+            "the switch keyword"
+        );
+        assert!(
+            classifications[7].enclosing().is_empty(),
+            "the switch's argument"
+        );
+        assert_eq!(classifications[11].enclosing(), switch, "the case keyword");
+        assert_eq!(classifications[16].enclosing(), case, "the pattern");
+        assert_eq!(classifications[19].enclosing(), case, "the body");
+        assert!(
+            classifications[25].enclosing().is_empty(),
+            "the end keyword"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_enclosing_scopes() {
         test_init();
         let TestParser { ref mut parser, .. } = TestParser::new();
@@ -3491,7 +3532,8 @@ mod tests {
         let only = |scope| EnclosingScopeSet::default().with_scope(scope);
         let block = only(TokenScopeId::META_BLOCK);
         let r#if = only(TokenScopeId::META_IF);
-        let case = only(TokenScopeId::META_CASE);
+        let switch = only(TokenScopeId::META_SWITCH);
+        let case = switch.with_scope(TokenScopeId::META_CASE);
         let function = only(TokenScopeId::META_FUNCTION);
         let no_shadowing = function.with_scope(TokenScopeId::META_FUNCTION_NO_SHADOWING);
         let loop_for = only(TokenScopeId::META_LOOP).with_scope(TokenScopeId::META_LOOP_FOR);
@@ -3521,6 +3563,12 @@ mod tests {
             ),
             (L!("if true; echo b; end"), L!("echo"), r#if),
             (L!("switch x; case a; echo b; end"), L!("echo"), case),
+            (
+                L!("switch x; case a; echo b; end"),
+                L!("switch"),
+                EnclosingScopeSet::default(),
+            ),
+            (L!("switch x; case a; echo b; end"), L!("case"), switch),
             (L!("for x in a; echo b; end"), L!("echo"), loop_for),
             (L!("while true; echo b; end"), L!("echo"), loop_while),
             (L!("function f; echo b; end"), L!("echo"), function),
