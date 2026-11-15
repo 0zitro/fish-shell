@@ -790,6 +790,46 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_definitions_name_resolves_through_the_command_it_declares() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_command"), &[L!("red")]);
+
+        // function f; end — the name is a command of a kind, so the command family reaches
+        // it when nothing more specific names the colour.
+        let plain = colors.classify(L!("function f; end"));
+        assert_eq!(
+            colors.style_of(plain[9]).fg,
+            color(L!("red")),
+            "the name falls back on the command family"
+        );
+
+        // The function family is the kind it declares.
+        colors.set(L!("fish_color_function"), &[L!("green")]);
+        let plain = colors.classify(L!("function f; end"));
+        assert_eq!(colors.style_of(plain[9]).fg, color(L!("green")));
+
+        // The definition leaf splits the name from a use of a function.
+        colors.set(L!("fish_color_function_definition"), &[L!("brblue")]);
+        let plain = colors.classify(L!("function f; end"));
+        assert_eq!(colors.style_of(plain[9]).fg, color(L!("brblue")));
+
+        // The flag the header carries is stated on the name too.
+        colors.set(
+            L!("fish_color_function_definition_no_shadowing"),
+            &[L!("yellow")],
+        );
+        let flagged = colors.classify(L!("function g -S; end"));
+        assert_eq!(colors.style_of(flagged[9]).fg, color(L!("yellow")));
+        let plain = colors.classify(L!("function f; end"));
+        assert_eq!(
+            colors.style_of(plain[9]).fg,
+            color(L!("brblue")),
+            "a definition whose body shadows the caller's scope keeps the definition leaf"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn a_definition_resolves_through_its_requested_mode() {
         let colors = Colors::new();
         colors.set(L!("fish_color_variable_definition"), &[L!("green")]);

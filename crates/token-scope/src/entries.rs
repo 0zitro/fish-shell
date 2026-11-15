@@ -118,6 +118,12 @@ declare_scope_entries! {
         "command.builtin.status" /** ``status`` builtin */ builtin_status;
         "command.builtin.test" /** ``test`` builtin */ builtin_test;
         "command.function" /** function calls like ``myfunc`` */ function;
+        sum "command.function" {
+            definition /** the name a definition declares, like ``f`` in ``function f`` */
+        };
+        sum "command.function.definition" {
+            no_shadowing /** the name of a definition whose body shares the calling scope */
+        };
         "command.abbreviation" /** abbreviations, like ``gco`` for ``git checkout`` */;
         "command.implicit_cd" /** directories as command words, like ``/tmp`` */;
 
