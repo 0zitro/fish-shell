@@ -149,6 +149,109 @@ function oklch_strip_axes(channel) {
     };
 }
 
+// The mark a fallback is drawn with, and the field it is drawn on.
+//
+// Two reagents diffuse at different rates and one catalyses the other's production; what settles out
+// is a labyrinth.  It states no direction and no period, and its isocontours cannot cross, so a pair
+// of lines drawn either side of one is a mark that repeats nowhere and meets nothing — which is what
+// the mark has to be, since a direction it carried could be shared with the edge it sits beside.
+//
+// The field wraps at its edges, so it tiles without a seam, and it is sampled at a stated number of
+// device pixels per cell, so every drawing states the same sizes as every other.  The generator counts
+// in cells: the widths of the mark are cells of this field, converted to pixels by that scale.
+//
+// The feed and the kill decide what settles out.  Stated for worms, the reaction settles into long
+// strands that double back and meet themselves, rather than into a field of round spots with a few
+// strands between them: the strands are what the mark is drawn on, and a spot is a shape the mark would
+// have to close around.
+const oklch_hatch_columns = 128;
+const oklch_hatch_rows = 88;
+const oklch_hatch_steps = 2400;
+const oklch_hatch_feed = 0.05;
+const oklch_hatch_kill = 0.0615;
+const oklch_hatch_diffusion = [0.16, 0.08];
+const oklch_hatch_scale = 3;
+// Where in the field's own range the pair of lines sits.
+const oklch_hatch_level = 0.75;
+
+let oklch_hatch_field = null;
+
+// The field, simulated once and kept: the pattern is a property of the parameters and not of the
+// drawing, so every drawing states the same one at the size it is made at.
+function oklch_hatch_texture() {
+    if (oklch_hatch_field) return oklch_hatch_field;
+    const columns = oklch_hatch_columns;
+    const rows = oklch_hatch_rows;
+    const cells = columns * rows;
+    let first = new Float32Array(cells);
+    let second = new Float32Array(cells);
+    // The pattern that settles is the parameters' own, so the start is a scatter rather than a shape:
+    // a seed with a shape states that shape.
+    for (let index = 0; index < cells; index += 1) {
+        first[index] = 1;
+        second[index] = Math.random() * 0.02;
+    }
+    for (let index = 0; index < 24; index += 1) {
+        const column = Math.floor(Math.random() * columns);
+        const row = Math.floor(Math.random() * rows);
+        second[row * columns + column] = 1;
+    }
+    const left = new Int32Array(columns);
+    const right = new Int32Array(columns);
+    for (let column = 0; column < columns; column += 1) {
+        left[column] = (column + columns - 1) % columns;
+        right[column] = (column + 1) % columns;
+    }
+    let nextFirst = new Float32Array(cells);
+    let nextSecond = new Float32Array(cells);
+    const [diffusionFirst, diffusionSecond] = oklch_hatch_diffusion;
+    for (let step = 0; step < oklch_hatch_steps; step += 1) {
+        for (let row = 0; row < rows; row += 1) {
+            const here = row * columns;
+            const up = ((row + rows - 1) % rows) * columns;
+            const down = ((row + 1) % rows) * columns;
+            for (let column = 0; column < columns; column += 1) {
+                const index = here + column;
+                const a = first[index];
+                const b = second[index];
+                const across =
+                    first[here + left[column]] + first[here + right[column]]
+                    + first[up + column] + first[down + column] - 4 * a;
+                const acrossSecond =
+                    second[here + left[column]] + second[here + right[column]]
+                    + second[up + column] + second[down + column] - 4 * b;
+                const reaction = a * b * b;
+                nextFirst[index] =
+                    a + diffusionFirst * across - reaction + oklch_hatch_feed * (1 - a);
+                nextSecond[index] =
+                    b + diffusionSecond * acrossSecond + reaction
+                    - (oklch_hatch_feed + oklch_hatch_kill) * b;
+            }
+        }
+        const spare = first;
+        first = nextFirst;
+        nextFirst = spare;
+        const spareSecond = second;
+        second = nextSecond;
+        nextSecond = spareSecond;
+    }
+    // The field the screen samples states its own range, so the dials above are fractions of it rather
+    // than numbers of a simulation that states no scale.
+    let low = Infinity;
+    let high = -Infinity;
+    for (const value of second) {
+        if (value < low) low = value;
+        if (value > high) high = value;
+    }
+    const span = high - low > 0 ? high - low : 1;
+    const data = new Uint8Array(cells);
+    for (let index = 0; index < cells; index += 1) {
+        data[index] = Math.round(((second[index] - low) / span) * 255);
+    }
+    oklch_hatch_field = { data, columns, rows };
+    return oklch_hatch_field;
+}
+
 // A matrix as the shader states it: GLSL takes the columns, where the matrices above are stated by
 // the row each axis' coefficients sit in.
 function oklch_glsl_matrix(rows) {
@@ -171,14 +274,19 @@ uniform vec2 u_resolution;
 uniform ivec2 u_axes;
 uniform vec3 u_held;
 uniform vec2 u_extent;
+uniform sampler2D u_hatch;
+uniform vec2 u_hatch_step;
 
 out vec4 outColour;
 
-// The colour spaces' own numbers, which are definitions rather than dials: the OKLab matrices, and
-// the sRGB transfer function's knee, its linear segment's slope, and its power segment's scale,
-// offset and exponent.
+// The colour spaces' own numbers, which are definitions rather than dials: the OKLab matrices both
+// ways, the exponent its axes are the cube root of, and the sRGB transfer function's knee, its linear
+// segment's slope, and its power segment's scale, offset and exponent.
 const mat3 OKLAB_LMS_FROM_LAB = ${oklch_glsl_matrix(oklch_lms_from_lab)};
 const mat3 OKLAB_LINEAR_FROM_LMS = ${oklch_glsl_matrix(oklch_linear_from_lms)};
+const mat3 OKLAB_LMS_FROM_LINEAR = ${oklch_glsl_matrix(oklch_lms_from_linear)};
+const mat3 OKLAB_LAB_FROM_LMS = ${oklch_glsl_matrix(oklch_lab_from_lms)};
+const float OKLAB_ROOT_EXPONENT = 1.0 / 3.0;
 const float SRGB_KNEE = 0.0031308;
 const float SRGB_LINEAR_SLOPE = 12.92;
 const float SRGB_POWER_SCALE = 1.055;
@@ -187,38 +295,44 @@ const float SRGB_POWER_EXPONENT = 1.0 / 2.4;
 
 // The dials.
 //
-// The three of these that count pixels are integers, because they are thresholds over a pixel grid:
-// a rule is a whole number of pixels wide, repeats after a whole number of them, and the boundary
-// reaches a whole number of them.  A fraction of a pixel is a fraction of a threshold no display can
-// state.
+// The boundary's width is an integer, because it is a threshold over a pixel grid: a fraction of a
+// pixel is a fraction of a threshold no display can state.  The mark's own widths are stated in cells
+// of the hatch field, which the scale of that field converts to pixels.
 //
 // GAMUT_TOLERANCE: how far outside the gamut's cube a colour may land and still count as showable,
 // which is the rounding allowance of the matrices.
-// FALLBACK_STEPS: how finely the chroma is halved to find the edge of the gamut for a fallback.
-// CONTRAST_STEPS: how finely the lightness is bisected to state the mark's contrast.
+// FALLBACK_STEPS: how finely the chroma is halved to find the edge of the gamut, for the colour a
+//   fallback shows and for a line of the mark that stands wider than the screen shows there.
+// LUMINANCE_STEPS: how finely the lightness is halved to reach the luminance a line of the mark
+//   states.  Luminance is not lightness: at one lightness a chromatic colour states less of it than a
+//   grey does, so the lightness a luminance states is a root, which the halving reaches and a scale
+//   cannot.
+// TINT_ROUNDS: how many times a line's chroma gives way to the chroma the screen shows at the
+//   lightness the line stands at.  The width the screen shows at a lightness depends on that
+//   lightness, and the lightness depends on the width, so the two are stated by iterating them; a
+//   line already inside the gamut leaves the loop on its first round.
 // EDGE_LINE: how many pixels wide each of the two lines the boundary between the gamut and its
 //   fallback is drawn with, one on each side of the curve.
 // RULE_CONTRAST: the contrast between the mark's two lines, as a ratio of relative luminance — the
 //   quantity the eye reads and the one the mark states everywhere it is drawn.  A ratio, not a
 //   lightness difference: the same lightness difference states a strong contrast in the middle of the
 //   range and none at all at its dark end.
-// RULE_LINE_WIDTH: how many pixels wide each of the rule's two lines is — the pixels one line covers in
-//   a row of the display, which is the width a stripe running at a diagonal of the grid has there.  A
-//   line one pixel wide is connected only at its corners, so its pixels are not a width; two or more
-//   are four-connected and so one width in every row the line runs through.
-// RULE_PITCH: after how many pixels the rules repeat.
+// HATCH_LEVEL: where in the hatch field's own range the pair of lines sits, as a fraction of it.
+// HATCH_LINE: how many pixels wide each of the rule's two lines is, counted from the isocontour the pair
+//   straddles.
 const float GAMUT_MIN = 0.0;
 const float GAMUT_MAX = 1.0;
 const float GAMUT_TOLERANCE = 0.001;
 const int FALLBACK_STEPS = 10;
-const int CONTRAST_STEPS = 12;
-// The offset a contrast ratio is stated over, which keeps the ratio finite at black.
+const int LUMINANCE_STEPS = 16;
+const int TINT_ROUNDS = 2;
+// The offset a contrast ratio is stated over, which keeps the ratio finite at black: a ratio divides
+// by a luminance and the darkest colour of the display is one the cube states at zero.
 const float CONTRAST_OFFSET = 0.05;
 const int EDGE_LINE = 2;
-const float RULE_CONTRAST = 1.5;
-const int RULE_LINE_WIDTH = 2;
-const int RULE_WIDTH = RULE_LINE_WIDTH * 2;
-const int RULE_PITCH = 32;
+const float RULE_CONTRAST = 1.8;
+const int HATCH_LINE = 2;
+const float HATCH_LEVEL = ${oklch_hatch_level};
 
 // The midpoint a bisection halves at.
 const float BISECTION_MIDPOINT = 0.5;
@@ -253,17 +367,24 @@ vec3 lch_at(ivec2 pixel) {
     return lch;
 }
 
+// The chroma the screen shows at a lightness and hue: the stated one where the screen shows it, and
+// the widest one it shows there where it does not.
+float shown_chroma(float lightness, float chroma, float hue) {
+    if (in_gamut(oklch_to_linear(vec3(lightness, chroma, hue)))) return chroma;
+    float inside = GAMUT_MIN;
+    float outside = max(chroma, GAMUT_MIN);
+    for (int step = 0; step < FALLBACK_STEPS; step++) {
+        float middle = mix(inside, outside, BISECTION_MIDPOINT);
+        if (in_gamut(oklch_to_linear(vec3(lightness, middle, hue)))) inside = middle;
+        else outside = middle;
+    }
+    return inside;
+}
+
 // The lightness, chroma and hue the screen shows for a colour: the chroma is lowered until the
 // screen can show it, which is the colour the picker writes when the point itself is out of range.
 vec3 shown_lch(vec3 lch) {
-    float inside = GAMUT_MIN;
-    float outside = max(lch.y, GAMUT_MIN);
-    for (int step = 0; step < FALLBACK_STEPS; step++) {
-        float chroma = mix(inside, outside, BISECTION_MIDPOINT);
-        if (in_gamut(oklch_to_linear(vec3(lch.x, chroma, lch.z)))) inside = chroma;
-        else outside = chroma;
-    }
-    return vec3(lch.x, inside, lch.z);
+    return vec3(lch.x, shown_chroma(lch.x, lch.y, lch.z), lch.z);
 }
 
 vec3 colour_of(vec3 lch) {
@@ -275,90 +396,147 @@ float luminance_of(vec3 linear) {
     return dot(linear, vec3(0.2126, 0.7152, 0.0722));
 }
 
-// The colour the screen shows at one lightness of the fallback's own hue and chroma, as linear channels.
-vec3 shown_linear(float lightness, float chroma, float hue) {
-    return oklch_to_linear(shown_lch(vec3(lightness, chroma, hue)));
+// The mark, and the constraints it states.  The mark's pattern is one thing and these are another: a
+// rule of stripes, the isocontours of a field, a field of blobs — any of them states where the mark goes
+// and none of them decides what the mark is worth.  Those decisions are these, taken over the whole
+// drawing.
+//
+// Let bg be the colour under a point of the mark, and let the mark at that point state two lines, one
+// lighter than bg and one darker, with colours light and dark.  Then:
+//
+//   contrast(light, dark) = RULE_CONTRAST, everywhere.  The two lines are one pair whatever they are
+//   drawn on, so the mark is one mark and not a different one over each colour.
+//
+//   contrast(light, bg) and contrast(dark, bg) are each as uniform as the drawing allows.  A line's own
+//   colour is what changes from point to point of the drawing, and the change is the cost: the mark is
+//   uniform where neither line changes colour, and a line whose colour moves is a second statement
+//   inside the mark.
+//
+//   |contrast(light, bg) - contrast(dark, bg)| = RULE_BALANCE, everywhere, for one global dial.  The two
+//   lines treat the colour under them alike, so neither of them is the favoured one over any part of the
+//   drawing; RULE_BALANCE stated at zero makes the pair straddle bg.
+//
+// The three cannot all hold at the ends of the luminance scale: a pair straddling a colour at the very
+// bottom of it must put one line below the scale or move both.  What is given up there is the balance,
+// and only as much of it as the scale forces, because the pair's own contrast is what makes the two lines
+// one mark.
+//
+// RULE_CHROMA states how much of the colour under the mark the two lines carry: each line states the
+// drawing's own hue and this fraction of its chroma, so the tint a line contributes is the drawing's
+// colour, as much of it as the dial says and no more.  The fraction is of the chroma and not of the
+// channel values, because a chroma is what the eye reads as colourfulness: the channel values of a dark
+// colour stand close together however saturated that colour is, and a fraction of them states a line
+// whose saturation is the widest the screen shows at the line's luminance rather than the drawing's.  A
+// line holds its luminance whatever this is stated at, so the pair's contrast and the pair's balance are
+// the dials' whichever way it is stated.  At zero the pair is two greys and its colour is the same
+// everywhere; at one each line is the colour under it at that line's own lightness.
+const float RULE_BALANCE = 0.0;
+const float RULE_CHROMA = 0.5;
+
+// The luminance a contrast from a luminance states.  The ratio is stated over the luminance offset by
+// CONTRAST_OFFSET, so this is a closed form: the luminance a line stands at is stated from the colour
+// under it, and what is solved for is the colour at that luminance.
+float luminance_at_contrast(float luminance, float ratio) {
+    return ratio * (luminance + CONTRAST_OFFSET) - CONTRAST_OFFSET;
 }
 
-// The contrast two lightnesses of one hue and chroma state: the ratio of their relative luminances, as
-// the eye states it.  A ratio rather than a difference, because a difference that reads at mid grey
-// states nothing on the same colours near black.
-float contrast_of(float one, float other, float chroma, float hue) {
-    float a = max(luminance_of(shown_linear(one, chroma, hue)), GAMUT_MIN);
-    float b = max(luminance_of(shown_linear(other, chroma, hue)), GAMUT_MIN);
-    return (max(a, b) + CONTRAST_OFFSET) / (min(a, b) + CONTRAST_OFFSET);
+// The offset a hue and a chroma state on the cone response's axes.  The lightness states its own
+// coefficient in each of those axes, and that coefficient is one, so the axes at a lightness are that
+// lightness plus this offset.
+vec3 oklab_offset(float chroma, float hue) {
+    float turned = radians(hue);
+    return OKLAB_LMS_FROM_LAB * vec3(0.0, chroma * cos(turned), chroma * sin(turned));
 }
 
-// The lightness on one side of a colour that states a contrast against it, and the contrast it states
-// there, which is less than the target where the lightness scale has no room to reach it.
-float side_lightness(vec3 shown, bool above, float target, out float reached) {
-    float edge = above ? GAMUT_MAX : GAMUT_MIN;
-    reached = contrast_of(edge, shown.x, shown.y, shown.z);
-    if (reached < target) return edge;
-    float low = above ? shown.x : GAMUT_MIN;
-    float high = above ? GAMUT_MAX : shown.x;
-    for (int step = 0; step < CONTRAST_STEPS; step++) {
-        float middle = mix(low, high, BISECTION_MIDPOINT);
-        if (contrast_of(middle, shown.x, shown.y, shown.z) >= target) {
-            if (above) high = middle;
-            else low = middle;
-        } else if (above) {
-            low = middle;
-        } else {
-            high = middle;
-        }
+// The linear sRGB colour the cone response's axes state.
+vec3 linear_at(vec3 offset, float lightness) {
+    vec3 axes = offset + vec3(lightness);
+    return OKLAB_LINEAR_FROM_LMS * (axes * axes * axes);
+}
+
+// The hue and the chroma a linear sRGB colour states: the chromatic axes of its cone response, and the
+// distance and the angle that pair states.
+void hue_chroma_of(vec3 linear, out float hue, out float chroma) {
+    vec3 axes = OKLAB_LMS_FROM_LINEAR * linear;
+    axes = OKLAB_LAB_FROM_LMS * (sign(axes) * pow(abs(axes), vec3(OKLAB_ROOT_EXPONENT)));
+    chroma = length(axes.yz);
+    hue = degrees(atan(axes.z, axes.y));
+    if (hue < 0.0) hue += 360.0;
+}
+
+// The lightness whose luminance is the one asked for, at a stated hue and chroma.  Luminance rises with
+// lightness at a stated hue and chroma, and the axes it is stated over are the lightness plus the hue's
+// and chroma's offset, so halving the lightness reaches the one lightness that states it.
+float lightness_at(vec3 offset, float target) {
+    float below = GAMUT_MIN;
+    float above = GAMUT_MAX;
+    for (int step = 0; step < LUMINANCE_STEPS; step++) {
+        float lightness = mix(below, above, BISECTION_MIDPOINT);
+        if (luminance_of(linear_at(offset, lightness)) < target) below = lightness;
+        else above = lightness;
     }
-    reached = target;
-    return above ? high : low;
+    return below;
 }
 
-// The lightnesses of the mark's two lines, which state the dial's contrast between them.  The pair
-// straddles the colour — each line the same contrast from it, which is the mark's free parameter set
-// to zero — so long as both sides of the scale reach half of it.  Where a side cannot, it takes what
-// the scale gives and the far side makes up the rest, so the contrast between the lines is the dial's
-// wherever the mark is drawn.  The single flag states which line is the whole mark where the scale gave one
-// side nothing that shows: a rule that kept the one line in half of its width and left the other half
-// the colour under it would read as a dash, one dot per pitch, rather than as a rule.
-void mark_lines(vec3 shown, out float lighter, out float darker, out int single) {
+// The colour a line of the mark states: the colour under the mark with its lightness moved to the
+// luminance the contrast asks for, keeping its hue and the stated fraction of its chroma.
+//
+// The chroma is stated at the line's own lightness, and the ends of the scale show less chroma than
+// its middle does, so a line there gives up the width and keeps the hue.  Keeping the hue is what keeps
+// the line the drawing's colour: a channel value below the gamut states a hue no colour of the drawing
+// has, and over a nearly black drawing that is a saturated green or orange where the drawing states a
+// hue too dark to read at all.
+vec3 linear_at_luminance(vec3 linear, float target) {
+    float hue;
+    float chroma;
+    hue_chroma_of(linear, hue, chroma);
+    chroma *= RULE_CHROMA;
+    vec3 offset = oklab_offset(chroma, hue);
+    float lightness = lightness_at(offset, target);
+    for (int round = 0; round < TINT_ROUNDS; round++) {
+        float shown = shown_chroma(lightness, chroma, hue);
+        if (shown >= chroma) break;
+        chroma = shown;
+        offset = oklab_offset(chroma, hue);
+        lightness = lightness_at(offset, target);
+    }
+    return linear_at(offset, lightness);
+}
+
+// The two lines of the mark.  Each is stated at a contrast from the colour under them, a square root of
+// the dial either way, which straddles that colour with the balance at zero.  Where a line would stand
+// outside the scale the pair is shifted the least distance that keeps both inside it and the other line
+// follows the shift: the pair's own contrast is what makes the two lines one mark, so it is the dial's
+// wherever the mark is drawn.
+void mark_linears(vec3 linear, out vec3 lighter, out vec3 darker) {
+    float luminance = clamp(luminance_of(linear), GAMUT_MIN, GAMUT_MAX);
     float side = sqrt(RULE_CONTRAST);
-    float above_reached;
-    float below_reached;
-    lighter = side_lightness(shown, true, side, above_reached);
-    darker = side_lightness(shown, false, side, below_reached);
-    single = 0;
-    if (above_reached < side) {
-        darker = side_lightness(shown, false, RULE_CONTRAST / above_reached, below_reached);
-        single = 2;
-    } else if (below_reached < side) {
-        lighter = side_lightness(shown, true, RULE_CONTRAST / below_reached, above_reached);
-        single = 1;
+    float balance = RULE_BALANCE * BISECTION_MIDPOINT;
+    float lift = side * (GAMUT_MAX + balance);
+    float drop = GAMUT_MAX / lift;
+    float ratio = lift / drop;
+    float high = luminance_at_contrast(luminance, lift);
+    float low = luminance_at_contrast(luminance, drop);
+    if (low < GAMUT_MIN) {
+        low = GAMUT_MIN;
+        high = luminance_at_contrast(low, ratio);
     }
+    if (high > GAMUT_MAX) {
+        high = GAMUT_MAX;
+        low = luminance_at_contrast(high, GAMUT_MAX / ratio);
+    }
+    lighter = linear_at_luminance(linear, high);
+    darker = linear_at_luminance(linear, low);
 }
 
-// One line of the mark, as the rule states it: the pair's own line where the mark has two, and the one
-// line the whole rule states where it has one.
-vec3 line_of(vec3 shown, int nth) {
-    float lighter;
-    float darker;
-    int single;
-    mark_lines(shown, lighter, darker, single);
-    if (single != 0) nth = single;
-    return colour_of(shown_lch(vec3(nth == 1 ? lighter : darker, shown.y, shown.z)));
+// One line of the mark, in the colour the screen writes.
+vec3 line_of(vec3 linear, int nth) {
+    vec3 lighter;
+    vec3 darker;
+    mark_linears(linear, lighter, darker);
+    return linear_to_srgb(nth == 1 ? lighter : darker);
 }
 
-// One line of the pair the boundary states across a curve, which keeps both of its lines even where
-// the rule is a single line: the two sides of a curve are two colours, and the pair is what states the
-// contrast between them.
-vec3 pair_line_of(vec3 shown, int nth) {
-    float lighter;
-    float darker;
-    int single;
-    mark_lines(shown, lighter, darker, single);
-    return colour_of(shown_lch(vec3(nth == 1 ? lighter : darker, shown.y, shown.z)));
-}
-
-// Whether a colour of the wanted side of the gamut's edge stands within the boundary's reach of a
-// point, which is what puts the point on the boundary.
 // Whether a colour of the wanted side of the gamut's edge stands within the boundary's width of a
 // pixel, which is what puts the pixel on the boundary.  Both the width and the pixels it counts over
 // are whole numbers.
@@ -374,39 +552,95 @@ bool edge_reaches(ivec2 pixel, bool want_inside) {
     return false;
 }
 
+// The colour the gamut states at the edge nearest a pixel, which is the point the two materials of a
+// boundary are compared at: the colour inside is a colour of the drawing, and the colour it falls back
+// to is stated by the same lightness and hue with the chroma the screen can show.
+vec3 inside_lch(ivec2 pixel, bool inside) {
+    if (inside) return lch_at(pixel);
+    for (int distance = 1; distance <= EDGE_LINE; distance++) {
+        for (int direction = 0; direction < 4; direction++) {
+            ivec2 offset = direction == 0 ? ivec2(distance, 0)
+                : direction == 1 ? ivec2(-distance, 0)
+                : direction == 2 ? ivec2(0, distance)
+                : ivec2(0, -distance);
+            vec3 other = lch_at(pixel + offset);
+            if (in_gamut(oklch_to_linear(other))) return other;
+        }
+    }
+    return lch_at(pixel);
+}
+
+// Which line of the pair the gamut's side of an edge states, and so which line the side across from it
+// states.
+//
+// The two materials of a boundary are one colour: a fallback is the colour it stands for with the
+// chroma the screen can show, and at the edge that chroma is the colour's own.  So the pair is the pair
+// of the colour inside, and both sides of the edge must take their lines from that one colour — one
+// line each — or the two sides state a pair of two different pairs and the contrast across the edge is
+// neither line's.
+//
+// Which side takes which line is then the relief the edge is drawn with: the brighter of the two sides
+// takes the darker line, so the light line lies on the darker material.  It is stated at the colour
+// inside the edge, the side the two materials are both stated on.
+int inside_role(vec3 inside) {
+    float insideLuminance = luminance_of(oklch_to_linear(inside));
+    float fallbackLuminance = luminance_of(oklch_to_linear(shown_lch(inside)));
+    return insideLuminance > fallbackLuminance ? 2 : 1;
+}
+
 // A point the screen cannot show is drawn as the colour it falls back to, and the part of a slice
 // that is a fallback is marked.  The mark says "not a colour you can have", which cannot be said with
 // a colour of its own: a colour is the premise of a slice, and a mark drawn in one competes with the
 // subject.  It is a rule of two lines that state a contrast between them, placed so that the pair is
 // the same contrast from the colour it crosses and straddles it — no direction to flip, so no seam.
 //
-// The boundary between the gamut and its fallback is the same mark turned along a curve: one line
-// inside the gamut and one outside it, so the contrast the mark states is stated *across* the curve.
-// Both lines on one side of it would leave the curve itself unstated, which is what the drawing did
-// while the two lines were two rings on the fallback's side and the boundary was the faintest thing on
-// the card.
+// The boundary between the gamut and its fallback is the same mark turned along a curve: the pair
+// straddles the curve, so the contrast the mark states is stated *across* it.  Which of the two lines
+// is drawn on which side is decided at the gamut's side of the edge by the two materials the curve
+// separates, so the roles follow the colours the edge sits between rather than the side of the edge.
 void main() {
     // Everything this states is a whole pixel's: which pixel a point is, how far the boundary
-    // reaches, and where in the rule's pitch the pixel falls.
+    // reaches, and where in the hatch field the pixel falls.
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     vec3 lch = lch_at(pixel);
     vec3 linear = oklch_to_linear(lch);
     if (in_gamut(linear)) {
-        vec3 plain = colour_of(lch);
-        outColour = vec4(edge_reaches(pixel, false) ? pair_line_of(lch, 1) : plain, GAMUT_MAX);
+        if (edge_reaches(pixel, false)) {
+            outColour = vec4(line_of(linear, inside_role(lch)), GAMUT_MAX);
+        } else {
+            outColour = vec4(colour_of(lch), GAMUT_MAX);
+        }
         return;
     }
     vec3 shown = shown_lch(lch);
     if (edge_reaches(pixel, true)) {
-        outColour = vec4(pair_line_of(shown, 2), GAMUT_MAX);
+        // The pair across the edge is the pair of the colour inside it, and this side states the line the
+        // inside does not.
+        vec3 inside = inside_lch(pixel, false);
+        int role = inside_role(inside);
+        outColour = vec4(line_of(oklch_to_linear(inside), role == 1 ? 2 : 1), GAMUT_MAX);
         return;
     }
-    // The rule runs at a diagonal, counted from the pixel's own position: the diagonal is what states
-    // that a colour is a fallback, and it is the same diagonal in a card and in a strip.
-    int phase = (pixel.x + pixel.y) % RULE_PITCH;
-    if (phase < RULE_WIDTH) {
-        bool first = phase < RULE_LINE_WIDTH;
-        outColour = vec4(line_of(shown, first ? 1 : 2), GAMUT_MAX);
+    // The rule is the hatch field's isocontours: the pair is the pixels within a stated distance of one,
+    // the pixels on the near side of it stating one line and the pixels on the far side the other, with
+    // nothing between them, because that adjacency is where the pair's contrast is read.  Which pixels
+    // those are is decided by where the field crosses the level, counted in pixels, not by how far the
+    // field's value stands from it: a value span is a width the field's gradient decides, and where the
+    // field is flat that width is a whole region rather than two lines.
+    vec2 place = vec2(pixel) * u_hatch_step;
+    float level = texture(u_hatch, place).r - HATCH_LEVEL;
+    bool crossed = false;
+    for (int step = 1; step <= HATCH_LINE; step++) {
+        float offset = float(step);
+        float alongX = texture(u_hatch, place + vec2(offset * u_hatch_step.x, 0.0)).r - HATCH_LEVEL;
+        float backX = texture(u_hatch, place - vec2(offset * u_hatch_step.x, 0.0)).r - HATCH_LEVEL;
+        float alongY = texture(u_hatch, place + vec2(0.0, offset * u_hatch_step.y)).r - HATCH_LEVEL;
+        float backY = texture(u_hatch, place - vec2(0.0, offset * u_hatch_step.y)).r - HATCH_LEVEL;
+        crossed = crossed || level * alongX <= GAMUT_MIN || level * backX <= GAMUT_MIN
+            || level * alongY <= GAMUT_MIN || level * backY <= GAMUT_MIN;
+    }
+    if (crossed) {
+        outColour = vec4(line_of(oklch_to_linear(shown), level < GAMUT_MIN ? 1 : 2), GAMUT_MAX);
         return;
     }
     outColour = vec4(colour_of(shown), GAMUT_MAX);
@@ -481,14 +715,29 @@ function oklch_chart_renderer(canvas) {
         console.error("the colour chart shader did not link:", gl.getProgramInfoLog(program));
         return null;
     }
+    // The hatch field belongs to the context it is sampled in, so each drawing's context states it:
+    // the field itself is simulated once and stated here as it is.
+    const field = oklch_hatch_texture();
+    const hatch = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, hatch);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.R8, field.columns, field.rows, 0, gl.RED, gl.UNSIGNED_BYTE, field.data,
+    );
     const renderer = {
         gl,
         program,
+        hatch,
         uniforms: {
             resolution: gl.getUniformLocation(program, "u_resolution"),
             axes: gl.getUniformLocation(program, "u_axes"),
             held: gl.getUniformLocation(program, "u_held"),
             extent: gl.getUniformLocation(program, "u_extent"),
+            hatch: gl.getUniformLocation(program, "u_hatch"),
+            hatchStep: gl.getUniformLocation(program, "u_hatch_step"),
         },
     };
     oklch_chart_renderers.set(canvas, renderer);
@@ -511,7 +760,7 @@ function draw_oklch_chart(canvas, axes, extents, picker) {
     const size = stale ? oklch_chart_measure(canvas) : measured;
     const renderer = oklch_chart_renderer(canvas);
     if (!renderer) return;
-    const { gl, program, uniforms } = renderer;
+    const { gl, program, uniforms, hatch } = renderer;
     const { width, height } = size;
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
@@ -523,5 +772,16 @@ function draw_oklch_chart(canvas, axes, extents, picker) {
     gl.uniform2i(uniforms.axes, axes[0], axes[1]);
     gl.uniform3f(uniforms.held, picker.l, picker.c, picker.h);
     gl.uniform2f(uniforms.extent, extents[0], extents[1]);
+    // A pixel states the field at a stated number of pixels per cell, so the mark is the same size in
+    // every drawing whatever the drawing's own size.
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, hatch);
+    gl.uniform1i(uniforms.hatch, 0);
+    const field = oklch_hatch_texture();
+    gl.uniform2f(
+        uniforms.hatchStep,
+        1 / (oklch_hatch_scale * field.columns),
+        1 / (oklch_hatch_scale * field.rows),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
