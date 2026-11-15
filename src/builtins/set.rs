@@ -3,8 +3,8 @@ use crate::{
     builtins::Error,
     common::valid_var_name,
     env::{
-        ENV_MODE_FLAGS, EnvMode, EnvStackSetResult, EnvVar, Environment, INHERITED_VARS, flag_of,
-        handle_env_return,
+        ENV_MODE_FLAGS, EnvMode, EnvStackSetResult, EnvVar, Environment, INHERITED_VARS, NameUse,
+        flag_of, handle_env_return,
     },
     err_fmt, err_str,
     event::{self, Event},
@@ -50,6 +50,33 @@ impl Default for Options {
     }
 }
 
+/// The value used for the long-only option.
+const NO_EVENT_ARG: char = 3 as char;
+
+/// The options `set` declares itself; the definition flags come from their own table.
+pub(crate) static OWN_OPTIONS: &[WOption<'static>] = &[
+    wopt(L!("erase"), NoArgument, 'e'),
+    wopt(L!("names"), NoArgument, 'n'),
+    wopt(L!("long"), NoArgument, 'L'),
+    wopt(L!("query"), NoArgument, 'q'),
+    wopt(L!("show"), NoArgument, 'S'),
+    wopt(L!("append"), NoArgument, 'a'),
+    wopt(L!("prepend"), NoArgument, 'p'),
+    wopt(L!("no-event"), NoArgument, NO_EVENT_ARG),
+    wopt(L!("help"), NoArgument, 'h'),
+];
+
+/// What `set` does with the names its arguments name, from the options it was given.
+///
+/// `-e`, `-q`, `-S` and `-n` act on a variable that exists, or list the variables; every
+/// other spelling leaves the words as names the command writes.
+pub(crate) fn name_use(val: char) -> NameUse {
+    match val {
+        'e' | 'n' | 'q' | 'S' => NameUse::Reads,
+        _ => NameUse::Writes,
+    }
+}
+
 impl Options {
     fn parse(
         cmd: &wstr,
@@ -57,31 +84,20 @@ impl Options {
         parser: &mut Parser,
         streams: &mut IoStreams,
     ) -> Result<Option<(Options, usize)>, ErrorCode> {
-        /// The value used for the long-only option.
-        const NO_EVENT_ARG: char = 3 as char;
-
         // The definition flags and this command's own options are read together: the
-        // mode fields from the one declaration, everything else here. A leading `+` stops
-        // the scan at the first argument, so a name and its values are never read as
-        // options.
+        // mode fields from the one declaration, everything else from this command's table.
+        // A leading `+` stops the scan at the first argument, so a name and its values are
+        // never read as options.
         let mut short_opts = WString::from(L!("+"));
         for flag in ENV_MODE_FLAGS {
             short_opts.push(flag.short);
         }
-        short_opts.push_utfstr(L!("LSaehnpq"));
+        for option in OWN_OPTIONS {
+            short_opts.push(option.val);
+        }
 
         let mut long_opts: Vec<WOption> = ENV_MODE_FLAGS.iter().map(|flag| flag.option()).collect();
-        long_opts.extend_from_slice(&[
-            wopt(L!("erase"), NoArgument, 'e'),
-            wopt(L!("names"), NoArgument, 'n'),
-            wopt(L!("long"), NoArgument, 'L'),
-            wopt(L!("query"), NoArgument, 'q'),
-            wopt(L!("show"), NoArgument, 'S'),
-            wopt(L!("append"), NoArgument, 'a'),
-            wopt(L!("prepend"), NoArgument, 'p'),
-            wopt(L!("no-event"), NoArgument, NO_EVENT_ARG),
-            wopt(L!("help"), NoArgument, 'h'),
-        ]);
+        long_opts.extend_from_slice(OWN_OPTIONS);
 
         let mut opts = Self::default();
 

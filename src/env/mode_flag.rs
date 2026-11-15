@@ -95,6 +95,16 @@ impl EnvModeField {
     }
 }
 
+/// What a definition command's options make it do with the names it is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameUse {
+    /// The command writes the names: it defines them, or appends to or prepends to them.
+    Writes,
+    /// The command acts on a variable that exists: it erases it, queries it, shows it or
+    /// lists it.
+    Reads,
+}
+
 /// The flag value `wgetopt` returns for `--path`, which has no short spelling.
 const PATHVAR_VALUE: char = '\u{11}';
 /// The flag value `wgetopt` returns for `--unpath`.
