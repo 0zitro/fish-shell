@@ -9,8 +9,11 @@ body {
 .prompt_demo_text,
 .data_table_row,
 .colorpicker_text_sample_tight,
-.colorpicker_text_sample,
 .history_text,
+.colour_sample_rows,
+.colour_specificity_rail,
+.colour_statement_comment,
+.colour_statement_editor,
 pre,
 code,
 tt {
@@ -384,7 +387,6 @@ tt {
     height: 12px;
 }
 
-.colorpicker_text_sample,
 .colorpicker_text_sample_tight {
     font-size: 12pt;
     padding: 25px;
@@ -415,16 +417,12 @@ tt {
    a mark, and the mark is drawn outside the layout: `outline` and `box-shadow` do
    not move what they mark, so neighbouring runs never touch. */
 .colour_sample_rows {
-    margin-top: 45px;
-    max-height: 60vh;
+    margin-top: 8px;
+    max-height: 52vh;
     overflow-y: auto;
     line-height: 1.5em;
     white-space: pre-wrap;
     text-align: left;
-}
-
-.colour_sample_with_rail {
-    margin-right: 22em;
 }
 
 .colour_sample_piece:hover {
@@ -442,26 +440,130 @@ tt {
     box-shadow: inset 0 -3px 0 rgba(51, 153, 255, 0.55);
 }
 
-/* The scopes that colour the picked run, most specific at the top, each label drawn in
-   the style its own variable resolves to.  Clicking a stop is what the picker edits. */
-.colour_specificity {
-    position: absolute;
-    right: 10px;
-    top: 55px;
-    max-height: 70%;
-    width: 20em;
-    overflow: auto;
-    font-family: monospace;
-    line-height: 1.6em;
-    font-size: 1em;
-    padding: 6px 10px;
-    border-left: 1px solid #555;
-    background: rgba(0, 0, 0, 0.35);
-    color: #999;
-    text-align: left;
+/* The colours page: the sample and the rail it opens, the variables the sample cannot
+   show, the line the theme file has for the scope, then the style the scope has and the
+   colours a field takes.  The panes take the keyboard in turn and mark the focused one,
+   so the arrow keys always have a place to move.  Every pane sits on the preview's
+   background, so the page reads as one terminal, and every pane has the one font size. */
+.colour_panes {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 28em;
+    gap: 8px;
+    margin: 8px 12px;
+    font-size: 12pt;
 }
 
-/* The rail's own line, drawn in the same monospace column as the markers. */
+.colour_pane {
+    border: 1px solid #555;
+    padding: 8px 10px;
+    text-align: left;
+    min-width: 0;
+}
+
+.colour_pane:focus {
+    outline: 1px solid #3399ff;
+    outline-offset: 0;
+}
+
+.colour_pane_sample {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.colour_pane_rail {
+    grid-column: 2;
+    grid-row: 1;
+    overflow: auto;
+    max-height: 70vh;
+    line-height: 1.6em;
+}
+
+.colour_pane_variables {
+    grid-column: 1 / span 2;
+    grid-row: 2;
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Ubuntu Mono", "Hack", "Noto Sans Mono", Liberation Mono, monospace;
+}
+
+.colour_pane_line {
+    grid-column: 1 / span 2;
+    grid-row: 3;
+}
+
+.colour_pane_style,
+.colour_pane_colours {
+    min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Ubuntu Mono", "Hack", "Noto Sans Mono", Liberation Mono, monospace;
+}
+
+/* The bottom row: the style pane narrow, the colour pane wide, so that the 256-colour
+   table has the width its rows of 32 need. */
+.colour_bottom {
+    grid-column: 1 / span 2;
+    grid-row: 4;
+    display: grid;
+    grid-template-columns: 1fr 3fr;
+    gap: 8px;
+}
+
+.colour_pane_hint {
+    opacity: 0.75;
+    padding: 6px;
+}
+
+/* The strip the page writes from: it sits on the same background as the panes, so the
+   button's own colours read as the terminal's rather than the document's. */
+.colour_footer {
+    grid-column: 1 / span 2;
+    grid-row: 5;
+    text-align: right;
+    padding: 6px;
+}
+
+/* What the server refused to write, stated beside the button that asked. */
+.colour_footer_message {
+    float: left;
+    padding: 4px 8px;
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Ubuntu Mono", "Hack", "Noto Sans Mono", Liberation Mono, monospace;
+}
+
+.colour_preview_title {
+    grid-column: 1 / span 2;
+    grid-row: 6;
+    padding: 6px 0 0 4px;
+}
+
+.colour_panes > .color_scheme_choices_scrollview {
+    grid-column: 1 / span 2;
+    grid-row: 7;
+}
+
+.colour_sample_title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.colour_sample_simulate {
+    margin-left: auto;
+    padding-right: 6px;
+}
+
+.colour_sample_background_choice {
+    width: 20px;
+    height: 20px;
+    border: 1px solid #777;
+    display: inline-block;
+    cursor: pointer;
+}
+
+/* The rail's own line, drawn in the same monospace column as the markers.  The colour is
+   stated here rather than inherited: the page's body colour is the dark text of a light
+   document, and the rail sits on the preview's own background. */
+.colour_specificity_rail {
+    text-align: left;
+    color: #999;
+}
+
 .colour_specificity_graphic {
     color: #999;
     padding-left: 2ch;
@@ -470,6 +572,9 @@ tt {
 .colour_specificity_stop {
     cursor: pointer;
     white-space: pre;
+    /* A double click on an entry jumps the sample, so the click must not also select the
+       label it landed on. */
+    user-select: none;
 }
 
 .colour_specificity_stop:hover {
@@ -482,9 +587,9 @@ tt {
     outline-offset: 0;
 }
 
-/* A stop whose variable names nothing: it is what it inherits, and clicking it is how
-   the override is made.  Only the label dims: the marker and the selection column are
-   the rail's own graphics and stay at full strength. */
+/* A stop whose variable is unset: what it inherits renders the label, and clicking the
+   stop is how an override is made there.  Only the label dims: the marker and the
+   selection column are the rail's own graphics and stay at full strength. */
 .colour_specificity_unset .colour_specificity_label {
     opacity: 0.55;
 }
@@ -495,45 +600,155 @@ tt {
     white-space: pre;
 }
 
-/* The value the picker's field has now, beside the picker's message. */
-.colour_field_value {
-    display: inline-block;
-    width: 1.6em;
-    height: 1em;
-    vertical-align: middle;
-    border: 1px solid #777;
-    border-radius: 2px;
+/* The line the theme file has for the scope: the comment that heads it, and the line
+   itself, coloured by its classified runs while an invisible editor over it keeps the
+   text and the caret.  The line starts under the comment, past the prompt, so the two
+   read as one shell line and its header. */
+.colour_statement_comment {
+    white-space: pre;
+    padding-bottom: 4px;
 }
 
-.colour_field_value_unset {
-    border-style: dashed;
+.colour_statement_prompt {
+    opacity: 0.6;
 }
 
-/* The field controls of the picker, each drawn on the preview's background in the
-   style it sets. */
-.colour_field_buttons {
-    margin: 0 20px 8px 35px;
+.colour_statement_editor {
+    position: relative;
+    line-height: 1.5em;
+    min-height: 1.5em;
+    /* The prompt's rendered width: measured when the page starts and again whenever the
+       pane's box changes, since a resize or a font change moves it. */
+    padding-left: var(--statement-indent, 0);
+}
+
+.colour_statement_view,
+.colour_statement_input {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    font: inherit;
+    line-height: inherit;
+    white-space: pre;
+    overflow: hidden;
+    background: transparent;
+}
+
+.colour_statement_view {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    /* An absolutely positioned box is placed against the editor's padding box, so the
+       indent the line starts at has to be stated again here or the drawn line sits under
+       the prompt instead of under the comment. */
+    left: var(--statement-indent, 0);
+    pointer-events: none;
+}
+
+.colour_statement_input {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 1.5em;
+    color: transparent;
+    resize: none;
+    outline: none;
+}
+
+/* The style pane: the three fields in a row, then the two flags a foreground has.  Every
+   entry is a line of the same monospace text as the rail, so the pane reads as one more
+   column of the terminal rather than as a row of controls; the whole rectangle of a line
+   is its hit area. */
+.colour_style_fields {
     display: flex;
-    gap: 6px;
+    gap: 4px;
 }
 
-.colour_field_button {
-    font-family: monospace;
-    font-size: 1em;
-    min-width: 2.2em;
-    padding: 4px 8px;
-    border: 1px solid #777;
-    border-radius: 4px;
+.colour_style_field {
+    padding: 2px 6px;
+    cursor: pointer;
+    white-space: pre;
+}
+
+.colour_style_field:hover {
+    outline: 1px dashed #888;
+    outline-offset: 0;
+}
+
+.colour_style_flags {
+    margin-top: 8px;
+    white-space: pre;
+}
+
+.colour_style_flag {
+    cursor: pointer;
+    white-space: pre;
+    padding: 1px 2px;
+}
+
+.colour_style_flag:hover {
+    outline: 1px dashed #888;
+    outline-offset: 0;
+}
+
+.colour_style_flag_bullet {
+    opacity: 0.7;
+    font-weight: normal;
+    font-style: normal;
+}
+
+.colour_style_flag_title {
+    white-space: pre;
+}
+
+/* The colour pane: the clear cell, the swatch that opens a colour picker, the value's
+   hex, the terminal's sixteen and the 256-colour table. */
+.colour_colour_row {
+    display: flex;
+    flex-wrap: nowrap;
+}
+
+.colour_colour_cell {
+    height: 22px;
+    border: 1px solid #444;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12pt;
+    overflow: hidden;
+}
+
+.colour_colour_palette,
+.colour_colour_swatch_cell {
+    width: 22px;
+}
+
+.colour_colour_input {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    background: transparent;
     cursor: pointer;
 }
 
-.colour_field_button_selected {
-    box-shadow: 0 0 0 2px #3399ff;
+.colour_colour_hex {
+    width: auto;
+    padding: 0 8px;
+    cursor: default;
+    white-space: pre;
 }
 
-/* The variables the sample does not exercise, so that all of them are reachable. */
+.colour_colour_unset {
+    width: auto;
+    padding: 0 6px;
+    border-style: dashed;
+}
+
+/* The variables the sample does not show, so that all of them are reachable. */
 .colour_variable_list {
-    margin-top: 15px;
     max-height: 10em;
     overflow-y: auto;
     line-height: 1.5em;
@@ -542,6 +757,22 @@ tt {
 
 .colour_variable_row {
     white-space: pre;
+    /* A double click on an entry jumps the sample, so the click must not also select the
+       label it landed on. */
+    user-select: none;
+}
+
+/* The variable under the pointer carries the mark the sample's runs carry: a dashed
+   outline drawn inside the row, so the mark moves nothing and neighbouring rows never
+   touch.  The picked row's solid outline wins over it. */
+.colour_variable_row:hover {
+    outline: 1px dashed #888;
+    outline-offset: -1px;
+}
+
+.colour_variable_row.cs_editing {
+    outline: 2px solid #3399ff;
+    outline-offset: -1px;
 }
 
 .colorpicker_text_sample_tight {
@@ -553,29 +784,6 @@ tt {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: clip;
-}
-
-.color_picker_background_cells {
-    position: absolute;
-    right: 0px;
-    top: 0px;
-}
-
-.color_picker_background_cells label {
-    width: 24px;
-    height: 24px;
-    border-style: solid;
-    border-color: #777;
-    border-width: 0 0 1px 1px; /* top right bottom left */
-    float: left;
-}
-
-.color_picker_background_cells span {
-    float: left;
-    font-size: 12pt;
-    padding-top: 2px;
-    padding-right: 8px;
-    cursor: pointer;
 }
 
 .color_scheme_choice_label,
@@ -686,7 +894,6 @@ button.delete_button:hover {
 .save_button,
 .prompt_save_button,
 .colors_close_button,
-.customize_theme_button,
 .generic_button {
     border-radius: 5px;
     border: solid rgba(71, 71, 71, 0.5) 1px;
@@ -696,13 +903,8 @@ button.delete_button:hover {
 }
 
 .save_button:hover,
-.customize_theme_button:hover,
 .generic_button:hover {
     border-color: rgba(171, 171, 171, 0.9);
-}
-
-.button_highlight {
-    background-color: rgba(128, 128, 128, 0.6);
 }
 
 .prompt_save_button {

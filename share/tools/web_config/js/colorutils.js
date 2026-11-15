@@ -270,6 +270,144 @@ var nord = {
     nord15: 'b48ead',
 };
 
+/* The terminal's sixteen colours, in the order the terminal numbers them: eight hues,
+   then the bright eight.  They are the colours the palette rows offer first, so that a
+   theme is reachable without going through the 256-colour table. */
+var term_16_colors = [
+    '000000', '800000', '008000', '808000', '000080', '800080', '008080', 'c0c0c0',
+    '808080', 'ff0000', '00ff00', 'ffff00', '0000ff', 'ff00ff', '00ffff', 'ffffff',
+];
+
+/* The names of those sixteen, in the same order.  A theme states one of these rather than
+   a colour: the terminal decides what the slot looks like, which is what makes it the
+   only value whose appearance fish cannot know. */
+var term_16_names = [
+    'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+    'brblack', 'brred', 'brgreen', 'bryellow', 'brblue', 'brmagenta', 'brcyan', 'brwhite',
+];
+
+/* The fields a `set_color` value names, in the order the shell's `set --global` line
+   states them.  The page's theme statement is a serialisation of these fields, so the
+   words and the fields have to be one implementation: `parse_fish_colour` reads the
+   statement back into a specification, and `fish_colour_words` states a specification
+   as the words the statement holds. */
+var fish_colour_fields = [
+    'color', 'background', 'underline-color', 'bold', 'underline', 'italics', 'dim',
+    'reverse', 'strikethrough', 'reset',
+];
+
+/* Read the words of a `set_color` value, like `['red', '--bold']`, into a
+   specification.  A named colour is preferred to a spelled-out one, as `set_color`
+   itself reads it. */
+function parse_fish_colour(words) {
+    var specification = {
+        color: "", background: "", "underline-color": "", bold: false,
+        underline: null, italics: false, dim: false, reverse: false,
+        strikethrough: false, reset: false,
+    };
+    var plain = function (word) {
+        if (specification.color) {
+            var named = interpret_color(specification.color);
+            if (named && interpret_color(word) === named) return;
+        }
+        specification.color = word;
+    };
+    for (var i = 0; i < words.length; i++) {
+        var word = words[i];
+        var option = function (long_name, short_name) {
+            if (!word.startsWith(long_name) && !(short_name && word.startsWith(short_name)))
+                return null;
+            var consumed = word.startsWith(long_name) ? long_name : short_name;
+            if (word.length === consumed.length) {
+                i += 1;
+                return i < words.length ? words[i] : "";
+            }
+            return word.slice(consumed.length).replace(/^=/, "");
+        };
+        if (word === "--reset" || word === "-R") specification.reset = true;
+        else if (word === "--bold" || word === "-o") specification.bold = true;
+        else if (word === "--italics" || word === "-i") specification.italics = true;
+        else if (word === "--dim" || word === "-d") specification.dim = true;
+        else if (word === "--reverse" || word === "-r") specification.reverse = true;
+        else if (word === "--strikethrough" || word === "-s") specification.strikethrough = true;
+        else if (word === "--underline" || word === "-u") specification.underline = "single";
+        else if (word.startsWith("--underline=")) specification.underline = word.slice("--underline=".length);
+        else if (/^-u./.test(word)) specification.underline = word.slice(2);
+        else if (word.startsWith("--background") || word.startsWith("-b")) {
+            var background = option("--background", "-b");
+            if (background !== null) specification.background = background;
+        } else if (word.startsWith("--underline-color")) {
+            var underline_colour = option("--underline-color", null);
+            if (underline_colour !== null) specification["underline-color"] = underline_colour;
+        } else if (word.startsWith("--theme=")) {
+            // The shell resolves a theme name here; the page holds the resolved fields.
+        } else if (!word.startsWith("-")) {
+            plain(word);
+        }
+    }
+    return specification;
+}
+
+/* State a specification as the words of its `set --global` line.  A field the
+   specification does not name contributes no word, so an unset variable states just its
+   name and nothing else. */
+function fish_colour_words(specification) {
+    var words = [];
+    if (!specification) return words;
+    if (specification.color) words.push(specification.color);
+    if (specification.bold) words.push("--bold");
+    if (specification.underline) words.push("--underline=" + specification.underline);
+    if (specification.italics) words.push("--italics");
+    if (specification.dim) words.push("--dim");
+    if (specification.reverse) words.push("--reverse");
+    if (specification.strikethrough) words.push("--strikethrough");
+    if (specification.background) words.push("--background=" + specification.background);
+    if (specification["underline-color"]) words.push("--underline-color=" + specification["underline-color"]);
+    if (specification.reset) words.push("--reset");
+    return words;
+}
+
+/* Split one line of fish into its words, reading quotes and escapes the way the shell's
+   scanner does.  The page reads its own theme statement back with it. */
+function split_fish_words(text) {
+    var words = [];
+    var word = "";
+    var started = false;
+    var in_single = false;
+    var in_double = false;
+    for (var i = 0; i < text.length; i++) {
+        var character = text[i];
+        if (in_single) {
+            if (character === "'") in_single = false;
+            else word += character;
+        } else if (in_double) {
+            if (character === '"') in_double = false;
+            else if (character === "\\" && i + 1 < text.length) word += text[++i];
+            else word += character;
+        } else if (character === "'") {
+            in_single = true;
+            started = true;
+        } else if (character === '"') {
+            in_double = true;
+            started = true;
+        } else if (character === "\\" && i + 1 < text.length) {
+            word += text[++i];
+            started = true;
+        } else if (/\s/.test(character)) {
+            if (started) {
+                words.push(word);
+                word = "";
+                started = false;
+            }
+        } else {
+            word += character;
+            started = true;
+        }
+    }
+    if (started) words.push(word);
+    return words;
+}
+
 var solarized = {
     base03: '002b36', base02: '073642', base01: '586e75', base00: '657b83', base0: '839496', base1: '93a1a1', base2: 'eee8d5', base3: 'fdf6e3', yellow: 'b58900', orange: 'cb4b16', red: 'dc322f', magenta: 'd33682', violet: '6c71c4', blue: '268bd2', cyan: '2aa198', green: '859900'
 };
