@@ -26,7 +26,7 @@ use crate::{
     terminal::Outputter,
     text_style::TextStyle,
     threads::assert_is_background_thread,
-    tokenizer::{PipeOrRedir, variable_assignment_equals_pos},
+    tokenizer::{PipeOrRedir, quote_end, variable_assignment_equals_pos},
 };
 use fish_color::Color;
 use fish_feature_flags::{FeatureFlag, feature_test};
@@ -284,6 +284,93 @@ pub fn autosuggest_validate_from_history(
     true
 }
 
+/// Classify one slice: its brackets and its `..` are slice text, and the bounds between them
+/// are words, so an escape, a quote or a variable in a bound keeps the scope it has anywhere
+/// else.
+///
+/// A bound that is nothing but a signed number is a number: `$x[2]` and `$x[-2]` name
+/// positions, so the number class is what a colour set for numbers reaches.
+/// A slice opens no quoting context of its own, so this classification begins and ends
+/// between the brackets.
+fn classify_slice(
+    region: &wstr,
+    parameters: Option<&FunctionParameterList>,
+    classifications: &mut [HighlightClassification],
+) {
+    let slice = HighlightClassification::from(TokenScopeId::VARIABLE_SLICE);
+    classifications.fill(slice);
+    if region.len() < 2 {
+        return;
+    }
+    let bounds = &region[1..region.len() - 1];
+    let bound_classifications = &mut classifications[1..region.len() - 1];
+    bound_classifications.fill(slice);
+
+    let mut start = 0;
+    let mut idx = 0;
+    let mut depth = 0u32;
+    while idx < bounds.len() {
+        match bounds.char_at(idx) {
+            quote @ ('\'' | '"') => match quote_end(bounds, idx, quote) {
+                Some(end) => idx = end + 1,
+                None => return,
+            },
+            '\\' => idx += 2,
+            '[' | '(' => {
+                depth += 1;
+                idx += 1;
+            }
+            ']' | ')' => {
+                depth = depth.saturating_sub(1);
+                idx += 1;
+            }
+            '.' if depth == 0 && bounds.char_at(idx + 1) == '.' => {
+                classify_slice_bound(
+                    &bounds[start..idx],
+                    parameters,
+                    &mut bound_classifications[start..idx],
+                );
+                idx += 2;
+                start = idx;
+            }
+            _ => idx += 1,
+        }
+    }
+    classify_slice_bound(
+        &bounds[start..],
+        parameters,
+        &mut bound_classifications[start..],
+    );
+}
+
+/// Classify one bound of a slice as the word it is.
+fn classify_slice_bound(
+    bound: &wstr,
+    parameters: Option<&FunctionParameterList>,
+    classifications: &mut [HighlightClassification],
+) {
+    let scope = bare_slice_bound_scope(bound).unwrap_or(TokenScopeId::VARIABLE_SLICE);
+    classify_word(
+        bound,
+        parameters,
+        HighlightClassification::from(scope),
+        classifications,
+    );
+}
+
+/// The scope of a slice bound that is one literal: a signed number is a number, and any
+/// other bound is slice text.
+fn bare_slice_bound_scope(bound: &wstr) -> Option<TokenScopeId> {
+    let digits = match bound.char_at(0) {
+        '+' | '-' => &bound[1..],
+        _ => bound,
+    };
+    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+        return Some(TokenScopeId::ARGUMENT_NUMBER);
+    }
+    None
+}
+
 // Classifies the variable reference starting with `inp`'s first `$`, writing one
 // classification per character into `classifications`. Returns the number of characters
 // consumed.
@@ -296,7 +383,6 @@ fn classify_variable(
     let sigil = HighlightClassification::from(TokenScopeId::VARIABLE_SIGIL);
     let dereference = HighlightClassification::from(TokenScopeId::VARIABLE_SIGIL_DEREFERENCE);
     let variable = HighlightClassification::from(TokenScopeId::VARIABLE);
-    let slice = HighlightClassification::from(TokenScopeId::VARIABLE_SLICE);
     let dollar = HighlightClassification::from(TokenScopeId::OPERATOR_DOLLAR);
     let invalid = HighlightClassification::from(TokenScopeId::ERROR);
 
@@ -352,8 +438,11 @@ fn classify_variable(
     for _slice_count in 0..dollar_count {
         match slice_length(&inp[idx..]) {
             Some(slice_len) if slice_len > 0 => {
-                classifications[idx] = slice;
-                classifications[idx + slice_len - 1] = slice;
+                classify_slice(
+                    &inp[idx..idx + slice_len],
+                    parameters,
+                    &mut classifications[idx..idx + slice_len],
+                );
                 idx += slice_len;
             }
             Some(_slice_len) => {
@@ -854,6 +943,21 @@ fn definition_mode<'a>(
     Some(mode)
 }
 
+/// The scope a bare literal word takes: digits are a number, `true` and `false` a boolean.
+///
+/// A literal is the word that is nothing but its spelling; a quote, an escape, an expansion
+/// or a glob makes the word a run of pieces, and what the pieces spell is not the word's
+/// class.  Every other word keeps the argument class.
+fn bare_literal_scope(text: &wstr) -> Option<TokenScopeId> {
+    if !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()) {
+        return Some(TokenScopeId::ARGUMENT_NUMBER);
+    }
+    if text == "true" || text == "false" {
+        return Some(TokenScopeId::ARGUMENT_BOOLEAN);
+    }
+    None
+}
+
 /// The scope a redirection's operator takes: the action its spelling selects.
 ///
 /// `&>` and its forms open a file and put stderr on the same descriptor, so they are
@@ -1057,7 +1161,11 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         node: &dyn ast::Node,
         options_allowed: bool, /* = true */
     ) {
-        self.classify_word_with_base(node, options_allowed, TokenScopeId::PARAM);
+        // A bare literal is an argument still: what the word spells narrows the argument
+        // class, and the argument's own colour is what the narrower class falls back on.
+        let base = bare_literal_scope(self.source_slice(node.source_range()))
+            .unwrap_or(TokenScopeId::PARAM);
+        self.classify_word_with_base(node, options_allowed, base);
     }
 
     /// Classify one word, giving the characters no more specific scope claims the `base`
@@ -1097,16 +1205,20 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             }
             OptionShape::LongWithValue { name_end } => {
                 // The long form splits at its `=`: the name keeps the shape's scope and
-                // the value is an argument in its own right.
+                // the value is an argument in its own right, so a bare literal there
+                // narrows it as a literal argument does.
                 let name = self.classification_of(TokenScopeId::OPTION_LONG);
                 let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
                 let parameters = self.enclosing_function_parameters.last();
+                let value = self.classification_of(
+                    bare_literal_scope(&arg_str[name_end + 1..]).unwrap_or(TokenScopeId::PARAM),
+                );
 
                 let classifications = &mut self.classifications[source_range.as_usize()];
                 let (name_part, value_part) = classifications.split_at_mut(name_end + 1);
                 classify_word(&arg_str[..name_end], parameters, name, name_part);
                 name_part[name_end] = assignment;
-                classify_word(&arg_str[name_end + 1..], parameters, parameter, value_part);
+                classify_word(&arg_str[name_end + 1..], parameters, value, value_part);
             }
         }
 
@@ -1153,6 +1265,20 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             assert_eq!(sub_classifications.len(), cmdsub_contents.len());
             self.classifications[arg_start..][cmdsub.command_range()]
                 .copy_from_slice(&sub_classifications);
+
+            // A slice of what the substitution produced, like `$(cmd)[1..2]`.  It is a
+            // slice of the word the substitution stands in, not part of the substitution.
+            let after = cmdsub.end();
+            if let Some(slice_len) = slice_length(&arg_str[after..])
+                && slice_len > 0
+            {
+                let parameters = self.enclosing_function_parameters.last();
+                classify_slice(
+                    &arg_str[after..after + slice_len],
+                    parameters,
+                    &mut self.classifications[arg_start..][after..after + slice_len],
+                );
+            }
         }
     }
 
@@ -1316,19 +1442,38 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
     }
 
     fn visit_variable_assignment(&mut self, varas: &VariableAssignment) {
-        self.classify_as_argument(varas, true);
-        // Classify the '=' in variable assignments as an assignment operator, and the name
-        // before it as the definition it is.
-        if let Some(offset) = variable_assignment_equals_pos(varas.source(self.buff)) {
-            let start = varas.source_range().start();
-            // An assignment in command position defines a local, exported variable.
-            let definition = self.classification_of(definition_scope(&EnvMode::LOCAL_EXPORTED));
-            self.classifications[start..start + offset].fill(definition);
-            let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
-            self.classifications[start + offset] = assignment;
-            let var_name = &varas.source(self.buff)[..offset];
-            self.pending_variable_names.push(var_name);
+        // The '=' separates the name the assignment defines from the value it gives, and the
+        // value is an argument of its own, so a bare literal there narrows as it does
+        // anywhere else.
+        let Some(offset) = variable_assignment_equals_pos(varas.source(self.buff)) else {
+            self.classify_as_argument(varas, true);
+            return;
+        };
+        let source_range = varas.source_range();
+        let start = source_range.start();
+        let value_start = start + offset + 1;
+
+        // An assignment in command position defines a local, exported variable.
+        let definition = self.classification_of(definition_scope(&EnvMode::LOCAL_EXPORTED));
+        self.classifications[start..start + offset].fill(definition);
+        let assignment = self.classification_of(TokenScopeId::OPERATOR_ASSIGNMENT);
+        self.classifications[start + offset] = assignment;
+        let var_name = &varas.source(self.buff)[..offset];
+        self.pending_variable_names.push(var_name);
+
+        if value_start < source_range.end() {
+            let value_text = &varas.source(self.buff)[offset + 1..];
+            let base = self
+                .classification_of(bare_literal_scope(value_text).unwrap_or(TokenScopeId::PARAM));
+            let parameters = self.enclosing_function_parameters.last();
+            classify_word(
+                value_text,
+                parameters,
+                base,
+                &mut self.classifications[value_start..source_range.end()],
+            );
         }
+        self.classify_command_substitutions(varas);
     }
 
     fn visit_semi_nl(&mut self, node: &dyn Node) {
@@ -1855,7 +2000,7 @@ mod tests {
             );
             validate!(
                 ("random", fg(TokenScopeId::BUILTIN_RANDOM)),
-                ("1", fg(TokenScopeId::PARAM)),
+                ("1", fg(TokenScopeId::ARGUMENT_NUMBER)),
             );
             validate!(
                 ("emit", fg(TokenScopeId::BUILTIN_ASYNC_EMIT)),
@@ -1879,7 +2024,7 @@ mod tests {
             // text wins its own scope.
             validate!(
                 ("return", fg(TokenScopeId::KEYWORD_RETURN)),
-                ("2", fg(TokenScopeId::PARAM)),
+                ("2", fg(TokenScopeId::ARGUMENT_NUMBER)),
             );
             validate!(("break", fg(TokenScopeId::KEYWORD_BREAK)),);
             validate!(("continue", fg(TokenScopeId::KEYWORD_CONTINUE)),);
@@ -2192,8 +2337,57 @@ mod tests {
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
                 ("baz", fg(TokenScopeId::VARIABLE), ns),
                 ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
-                ("1 2..3", fg(TokenScopeId::PARAM)),
+                ("1 2..3", fg(TokenScopeId::VARIABLE_SLICE)),
                 ("]", fg(TokenScopeId::VARIABLE_SLICE)),
+            );
+
+            // A bare literal narrows the argument class; the quoted forms stay their quotes.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("123", fg(TokenScopeId::ARGUMENT_NUMBER)),
+                ("true", fg(TokenScopeId::ARGUMENT_BOOLEAN)),
+                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER)),
+                ("123", fg(TokenScopeId::QUOTE_SINGLE), ns),
+                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
+                ("true", fg(TokenScopeId::QUOTE_DOUBLE), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("123abc", fg(TokenScopeId::PARAM)),
+                ("true1", fg(TokenScopeId::PARAM)),
+            );
+
+            // A slice's bounds are words: a number names a position, a quoted bound stays a
+            // quote, and the `..` between them is slice text.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("x", fg(TokenScopeId::VARIABLE), ns),
+                ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
+                ("-2", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
+                ("..", fg(TokenScopeId::VARIABLE_SLICE), ns),
+                ("2", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
+            );
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("x", fg(TokenScopeId::VARIABLE), ns),
+                ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("-1", fg(TokenScopeId::QUOTE_DOUBLE), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
+            );
+            // A command substitution carries a slice too; the substitution is not a quoting
+            // context, so the slice closes the word the substitution stands in.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
+                ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
+                ("1", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
             );
 
             // An option's shape is a spelling, not a reading.
@@ -2209,12 +2403,24 @@ mod tests {
                 ("-s", fg(TokenScopeId::PARAM)),
             );
 
-            // The long form splits at its `=`.
+            // The long form splits at its `=`, and the value is an argument of its own.
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("--colour", fg(TokenScopeId::OPTION_LONG)),
                 ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
                 ("always", fg(TokenScopeId::PARAM), ns),
+            );
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("--opt", fg(TokenScopeId::OPTION_LONG)),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
+                ("1", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
+            );
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("--opt", fg(TokenScopeId::OPTION_LONG)),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
+                ("true", fg(TokenScopeId::ARGUMENT_BOOLEAN), ns),
             );
 
             // A mixed word: the quoted runs take their quote style, the rest stays the
@@ -2244,7 +2450,9 @@ mod tests {
                 ("for", fg(TokenScopeId::KEYWORD_FOR)),
                 ("i", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
                 ("in", fg(TokenScopeId::KEYWORD_IN)),
-                ("1 2 3", fg(TokenScopeId::PARAM)),
+                ("1", fg(TokenScopeId::ARGUMENT_NUMBER)),
+                ("2", fg(TokenScopeId::ARGUMENT_NUMBER)),
+                ("3", fg(TokenScopeId::ARGUMENT_NUMBER)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
@@ -2255,11 +2463,11 @@ mod tests {
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
                 ("foo", fg(TokenScopeId::VARIABLE), ns),
                 ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
-                ("1", fg(TokenScopeId::PARAM)),
+                ("1", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
                 ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
                 ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
-                ("2", fg(TokenScopeId::PARAM)),
-                ("]", fg(TokenScopeId::VARIABLE_SLICE)),
+                ("2", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
+                ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
                 ("[3]", fg(TokenScopeId::PARAM)), // two dollar signs, so last one is not an expansion
             );
 
@@ -2324,6 +2532,22 @@ mod tests {
                 ("|&", fg(TokenScopeId::END_PIPE)),
                 ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
                 ("stuff", fg(TokenScopeId::PARAM)),
+            );
+
+            // An assignment's value is an argument of its own, so a bare literal narrows.
+            validate!(
+                ("dup", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
+                ("2", fg(TokenScopeId::ARGUMENT_NUMBER), ns),
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("--", fg(TokenScopeId::OPTION)),
+                ("123", fg(TokenScopeId::ARGUMENT_NUMBER)),
+            );
+            validate!(
+                ("flag", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL_EXPORTED)),
+                ("=", fg(TokenScopeId::OPERATOR_ASSIGNMENT), ns),
+                ("true", fg(TokenScopeId::ARGUMENT_BOOLEAN), ns),
+                ("echo", fg(TokenScopeId::BUILTIN)),
             );
 
             validate!(

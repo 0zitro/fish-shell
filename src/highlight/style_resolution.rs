@@ -900,6 +900,57 @@ mod tests {
 
     #[test]
     #[serial]
+    fn a_bare_literal_narrows_its_argument_class() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_param"), &[L!("brred")]);
+        let fg = |classifications: &[HighlightClassification], index: usize| {
+            colors.style_of(classifications[index]).fg
+        };
+
+        // A literal keeps the argument colour until its own class names one.
+        let echo = colors.classify(L!("echo 123 true abc"));
+        assert_eq!(fg(&echo, 5), color(L!("brred")), "a number is an argument");
+        assert_eq!(fg(&echo, 9), color(L!("brred")), "a boolean is an argument");
+        assert_eq!(fg(&echo, 14), color(L!("brred")), "an argument");
+
+        colors.set(L!("fish_color_argument_number"), &[L!("brblue")]);
+        colors.set(L!("fish_color_argument_boolean"), &[L!("bryellow")]);
+        let echo = colors.classify(L!("echo 123 true abc"));
+        assert_eq!(fg(&echo, 5), color(L!("brblue")), "the number class");
+        assert_eq!(fg(&echo, 9), color(L!("bryellow")), "the boolean class");
+        assert_eq!(fg(&echo, 14), color(L!("brred")), "the argument class");
+
+        // A slice bound names a position, so it is a number as well.
+        let slice = colors.classify(L!("echo $x[1..2]"));
+        assert_eq!(fg(&slice, 8), color(L!("brblue")), "a bound");
+        assert_eq!(fg(&slice, 11), color(L!("brblue")), "another bound");
+
+        // A long option's value is an argument of its own, so it narrows too.
+        let option = colors.classify(L!("echo --opt=1"));
+        assert_eq!(fg(&option, 11), color(L!("brblue")), "a value");
+
+        // So is the value an assignment gives the name it defines.
+        let assignment = colors.classify(L!("dup=2 echo"));
+        assert_eq!(fg(&assignment, 4), color(L!("brblue")), "an assigned value");
+
+        // A dup's descriptor names a descriptor, which is a number, so the number class
+        // reaches it; the descriptor's own class still wins.
+        let dup = colors.classify(L!("true 2>&1"));
+        assert_eq!(fg(&dup, 8), color(L!("brblue")), "a descriptor");
+        colors.set(L!("fish_color_redirection_dup_target"), &[L!("brgreen")]);
+        let dup = colors.classify(L!("true 2>&1"));
+        assert_eq!(fg(&dup, 8), color(L!("brgreen")), "the descriptor class");
+
+        // The builtin words inherit the boolean class; their own class still wins.
+        let word = colors.classify(L!("true"));
+        assert_eq!(fg(&word, 0), color(L!("bryellow")), "the builtin inherits");
+        colors.set(L!("fish_color_builtin_boolean"), &[L!("brmagenta")]);
+        let word = colors.classify(L!("true"));
+        assert_eq!(fg(&word, 0), color(L!("brmagenta")), "the builtin class");
+    }
+
+    #[test]
+    #[serial]
     fn a_builtin_word_and_a_keyword_word_resolve_through_their_family() {
         let colors = Colors::new();
         colors.set(L!("fish_color_builtin"), &[L!("green")]);
