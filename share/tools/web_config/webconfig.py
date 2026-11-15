@@ -860,6 +860,12 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def write_to_wfile(self, txt):
         self.wfile.write(txt.encode("utf-8"))
 
+    # Every answer states a file or the machine's state as it is at the moment it is asked, and
+    # loading the page again is how a change to either is taken up, so no answer is worth storing.
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_get_colors(self):
         """The colours of the theme in force, which the page paints with.
 

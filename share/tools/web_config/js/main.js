@@ -25,6 +25,17 @@ function resolution_of(colourVariableOf, variableOfPath, piece) {
     return resolution;
 }
 
+// The colour the picker states.  It is stated outside the page's data and written to the drawings
+// and the readouts directly: a pointer states a colour more often than a frame is drawn, and the
+// picker's live statement is four strings and six positions, so a drag writes them rather than
+// re-rendering anything.  The picker at oklch.com states its own in the same way, which is what
+// keeps it able to follow a pointer on a 144 Hz display.
+let pickerLive = { l: 0.5, c: 0.1, h: 90 };
+
+// Whether a pointer has stated a colour since the picker opened, which is what says whether
+// closing it writes the theme.
+let pickerStated = false;
+
 // The sample's runs that carry each mark are set as a class where the mark changes, rather than
 // read by a binding on each run: the pointer crossing the list changes the mark with every row,
 // and a binding per run would restate a class for every run in the sample each time.
@@ -332,6 +343,50 @@ document.addEventListener("alpine:init", () => {
             if (run) run.classList.toggle(className, marked);
         },
 
+        // A run of the sample is drawn from the theme variable that supplies each of its colours,
+        // and the sample holds what each variable is.  Stating the runs is therefore what a change
+        // to the theme's shape asks for, and a colour change asks only for the variable that
+        // changed: a drag of the colour picker writes one variable's channels per frame.
+        applyRunStyle(run, piece) {
+            const style = this.runStyleForPiece(piece);
+            run.style.cssText = Object.keys(style)
+                .map((property) => property + ": " + style[property])
+                .join("; ");
+        },
+
+        applyRunStyles() {
+            const sample = this.$refs.sampleRows;
+            if (!sample) return;
+            for (const run of sample.querySelectorAll(".colour_sample_piece")) {
+                const piece = this.colourSample[Number(run.dataset.pieceIndex)];
+                if (piece) this.applyRunStyle(run, piece);
+            }
+        },
+
+        // What the sample holds a variable's colours in, for the runs that name it.  A channel the
+        // variable does not state is removed, so a run that reads it falls back to what it
+        // inherits.
+        applySampleColour(variable) {
+            const sample = this.$refs.sampleRows;
+            if (!sample) return;
+            const specification = this.currentColorScheme().colordata[variable];
+            const channels = {
+                foreground: specification ? specification.color : undefined,
+                background: specification ? specification.background : undefined,
+                underline: specification ? specification["underline-color"] : undefined,
+            };
+            for (const [channel, value] of Object.entries(channels)) {
+                const property = "--" + channel + "-" + variable;
+                if (value) sample.style.setProperty(property, interpret_color(value));
+                else sample.style.removeProperty(property);
+            }
+        },
+
+        // What the sample holds for every colour variable, which is what a theme states.
+        applySampleColours() {
+            for (const entry of this.colourVariables) this.applySampleColour(entry.variable);
+        },
+
         // The style a stop's own variable renders: its value, else the chain it resolves
         // through, else the root.  An unset stop renders by what it inherits, which is what
         // a colour set at it would override.
@@ -419,6 +474,7 @@ document.addEventListener("alpine:init", () => {
             }
             this.noteThemeChanged();
             this.refreshThemeStatement();
+            this.applyRunStyles();
         },
 
         // The page's own text colour, which a variable with no foreground inherits.
@@ -476,6 +532,18 @@ document.addEventListener("alpine:init", () => {
         // contributes its own fields, a more specific one after a less specific one, and
         // `--reset` clears the fields before it writes.
         styleForPiece(piece) {
+            return this.styleOf(this.compositionForPiece(piece));
+        },
+
+        // What a run of the sample is drawn with: the same composition, with every colour stated
+        // as the theme variable that supplies it.  A run's colour is therefore moved by moving one
+        // custom property, which is what a drag of the colour picker does once per frame, rather
+        // than by restating the run.
+        runStyleForPiece(piece) {
+            return this.runStyleOf(this.compositionForPiece(piece));
+        },
+
+        compositionForPiece(piece) {
             const colours = this.currentColorScheme().colordata;
             const resolution = this.resolutionOf(piece);
             let named = {};
@@ -485,7 +553,7 @@ document.addEventListener("alpine:init", () => {
             for (const variable of piece.attributes) {
                 named = this.writeAttribute(named, variable, colours);
             }
-            return this.styleOf(named);
+            return named;
         },
 
         // The fields each channel composes: the foreground channel takes the flags and
@@ -500,14 +568,16 @@ document.addEventListener("alpine:init", () => {
             return resolution_of(this.colourVariableOf, this.variableOfPath, piece);
         },
 
-        // The fields a value has.
-        namedFieldsOf(specification) {
+        // The fields a value has, each stated beside the variable that supplied it: the run's style
+        // names the variable, and the sample states what the variable is.
+        namedFieldsOf(variable, specification) {
             const named = {};
             if (!specification) return named;
-            if (specification.color) named.foreground = specification.color;
-            if (specification.background) named.background = specification.background;
-            if (specification["underline-color"])
-                named.underline_colour = specification["underline-color"];
+            if (specification.color) named.foreground = { variable, value: specification.color };
+            if (specification.background) named.background = { variable, value: specification.background };
+            if (specification["underline-color"]) {
+                named.underline_colour = { variable, value: specification["underline-color"] };
+            }
             const flags = {};
             for (const flag of ["bold", "italics", "underline", "dim", "reverse", "strikethrough"]) {
                 if (specification[flag]) flags[flag] = specification[flag];
@@ -523,7 +593,7 @@ document.addEventListener("alpine:init", () => {
                 if (specification && specification.reset) {
                     for (const field of fields) delete named[field];
                 }
-                const namedFields = this.namedFieldsOf(specification);
+                const namedFields = this.namedFieldsOf(variable, specification);
                 for (const field of fields) {
                     if (namedFields[field] !== undefined) named[field] = namedFields[field];
                 }
@@ -537,7 +607,7 @@ document.addEventListener("alpine:init", () => {
             const attribute = this.attributeOf[variable];
             if (!attribute) return named;
             const specification = colours[variable];
-            const namedFields = this.namedFieldsOf(specification);
+            const namedFields = this.namedFieldsOf(variable, specification);
             if (attribute.mode === "merge" && !specification) return named;
             for (const field of attribute.fields) {
                 if (attribute.mode === "merge" && specification.reset) delete named[field];
@@ -549,27 +619,62 @@ document.addEventListener("alpine:init", () => {
             return named;
         },
 
-        // The CSS properties a composed style has.
+        // The CSS properties a composed style has, with each colour resolved to what the terminal
+        // shows it as.
         styleOf(named) {
             const css = {};
             let foreground = named.foreground;
             let background = named.background;
             const flags = named.flags || {};
             if (flags.reverse) [foreground, background] = [background, foreground];
-            if (foreground) css["color"] = interpret_color(foreground);
-            if (background) css["background-color"] = interpret_color(background);
+            if (foreground) css["color"] = interpret_color(foreground.value);
+            if (background) css["background-color"] = interpret_color(background.value);
+            const decorations = this.decorationsOf(flags, named);
+            if (Object.keys(decorations).length) Object.assign(css, decorations);
+            if (named.underline_colour) {
+                css["text-decoration-color"] = interpret_color(named.underline_colour.value);
+            }
+            return css;
+        },
+
+        // The CSS properties a run of the sample has: the same, with each colour stated as the
+        // custom property the sample holds that variable in.
+        runStyleOf(named) {
+            const css = {};
+            let foreground = named.foreground;
+            let background = named.background;
+            const flags = named.flags || {};
+            if (flags.reverse) [foreground, background] = [background, foreground];
+            if (foreground) css["color"] = this.colourVariableReference("foreground", foreground.variable);
+            if (background) {
+                css["background-color"] = this.colourVariableReference("background", background.variable);
+            }
+            const decorations = this.decorationsOf(flags, named);
+            if (Object.keys(decorations).length) Object.assign(css, decorations);
+            if (named.underline_colour) {
+                css["text-decoration-color"] =
+                    this.colourVariableReference("underline", named.underline_colour.variable);
+            }
+            return css;
+        },
+
+        // The custom property the sample holds a variable's colour in, for the channel that reads
+        // it: a variable's foreground, background and underline colour are stated apart because a
+        // run may show one of them and inherit another.
+        colourVariableReference(channel, variable) {
+            return "var(--" + channel + "-" + variable + ")";
+        },
+
+        // What the flags of a composed style state, apart from its colours.
+        decorationsOf(flags, named) {
+            const css = {};
             if (flags.bold) css["font-weight"] = "bold";
             if (flags.italics) css["font-style"] = "italic";
             if (flags.dim) css["opacity"] = "0.6";
             const decorations = [];
-            if (flags.underline) {
-                decorations.push("underline " + css_underline_style(flags.underline));
-            }
+            if (flags.underline) decorations.push("underline " + css_underline_style(flags.underline));
             if (flags.strikethrough) decorations.push("line-through");
             if (decorations.length) css["text-decoration"] = decorations.join(" ");
-            if (named.underline_colour) {
-                css["text-decoration-color"] = interpret_color(named.underline_colour);
-            }
             return css;
         },
 
@@ -617,7 +722,11 @@ document.addEventListener("alpine:init", () => {
             this.showSaveButton = true;
 
             this.noteThemeChanged();
-            this.$nextTick(() => this.refreshMarks());
+            this.$nextTick(() => {
+                this.applySampleColours();
+                this.applyRunStyles();
+                this.refreshMarks();
+            });
         },
 
         text_color_for_color: text_color_for_color,
@@ -680,6 +789,8 @@ document.addEventListener("alpine:init", () => {
                     style["outline"] = "2px solid " + this.defaultTextColour();
                     style["outline-offset"] = "-2px";
                 }
+            } else if (cell.kind === "swatch") {
+                style["background-color"] = this.selectedFieldHex() || "transparent";
             } else if (cell.kind === "hex") {
                 style["color"] = this.defaultTextColour();
             }
@@ -699,23 +810,276 @@ document.addEventListener("alpine:init", () => {
             return this.hexOf(this.selectedFieldColour());
         },
 
-        // The value the colour picker starts from when it opens.
-        colourSwatchValue() {
-            return this.selectedFieldHex() || "#000000";
+        // The colour picker: three cards, each holding one channel where the cursor has it and
+        // drawing the plane the other two span, so the shape a card shows is what the screen can
+        // show of that plane; the strip under it states the held channel itself.  A point of a
+        // card is a colour, so the cursor is a pair of lines meeting on it and the three cards
+        // move together: a card's shape changes as the pointer moves in another.
+        pickerOpen: false,
+        pickerFocus: "l",
+        pickerListeners: null,
+        pickerOpenedAt: null,
+
+        pickerCards() {
+            return ["l", "c", "h"];
         },
 
-        // The picker running while the colour changes: the theme takes the colour at once,
-        // and the line the theme file has for the scope follows when the picker closes.  The
-        // colour is stated the way the theme file states it, which is hex without the `#`
-        // the picker's value carries.
-        liveSwatchColour(event) {
-            this.changeSelectedColor(event.target.value.replace(/^#/, ""), false);
+        pickerTitle(channel) {
+            return { l: "Lightness", c: "Chroma", h: "Hue" }[channel];
         },
 
-        // The picker closing: the line is re-derived from the value.
-        commitSwatchColour() {
+        // The channel as the picker states it: the hue in degrees, the others as what they are.
+        pickerValue(channel) {
+            if (channel === "h") return Math.round(pickerLive.h) + "°";
+            if (channel === "l") return pickerLive.l.toFixed(3);
+            return pickerLive.c.toFixed(3);
+        },
+
+        // Where along its strip a channel is stated, as the fraction of the whole range the axis
+        // states — the same range the card above the strip draws, so the handle is under the colour
+        // it states and stays there as the other channels move.
+        pickerFraction(channel) {
+            return pickerLive[channel] / oklch_axis_extent[channel];
+        },
+
+        pickerHex() {
+            return hex_from_oklch(pickerLive.l, pickerLive.c, pickerLive.h);
+        },
+
+        // Where the cursor sits in a card's plane, as the fraction of each axis: the vertical one
+        // is stated as the offset from the bottom, which is what the chart's line measures from,
+        // and it grows upward as the plot's axis does.
+        pickerCrosshair(held) {
+            const plane = oklch_slice_planes.find((entry) => entry.id === held);
+            return {
+                horizontal: pickerLive[plane.horizontal] / oklch_axis_extent[plane.horizontal],
+                vertical: pickerLive[plane.vertical] / oklch_axis_extent[plane.vertical],
+            };
+        },
+
+        pickerAxisLabel(held, axis) {
+            return oklch_slice_planes.find((plane) => plane.id === held)[axis].toUpperCase();
+        },
+
+        // The picker opens on the colour the field has now, so it shows where the colour is
+        // rather than starting from a corner of the space.  The click that opens it is outside
+        // it, so the picker states when it opened and closes on the clicks that follow.
+        togglePicker(event) {
+            if (this.pickerOpen) {
+                this.closePicker();
+                return;
+            }
+            this.pickerOpenedAt = event ? event.timeStamp : null;
+            pickerLive = oklch_from_hex(this.selectedFieldHex() || "#000000");
+            this.pickerFocus = "l";
+            this.pickerOpen = true;
+            this.$nextTick(() => {
+                if (this.$refs.picker) this.$refs.picker.focus();
+            });
+            // The picker is drawn once it has been laid out, which is what the frame after the
+            // class change is for.
+            window.requestAnimationFrame(() => {
+                this.measurePickerCharts();
+                this.refreshPicker();
+            });
+        },
+
+        // Closing states the line for the colour that was chosen, when a pointer stated one: a
+        // picker opened and closed again states nothing, so nothing is written.  The colour itself
+        // was shown as the pointer moved, and the line is what the theme file has for it.
+        closePicker() {
+            if (!this.pickerOpen) return;
+            this.pickerOpen = false;
+            this.endPickerDrag();
+            if (pickerStated) {
+                pickerStated = false;
+                // A theme value is written as a hex without its `#`, or as the palette name it
+                // names; the picker states the hex.
+                this.changeSelectedColor(this.pickerHex());
+                return;
+            }
             this.noteThemeChanged();
             this.refreshThemeStatement();
+        },
+
+        // A click anywhere else closes the picker, except the click that opened it.
+        closePickerOutside(event) {
+            if (this.pickerOpenedAt !== null && event.timeStamp - this.pickerOpenedAt < 100) return;
+            this.closePicker();
+        },
+
+        // The colour a pointer states is written where it shows, at the moment it is stated: the
+        // sample's own variable for the field being edited, and everything the picker shows of it.
+        // Nothing in the page's data is written, so a drag re-renders nothing and states a colour
+        // as often as the pointer moves; the theme is written when the picker closes.
+        previewPickerColour() {
+            pickerStated = true;
+            const sample = this.$refs.sampleRows;
+            if (sample) {
+                const channel = {
+                    foreground: "foreground",
+                    background: "background",
+                    underline_colour: "underline",
+                }[this.editingField];
+                sample.style.setProperty("--" + channel + "-" + this.selectedColorSetting, "#" + this.pickerHex());
+            }
+            this.refreshPicker();
+        },
+
+        // Everything the picker shows of a colour, written where it is shown: the readouts, the
+        // handles, the crosshairs and the drawings.  One statement, made once per frame, rather
+        // than a binding on each of them, which would re-render the picker for every pointer move.
+        refreshPicker() {
+            const picker = this.$refs.picker;
+            if (!picker) return;
+            const hex = this.pickerHex();
+            for (const canvas of picker.querySelectorAll("canvas[data-picker-card]")) {
+                const channel = canvas.dataset.pickerCard;
+                const card = canvas.closest(".colour_picker_card");
+                const crosshair = this.pickerCrosshair(channel);
+                const chart = card.querySelector(".colour_picker_chart");
+                chart.style.setProperty("--picker-x", crosshair.horizontal * 100 + "%");
+                chart.style.setProperty("--picker-y", crosshair.vertical * 100 + "%");
+                card.querySelector(".colour_picker_value").textContent = this.pickerValue(channel);
+                card.querySelector(".colour_picker_thumb").style.left = this.pickerFraction(channel) * 100 + "%";
+            }
+            picker.querySelector(".colour_picker_chip").style.backgroundColor = "#" + hex;
+            picker.querySelector(".colour_picker_hex").textContent = "#" + hex;
+            // Every drawing is made, not only the one that moved: a card's shape is the plane the
+            // other two channels span, and a drag states two of them, so any move can change any
+            // card, and a strip is the line its channel takes through the plane above it.
+            for (const canvas of picker.querySelectorAll("canvas[data-picker-card]")) {
+                const { axes, extents } = oklch_card_axes(canvas.dataset.pickerCard);
+                draw_oklch_chart(canvas, axes, extents, pickerLive);
+            }
+            for (const canvas of picker.querySelectorAll("canvas[data-picker-strip]")) {
+                const { axes, extents } = oklch_strip_axes(canvas.dataset.pickerStrip);
+                draw_oklch_chart(canvas, axes, extents, pickerLive);
+            }
+        },
+
+        // A drawing is made at the size it is shown at, so the size is measured when the picker
+        // opens and when the page states a new one rather than on every frame of a drag.
+        // A drawing is stated in the display's pixels, so what it is laid out at is snapped to them
+        // when the drawing is measured: a drawing laid out at a fraction of a pixel more or less than
+        // it was made at is a drawing the browser scales, and a line stated one pixel wide is then
+        // shown a pixel and a fraction wide, with rows doubled and dropped to keep the size.
+        measurePickerCharts() {
+            const picker = this.$refs.picker;
+            if (!picker) return;
+            for (const canvas of picker.querySelectorAll("canvas")) oklch_chart_measure(canvas);
+        },
+
+        // A point of a card states the two channels the card spans: the colour changes as the
+        // pointer moves, and the line the theme states follows when the picker closes.  The place a
+        // drag counts from is measured when the drag takes hold — once, not once per move, since
+        // measuring makes the page lay out — so the fractions are of the box the pointer is actually
+        // in and no measure of an earlier frame can put them somewhere the drawing is not.
+        startCardDrag(held, event) {
+            event.preventDefault();
+            this.pickerFocus = held;
+            const canvas = this.$refs.picker.querySelector('canvas[data-picker-card="' + held + '"]');
+            if (!canvas) return;
+            const box = canvas.getBoundingClientRect();
+            if (!box.width || !box.height) return;
+            this.setCardChannels(held, event, box);
+            this.followCard(held, box);
+        },
+
+        followCard(held, box) {
+            const move = (moveEvent) => this.setCardChannels(held, moveEvent, box);
+            const stop = () => this.endPickerDrag();
+            this.pickerListeners = { move, stop };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", stop, { once: true });
+            window.addEventListener("pointercancel", stop, { once: true });
+        },
+
+        setCardChannels(held, event, box) {
+            const horizontal = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
+            const vertical = Math.min(Math.max((event.clientY - box.top) / box.height, 0), 1);
+            this.statePickerChannels(held, horizontal, 1 - vertical);
+        },
+
+        // The colour a card states is written where it shows as the pointer states it.
+        statePickerChannels(held, horizontal, vertical) {
+            const plane = oklch_slice_planes.find((entry) => entry.id === held);
+            pickerLive = {
+                ...pickerLive,
+                [plane.horizontal]: horizontal * oklch_axis_extent[plane.horizontal],
+                [plane.vertical]: vertical * oklch_axis_extent[plane.vertical],
+            };
+            this.previewPickerColour();
+        },
+
+        // The strip under a card states the channel the card holds, and counts from the place the
+        // drag took hold of for the same reason a card does.
+        startRangeDrag(channel, event) {
+            event.preventDefault();
+            this.pickerFocus = channel;
+            const track = this.$refs.picker.querySelector('[data-picker-range="' + channel + '"]');
+            if (!track) return;
+            const box = track.getBoundingClientRect();
+            if (!box.width) return;
+            this.setRangeChannel(channel, event, box);
+            this.followRange(channel, box);
+        },
+
+        followRange(channel, box) {
+            const move = (moveEvent) => this.setRangeChannel(channel, moveEvent, box);
+            const stop = () => this.endPickerDrag();
+            this.pickerListeners = { move, stop };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", stop, { once: true });
+            window.addEventListener("pointercancel", stop, { once: true });
+        },
+
+        setRangeChannel(channel, event, box) {
+            const fraction = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
+            pickerLive = { ...pickerLive, [channel]: fraction * oklch_axis_extent[channel] };
+            this.previewPickerColour();
+        },
+
+        endPickerDrag() {
+            if (!this.pickerListeners) return;
+            window.removeEventListener("pointermove", this.pickerListeners.move);
+            window.removeEventListener("pointerup", this.pickerListeners.stop);
+            window.removeEventListener("pointercancel", this.pickerListeners.stop);
+            this.pickerListeners = null;
+        },
+
+        // The keyboard in the picker: the arrows move the two channels of the card the picker
+        // points at, escape closes the picker.
+        onPickerKey(event) {
+            const held = this.pickerFocus;
+            const plane = oklch_slice_planes.find((entry) => entry.id === held);
+            const steps = { horizontal: 0, vertical: 0 };
+            steps.horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight" ? 1 / 200 : 0;
+            steps.vertical = event.key === "ArrowUp" || event.key === "ArrowDown" ? 1 / 200 : 0;
+            if (!steps.horizontal && !steps.vertical) {
+                if (event.key !== "Escape") return false;
+                this.closePicker();
+                event.preventDefault();
+                event.stopPropagation();
+                return true;
+            }
+            const horizontal = pickerLive[plane.horizontal] +
+                (event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0) *
+                    steps.horizontal *
+                    oklch_axis_extent[plane.horizontal];
+            const vertical = pickerLive[plane.vertical] +
+                (event.key === "ArrowUp" ? 1 : event.key === "ArrowDown" ? -1 : 0) *
+                    steps.vertical *
+                    oklch_axis_extent[plane.vertical];
+            pickerLive = {
+                ...pickerLive,
+                [plane.horizontal]: Math.min(Math.max(horizontal, 0), oklch_axis_extent[plane.horizontal]),
+                [plane.vertical]: Math.min(Math.max(vertical, 0), oklch_axis_extent[plane.vertical]),
+            };
+            this.previewPickerColour();
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
         },
 
         // The fields the style pane offers, in the order it lists them.
@@ -853,6 +1217,8 @@ document.addEventListener("alpine:init", () => {
 
         // The pane the keyboard is in takes the focus, so that the arrows reach it.
         focusPane(pane) {
+            // The picker belongs to the colour pane; a pane stated elsewhere closes it.
+            if (pane !== "colour") this.closePicker();
             this.pane = pane;
             this.$nextTick(() => {
                 const refs = {
@@ -862,7 +1228,9 @@ document.addEventListener("alpine:init", () => {
                     style: this.$refs.stylePane,
                     colour: this.$refs.colourPane,
                 };
-                const ref = refs[pane];
+                // The picker lies over the colour pane, so while it is open it is what the colour
+                // pane's focus means: the keys the picker takes are the ones being asked for.
+                const ref = pane === "colour" && this.pickerOpen ? this.$refs.picker : refs[pane];
                 if (ref && typeof ref.focus === "function") ref.focus();
             });
         },
@@ -1031,6 +1399,12 @@ document.addEventListener("alpine:init", () => {
                 }
             }
             this.sashes = sashes;
+            // A drawing states its size in its own pixels, so a page that resized is what asks the
+            // drawings to be measured and made at the size they are shown at now.
+            if (this.pickerOpen) {
+                this.measurePickerCharts();
+                this.refreshPicker();
+            }
         },
 
         // The length a pane has along the axis an edge moves on.
@@ -1375,14 +1749,14 @@ document.addEventListener("alpine:init", () => {
         // Activate one cell of the colour pane: the clear cell unsets the scope, the swatch
         // opens a colour picker for the field the style pane writes, and a colour cell sets
         // that colour.  The hex beside the swatch is a readout and does nothing.
-        activateColourCell(cell) {
+        activateColourCell(cell, event) {
             if (!cell) return;
             switch (cell.kind) {
                 case "unset":
                     this.unsetSelectedScope();
                     break;
                 case "swatch":
-                    if (this.$refs.colourSwatch) this.$refs.colourSwatch.click();
+                    this.togglePicker(event);
                     break;
                 case "colour":
                     this.changeSelectedColor(cell.colour);
@@ -1399,6 +1773,8 @@ document.addEventListener("alpine:init", () => {
             delete scheme.colors[this.selectedColorSetting];
             this.noteThemeChanged();
             this.refreshThemeStatement();
+            this.applySampleColour(this.selectedColorSetting);
+            this.applyRunStyles();
         },
 
         // A specification with no field: the value a scope starts from before a field is set.
@@ -1421,7 +1797,7 @@ document.addEventListener("alpine:init", () => {
         // Whether a specification has a field.  A value with no field overrides nothing, so
         // the rail renders it like an unset variable.
         hasColourFields(specification) {
-            return !!specification && Object.keys(this.namedFieldsOf(specification)).length > 0;
+            return !!specification && Object.keys(this.namedFieldsOf(undefined, specification)).length > 0;
         },
 
         // The words of the selected variable's line.  A variable absent from the theme has
@@ -1530,6 +1906,8 @@ document.addEventListener("alpine:init", () => {
             this.applyingStatement = false;
             this.refreshStatementPieces();
             this.noteThemeChanged();
+            this.applySampleColour(variable);
+            this.applyRunStyles();
         },
 
         // A keystroke in the editor re-colours the line under it.  Reading the line back into
@@ -1547,6 +1925,9 @@ document.addEventListener("alpine:init", () => {
         // Change the scope the picker edits.  The rail, the line and the style pane read
         // from it, so one call re-derives the page's panes.
         selectColorSetting(variable) {
+            // The colour picker shows the colour of the scope it was opened on, so a scope stated
+            // elsewhere closes it.
+            this.closePicker();
             this.selectedColorSetting = variable;
             this.csUserVisibleTitle = this.titleForSetting(variable);
             this.refreshThemeStatement();
@@ -1597,7 +1978,16 @@ document.addEventListener("alpine:init", () => {
             }
             this.currentColorScheme().colors[this.selectedColorSetting] = specification.color;
             this.noteThemeChanged();
-            if (serialise) this.refreshThemeStatement();
+            // The sample holds each variable's colours, so a colour is stated by moving one
+            // variable's channels: a run is not restated, which is what lets the picker follow the
+            // pointer on every frame of a drag.
+            this.applySampleColour(this.selectedColorSetting);
+            if (serialise) {
+                // A colour stated anywhere but the picker closes it: the picker shows the colour
+                // of the field it was opened on, and that colour is no longer the field's.
+                this.closePicker();
+                this.refreshThemeStatement();
+            }
         },
 
         sampleTerminalBackgroundColors: [
@@ -1709,6 +2099,24 @@ document.addEventListener("alpine:init", () => {
             }
         },
 
+        // A page zoom states a new display ratio without stating a new layout, and the drawings are
+        // made in the pixels of that ratio: a ratio taken up nowhere leaves them made for the ratio
+        // they had and shown at the one they are in, which is a resampling of every pixel the
+        // drawings state.  So the ratio is watched, and what was drawn is measured again when it
+        // changes.
+        watchPixelRatio() {
+            const ratio = window.devicePixelRatio || 1;
+            const query = window.matchMedia("(resolution: " + ratio + "dppx)");
+            const onChange = () => {
+                query.removeEventListener("change", onChange);
+                this.watchPixelRatio();
+                if (!this.pickerOpen) return;
+                this.measurePickerCharts();
+                this.refreshPicker();
+            };
+            query.addEventListener("change", onChange);
+        },
+
         async init() {
             // The prompt is in the document before anything is fetched, so its width is
             // measured before the line can have anything to draw.
@@ -1716,6 +2124,7 @@ document.addEventListener("alpine:init", () => {
                 this.observeStatementPrompt();
                 this.layoutSashes();
                 new ResizeObserver(() => this.layoutSashes()).observe(this.$refs.panes);
+                this.watchPixelRatio();
             });
             let schemes = await (await fetch("colors/")).json();
             this.colourSample = await (await fetch("colour_sample/")).json();
