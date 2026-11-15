@@ -295,9 +295,10 @@ pub fn autosuggest_validate_from_history(
 fn classify_slice(
     region: &wstr,
     parameters: Option<&FunctionParameterList>,
+    enclosing: EnclosingScopeSet,
     classifications: &mut [HighlightClassification],
 ) {
-    let slice = HighlightClassification::from(TokenScopeId::VARIABLE_SLICE);
+    let slice = word_classification(TokenScopeId::VARIABLE_SLICE, enclosing);
     classifications.fill(slice);
     if region.len() < 2 {
         return;
@@ -328,6 +329,7 @@ fn classify_slice(
                 classify_slice_bound(
                     &bounds[start..idx],
                     parameters,
+                    enclosing,
                     &mut bound_classifications[start..idx],
                 );
                 idx += 2;
@@ -339,6 +341,7 @@ fn classify_slice(
     classify_slice_bound(
         &bounds[start..],
         parameters,
+        enclosing,
         &mut bound_classifications[start..],
     );
 }
@@ -347,13 +350,14 @@ fn classify_slice(
 fn classify_slice_bound(
     bound: &wstr,
     parameters: Option<&FunctionParameterList>,
+    enclosing: EnclosingScopeSet,
     classifications: &mut [HighlightClassification],
 ) {
     let scope = bare_slice_bound_scope(bound).unwrap_or(TokenScopeId::VARIABLE_SLICE);
     classify_word(
         bound,
         parameters,
-        HighlightClassification::from(scope),
+        word_classification(scope, enclosing),
         classifications,
     );
 }
@@ -377,14 +381,16 @@ fn bare_slice_bound_scope(bound: &wstr) -> Option<TokenScopeId> {
 fn classify_variable(
     inp: &wstr,
     parameters: Option<&FunctionParameterList>,
+    enclosing: EnclosingScopeSet,
     classifications: &mut [HighlightClassification],
 ) -> usize {
     assert_eq!(inp.char_at(0), '$');
-    let sigil = HighlightClassification::from(TokenScopeId::VARIABLE_SIGIL);
-    let dereference = HighlightClassification::from(TokenScopeId::VARIABLE_SIGIL_DEREFERENCE);
-    let variable = HighlightClassification::from(TokenScopeId::VARIABLE);
-    let dollar = HighlightClassification::from(TokenScopeId::OPERATOR_DOLLAR);
-    let invalid = HighlightClassification::from(TokenScopeId::ERROR);
+    let leaf = |scope| word_classification(scope, enclosing);
+    let sigil = leaf(TokenScopeId::VARIABLE_SIGIL);
+    let dereference = leaf(TokenScopeId::VARIABLE_SIGIL_DEREFERENCE);
+    let variable = leaf(TokenScopeId::VARIABLE);
+    let dollar = leaf(TokenScopeId::OPERATOR_DOLLAR);
+    let invalid = leaf(TokenScopeId::ERROR);
 
     // The run of dollars: the one adjacent to what the reference reads is the sigil, and
     // the ones before it dereference it.
@@ -430,7 +436,7 @@ fn classify_variable(
     let name = &inp[name_start..idx];
     let name_classification = parameters
         .and_then(|parameters| parameters.find_parameter_scope(name))
-        .map_or(variable, HighlightClassification::from);
+        .map_or(variable, |scope| word_classification(scope, enclosing));
     classifications[name_start..idx].fill(name_classification);
 
     // Handle a slice, up to dollar_count of them. Note that we currently don't do any validation of
@@ -441,6 +447,7 @@ fn classify_variable(
                 classify_slice(
                     &inp[idx..idx + slice_len],
                     parameters,
+                    enclosing,
                     &mut classifications[idx..idx + slice_len],
                 );
                 idx += slice_len;
@@ -462,6 +469,18 @@ fn classify_variable(
     idx
 }
 
+/// The classification of one character of a word: the scope it has there, inside the scopes
+/// that enclose the word.
+///
+/// The constructs around a word enclose its characters too, so every class the word
+/// classifier states is stated inside them.
+fn word_classification(
+    scope: TokenScopeId,
+    enclosing: EnclosingScopeSet,
+) -> HighlightClassification {
+    HighlightClassification::from(scope).with_enclosing(enclosing)
+}
+
 /// This function is a disaster badly in need of refactoring. It colors an argument or command,
 /// without regard to command substitutions.
 fn classify_word(
@@ -470,17 +489,19 @@ fn classify_word(
     base: HighlightClassification,
     classifications: &mut [HighlightClassification],
 ) {
-    let operator = HighlightClassification::from(TokenScopeId::OPERATOR);
-    let invalid = HighlightClassification::from(TokenScopeId::ERROR);
-    let escape = HighlightClassification::from(TokenScopeId::ESCAPE);
-    let glob = HighlightClassification::from(TokenScopeId::OPERATOR_GLOB);
-    let brace = HighlightClassification::from(TokenScopeId::OPERATOR_BRACE);
-    let parenthesis = HighlightClassification::from(TokenScopeId::OPERATOR_PARENTHESIS);
-    let tilde = HighlightClassification::from(TokenScopeId::OPERATOR_TILDE);
-    let delimiter_single = HighlightClassification::from(TokenScopeId::QUOTE_SINGLE_DELIMITER);
-    let delimiter_double = HighlightClassification::from(TokenScopeId::QUOTE_DOUBLE_DELIMITER);
-    let quoted_single = HighlightClassification::from(TokenScopeId::QUOTE_SINGLE);
-    let quoted_double = HighlightClassification::from(TokenScopeId::QUOTE_DOUBLE);
+    let enclosing = base.enclosing();
+    let leaf = |scope| word_classification(scope, enclosing);
+    let operator = leaf(TokenScopeId::OPERATOR);
+    let invalid = leaf(TokenScopeId::ERROR);
+    let escape = leaf(TokenScopeId::ESCAPE);
+    let glob = leaf(TokenScopeId::OPERATOR_GLOB);
+    let brace = leaf(TokenScopeId::OPERATOR_BRACE);
+    let parenthesis = leaf(TokenScopeId::OPERATOR_PARENTHESIS);
+    let tilde = leaf(TokenScopeId::OPERATOR_TILDE);
+    let delimiter_single = leaf(TokenScopeId::QUOTE_SINGLE_DELIMITER);
+    let delimiter_double = leaf(TokenScopeId::QUOTE_DOUBLE_DELIMITER);
+    let quoted_single = leaf(TokenScopeId::QUOTE_SINGLE);
+    let quoted_double = leaf(TokenScopeId::QUOTE_DOUBLE);
     let buff_len = buffstr.len();
     classifications.fill(base);
 
@@ -595,8 +616,7 @@ fn classify_word(
                         in_pos -= 1;
                     }
                     assert!(fill_end >= backslash_pos);
-                    classifications[backslash_pos..fill_end]
-                        .fill(HighlightClassification::from(fill_scope));
+                    classifications[backslash_pos..fill_end].fill(leaf(fill_scope));
                 } else {
                     // Not a backslash.
                     match c {
@@ -608,6 +628,7 @@ fn classify_word(
                             in_pos += classify_variable(
                                 &buffstr[in_pos..],
                                 parameters,
+                                enclosing,
                                 &mut classifications[in_pos..],
                             );
                             // Subtract one to account for the upcoming loop increment.
@@ -691,6 +712,7 @@ fn classify_word(
                         in_pos += classify_variable(
                             &buffstr[in_pos..],
                             parameters,
+                            enclosing,
                             &mut classifications[in_pos..],
                         );
                         // Subtract one to account for the upcoming increment in the loop.
@@ -1279,6 +1301,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 classify_slice(
                     &arg_str[after..after + slice_len],
                     parameters,
+                    self.enclosing_scopes,
                     &mut self.classifications[arg_start..][after..after + slice_len],
                 );
             }
@@ -2817,6 +2840,38 @@ mod tests {
         // and a pass without I/O resolves no command.
         let classifications = classified_without_io(vars, L!("true"));
         assert_eq!(classifications[0].foreground(), TokenScopeId::COMMAND);
+    }
+
+    #[test]
+    #[serial]
+    fn a_words_own_characters_are_inside_what_encloses_the_word() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // Every class a word states — its reference, its slices, a quote's marks and
+        // content, its escapes — is stated inside the constructs that enclose the word, so a
+        // construct's variable reaches characters the word's own class colours.
+        for text in [
+            L!("echo $x | cat"),
+            L!("echo $x[1..2] | cat"),
+            L!("echo 'ab' \"cd\" | cat"),
+            L!("echo a\\nb | cat"),
+        ] {
+            let classifications = classified_with_io(vars, text);
+            for (index, classification) in classifications.iter().enumerate() {
+                let character = text.as_char_slice()[index];
+                if character == ' ' {
+                    continue;
+                }
+                assert!(
+                    classification
+                        .enclosing()
+                        .has_scope(TokenScopeId::META_PIPELINE),
+                    "`{character}` at {index} of {text:?} is not inside the pipeline"
+                );
+            }
+        }
     }
 
     #[test]
