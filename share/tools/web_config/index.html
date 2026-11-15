@@ -35,150 +35,172 @@
         </div>
         <div id="tab_contents">
             <template x-if="currentTab === 'colors'" x-data="colors">
-                <div>
-                    <!-- ko with: color_picker -->
-                    <div class="colorpicker_text_sample" :style="{'background-color': actualTerminalBackgroundColor}">
-                        <span style="position: absolute; left: 10px; top: 3px"
-                            :style="{'color': `#${text_color_for_color(actualTerminalBackgroundColor)}`}"
-                            x-text="selectedColorScheme.name_with_color_theme"></span>
-                        <br />
-                        <div class="color_picker_background_cells">
-                            <span style="display: block; text-align: right; line-height: 110%"
-                                :style="{'color': `#${text_color_for_color(actualTerminalBackgroundColor)}`}">
-                                Simulate background color
-                            </span>
+                <div class="colour_panes" tabindex="-1" @keydown="onPaneKey($event)">
+                    <!-- The sample: fish source classified by the highlighting pass itself, with
+                         the style each piece resolves to.  A click picks a run; the scopes that
+                         colour it appear in the rail beside it.  Nothing is marked until
+                         then. -->
+                    <div class="colour_pane colour_pane_sample" tabindex="-1" x-ref="samplePane"
+                        @focus="pane = 'sample'"
+                        :style="{'background-color': actualTerminalBackgroundColor, 'color': defaultTextColour()}">
+                        <div class="colour_sample_title">
+                            <span x-text="selectedColorScheme.name_with_color_theme"></span>
+                            <span class="colour_sample_simulate">Simulate background color</span>
                             <template x-for="color in sampleTerminalBackgroundColors">
-                                <label :style="{'background-color': color}">
+                                <label class="colour_sample_background_choice" :style="{'background-color': color}">
                                     <input type="radio" :value="color" x-model="overriddenTerminalBackgroundColor" hidden
                                         :title="'Preview with this background color.\n\nfish cannot change the background color of your terminal. Refer to your terminal settings to set its background color.'">
                                     </input>
                                 </label>
                             </template>
                         </div>
-                        <!-- The sample: fish source classified by the highlighting pass
-                             itself, drawn with the style each piece resolves to.  A click
-                             picks a run and opens the scopes that colour it; nothing is
-                             decorated until then. -->
-                        <div class="colour_sample_rows"
-                            :class="{'colour_sample_with_rail': pickedStops.length > 0}">
+                        <div class="colour_sample_rows" x-ref="sampleRows">
                             <template x-for="(piece, pieceIndex) in colourSample" :key="pieceIndex">
                                 <span class="colour_sample_piece"
                                     :class="{colour_scope_extent: pieceInActiveStop(pieceIndex), cs_editing: pickedPieceIndex == pieceIndex}"
-                                    :style="styleForPiece(piece)"
-                                    @click="pickPiece(pieceIndex)" x-text="piece.text"></span>
+                                    :style="styleForPiece(piece)" @click="pickPiece(pieceIndex)"
+                                    :data-piece-index="pieceIndex"
+                                    x-text="piece.text"></span>
                             </template>
                         </div>
-                        <!-- The scopes that colour the picked run, most specific first: the
-                             run's own scope, the chain it resolves through, the scopes that
-                             enclose it, and the root, each label drawn in the style its own
-                             variable resolves to, in one monospace column. -->
-                        <div class="colour_specificity" x-show="pickedStops.length > 0" x-ref="specificity"
-                            tabindex="0" @keydown.arrow-up.prevent="moveStop(-1)"
-                            @keydown.arrow-down.prevent="moveStop(1)">
-                            <div class="colour_specificity_graphic">^</div>
-                            <template x-for="(stop, stopIndex) in pickedStops" :key="stopIndex">
-                                <div>
-                                    <div class="colour_specificity_stop"
-                                        :class="{colour_specificity_selected: selectedStopIndex == stopIndex, colour_specificity_unset: !stopIsSet(stop)}"
-                                        :title="stop.variable"
-                                        @click="selectStop(stopIndex)"
-                                        @mouseenter="hoveredStopIndex = stopIndex"
-                                        @mouseleave="hoveredStopIndex = null"><span
-                                            class="colour_specificity_indicator"
-                                            x-text="selectedStopIndex == stopIndex ? '&gt; ' : '  '"></span><span
-                                            class="colour_specificity_bullet"
-                                            x-text="selectedStopIndex == stopIndex ? '* ' : 'o '"></span><span
-                                            class="colour_specificity_label"
-                                            :style="effectiveStyleOf(stop.variable)"
-                                            x-text="'[' + stop.path + ']'"></span></div>
-                                    <div class="colour_specificity_graphic"
-                                        x-show="stopIndex &lt; pickedStops.length - 1">|</div>
-                                </div>
-                            </template>
-                            <div class="colour_specificity_graphic">v</div>
-                        </div>
-                        <!-- The variables the sample cannot show — the enclosing scopes,
-                             the family fallbacks and the overlays — and every other one,
-                             so all of them are reachable. -->
-                        <div class="colour_variable_list">
+                    </div>
+                    <!-- The scopes that colour the picked run, most specific first: the run's
+                         own scope, the chain it resolves through, the scopes that enclose it,
+                         and the root, each label in the style its own variable renders.  A
+                         scope the theme leaves empty has a dim label. -->
+                    <div class="colour_pane colour_pane_rail" x-ref="specificity" tabindex="-1"
+                        @focus="pane = 'rail'" @click="focusPane('rail')"
+                        :style="{'background-color': actualTerminalBackgroundColor}">
+                        <template x-if="pickedStops.length === 0">
+                            <div class="colour_pane_hint" :style="{'color': defaultTextColour()}">
+                                Pick a run in the sample, or a variable in the list below, to choose
+                                the scope a colour applies to.
+                            </div>
+                        </template>
+                        <template x-if="pickedStops.length > 0">
+                            <div class="colour_specificity_rail">
+                                <div class="colour_specificity_graphic">^</div>
+                                <template x-for="(stop, stopIndex) in pickedStops" :key="stopIndex">
+                                    <div>
+                                        <div class="colour_specificity_stop"
+                                            :class="{colour_specificity_selected: selectedStopIndex == stopIndex, colour_specificity_unset: !stopIsSet(stop)}"
+                                            :title="stop.variable" @click="selectRailStop(stopIndex)"
+                                            @dblclick="revealVariableInSample(stop.variable)"
+                                            @mouseenter="hoveredStopIndex = stopIndex"
+                                            @mouseleave="hoveredStopIndex = null"><span
+                                                class="colour_specificity_indicator"
+                                                x-text="selectedStopIndex == stopIndex ? '&gt; ' : '  '"></span><span
+                                                class="colour_specificity_bullet"
+                                                x-text="selectedStopIndex == stopIndex ? '* ' : 'o '"></span><span
+                                                class="colour_specificity_label"
+                                                :style="effectiveStyleOf(stop.variable)"
+                                                x-text="'[' + stop.path + ']'"></span></div>
+                                        <div class="colour_specificity_graphic"
+                                            x-show="stopIndex &lt; pickedStops.length - 1">|</div>
+                                    </div>
+                                </template>
+                                <div class="colour_specificity_graphic">v</div>
+                            </div>
+                        </template>
+                    </div>
+                    <!-- The variables the sample cannot show — the enclosing scopes, the family
+                         fallbacks and the overlays — and every other one, so all of them are
+                         reachable. -->
+                    <div class="colour_pane colour_pane_variables" tabindex="-1"
+                        :style="{'background-color': actualTerminalBackgroundColor}">
+                        <div class="colour_variable_list" x-ref="variableList">
                             <template x-for="variable in colourVariables" :key="variable.variable">
                                 <div class="colour_variable_row"
-                                    :class="{cs_clickable: customizationActive, cs_editing: csEditingType == variable.variable}"
+                                    :class="{cs_editing: selectedColorSetting == variable.variable}"
                                     :style="effectiveStyleOf(variable.variable)"
+                                    :data-variable="variable.variable"
                                     @click="selectVariable(variable.variable)"
+                                    @dblclick="revealVariableInSample(variable.variable)"
                                     @mouseenter="hoverVariable(variable.variable)"
                                     @mouseleave="clearHoveredVariable()" x-text="variable.description"></div>
                             </template>
                         </div>
-
-                        <div style="position: absolute; right: 5px; bottom: 5px;">
-
-                            <button class="customize_theme_button" :class="{button_highlight: customizationActive}"
-                                :style="{'color': `#${text_color_for_color(actualTerminalBackgroundColor)}`}"
-                                @click="toggleCustomizationActive">Customize</button>
-
-                            <button class="save_button"
-                                :style="{'color': `#${text_color_for_color(actualTerminalBackgroundColor)}`}"
-                                x-show="showSaveButton" @click="setTheme" x-text="saveThemeButtonTitle"></button>
-                        </div>
-
                     </div>
-
-                    <div x-show="customizationActive">
-                        <div style="margin: 10px 0 7px 35px;">Choose <span
-                                x-text="fieldTitle()"></span> for <span x-text="csUserVisibleTitle"></span><span
-                                x-show="pickedStops.length"
-                                x-text="' (the ' + selectedStopPath() + ' scope)'"></span>: <span
-                                class="colour_field_value" :class="{colour_field_value_unset: !selectedFieldColour()}"
-                                :style="fieldValueStyle()" :title="fieldValueTitle()"></span></div>
-                        <!-- The field of the selected variable the color grid writes.  Each
-                             control is drawn in the style it sets, over a chip of a color
-                             that reads on it. -->
-                        <div class="colour_field_buttons">
-                            <button class="colour_field_button" title="Foreground color"
-                                :class="{colour_field_button_selected: editingField == 'foreground'}"
-                                :style="foregroundButtonStyle()" @click="selectField('foreground')">Aa</button>
-                            <button class="colour_field_button" title="Background color"
-                                :class="{colour_field_button_selected: editingField == 'background'}"
-                                :style="backgroundButtonStyle()" @click="selectField('background')">Aa</button>
-                            <button class="colour_field_button"
-                                title="Underline: on, then the color grid sets the underline color"
-                                :class="{colour_field_button_selected: editingField == 'underline_colour'}"
-                                :style="underlineButtonStyle()" @click="toggleFlag('underline')">Aa</button>
-                            <button class="colour_field_button" title="Bold"
-                                :class="{colour_field_button_selected: selectedFlag('bold')}"
-                                :style="flagButtonStyle('bold')" @click="toggleFlag('bold')">B</button>
-                            <button class="colour_field_button" title="Italics"
-                                :class="{colour_field_button_selected: selectedFlag('italics')}"
-                                :style="flagButtonStyle('italics')" @click="toggleFlag('italics')">I</button>
-                            <button class="colour_field_button" title="Dim"
-                                :class="{colour_field_button_selected: selectedFlag('dim')}"
-                                :style="flagButtonStyle('dim')" @click="toggleFlag('dim')">F</button>
+                    <!-- The line the theme file has for the scope, live: coloured by the pass the
+                         sample is coloured by, and read back into the picker when the editor
+                         loses the focus.  A scope the theme does not set has no line, and the
+                         editor over it is empty. -->
+                    <div class="colour_pane colour_pane_line" x-ref="statementPane" @focusin="pane = 'statement'"
+                        @click="focusPane('statement')"
+                        :style="{'background-color': actualTerminalBackgroundColor}">
+                        <div class="colour_statement_comment" :style="styleForPath('comment')"><span class="colour_statement_prompt" x-ref="statementPrompt">&#10095; </span><span x-text="commentLine()"></span></div>
+                        <div class="colour_statement_editor" :style="statementIndentStyle()">
+                            <pre class="colour_statement_view"><template x-for="(run, runIndex) in statementViewPieces()" :key="runIndex"><span :style="run.piece ? styleForPiece(run.piece) : {'color': defaultTextColour()}" x-text="run.text"></span></template></pre>
+                            <textarea class="colour_statement_input" x-ref="statementInput" x-model="themeStatement"
+                                spellcheck="false" rows="1" placeholder="set --global ..."
+                                :style="{'caret-color': defaultTextColour()}"
+                                @focus="pane = 'statement'" @input="onStatementInput()"
+                                @blur="applyThemeStatement()" @keydown.enter.prevent="$el.blur()"></textarea>
                         </div>
-                        <!-- TODO maybe add input[type=color] for 24bit terminals -->
-                        <table class="colorpicker_term256" style="margin: 0px 20px;">
-                            <tbody>
-                                <template x-for="color_array in colorArraysArray">
-                                    <tr class="colorpicker_term256_row">
-                                        <template x-for="color in color_array">
-                                            <td class="colorpicker_term256_cell"
-                                                :style="{'background-color': interpret_color(color)}"
-                                                @click="changeSelectedColor(color)">
-                                                <div class="colorpicker_term256_selection_indicator"
-                                                    x-show="selectedFieldColour() == color"
-                                                    :style="{'border-color': interpret_color(border_color_for_color(color))}">
-                                                </div>
-                                            </td>
-                                        </template>
-                                    </tr>
+                    </div>
+                    <!-- The style the scope has and the colours a field takes.  The style pane
+                         is the narrow column: the style decides the field, and the colour pane
+                         is where a colour is found. -->
+                    <div class="colour_bottom">
+                        <div class="colour_pane colour_pane_style" x-ref="stylePane" tabindex="-1"
+                            @focus="pane = 'style'; styleRow = 'fields'" @click="focusPane('style')"
+                            :style="{'background-color': actualTerminalBackgroundColor}">
+                            <div class="colour_style_fields">
+                                <template x-for="field in styleFields()" :key="field">
+                                    <div class="colour_style_field" :style="fieldButtonStyle(field)"
+                                        @click="selectField(field)" x-text="fieldLabel(field)"></div>
                                 </template>
-                            </tbody>
-                            <!-- /ko -->
-                        </table>
+                            </div>
+                            <div class="colour_style_flags" x-show="flagRowsShown()">
+                                <template x-for="(flag, flagIndex) in flagRows()" :key="flag">
+                                    <div class="colour_style_flag" :style="flagRowStyle(flag, flagIndex)"
+                                        @click="toggleFlag(flag)"><span class="colour_style_flag_bullet"
+                                            x-text="selectedFlag(flag) ? '* ' : 'o '"></span><span
+                                            class="colour_style_flag_title" :style="flagTitleStyle(flag)"
+                                            x-text="flagTitle(flag)"></span></div>
+                                </template>
+                            </div>
+                        </div>
+                        <!-- The colours a field takes: the cell that clears the scope, the swatch
+                             that opens a colour picker for the field the style pane writes, the
+                             value's hex beside it, the terminal's sixteen, and the 256-colour
+                             table. -->
+                        <div class="colour_pane colour_pane_colours" x-ref="colourPane" tabindex="-1"
+                            @focus="pane = 'colour'" @click="focusPane('colour')"
+                            :style="{'background-color': actualTerminalBackgroundColor}">
+                            <template x-for="(row, rowIndex) in colourRows()" :key="rowIndex">
+                                <div class="colour_colour_row">
+                                    <template x-for="(cell, columnIndex) in row" :key="columnIndex">
+                                        <div class="colour_colour_cell"
+                                            :class="{
+                                                colour_colour_unset: cell.kind === 'unset',
+                                                colour_colour_swatch_cell: cell.kind === 'swatch',
+                                                colour_colour_hex: cell.kind === 'hex',
+                                                colour_colour_palette: cell.kind === 'colour',
+                                            }"
+                                            :style="colourCellStyle(cell, rowIndex, columnIndex)"
+                                            :title="cell.kind === 'colour' ? cell.colour : (cell.kind === 'swatch' ? 'Pick a colour for ' + fieldLetters(editingField) : (cell.kind === 'unset' ? 'clear the scope' : selectedFieldHex()))"
+                                            @click="activateColourCell(cell)">
+                                            <template x-if="cell.kind === 'unset'"><span>X</span></template>
+                                            <template x-if="cell.kind === 'swatch'"><input type="color"
+                                                    x-ref="colourSwatch" class="colour_colour_input"
+                                                    :value="colourSwatchValue()" @input="liveSwatchColour($event)"
+                                                    @change="commitSwatchColour()"></template>
+                                            <template x-if="cell.kind === 'hex'"><span
+                                                    x-text="selectedFieldHex() || 'unset'"></span></template>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
                     </div>
-
-                    <div style="margin: 10px 0 7px 35px;">Preview a theme below:</div>
-
+                    <!-- What the page writes, and the themes it can write instead. -->
+                    <div class="colour_footer" :style="{'background-color': actualTerminalBackgroundColor}">
+                        <span class="colour_footer_message" :style="refusalStyle()" x-text="themeSaveMessage"></span>
+                        <button class="save_button" :style="{'color': defaultTextColour()}"
+                            x-show="showSaveButton" @click="setTheme" x-text="saveThemeButtonTitle"></button>
+                    </div>
+                    <div class="colour_preview_title">Preview a theme below:</div>
                     <div class="color_scheme_choices_scrollview">
                         <div class="color_scheme_choices_list">
                             <template x-for="colorScheme in colorSchemes">
@@ -219,7 +241,6 @@
                             </template>
                         </div>
                     </div>
-                    <!-- /ko -->
                 </div>
             </template>
 
