@@ -298,14 +298,17 @@ fn classify_slice(
     enclosing: EnclosingScopeSet,
     classifications: &mut [HighlightClassification],
 ) {
-    let slice = word_classification(TokenScopeId::VARIABLE_SLICE, enclosing);
-    classifications.fill(slice);
+    // The brackets and their `..` are the slice's own text; what stands between the
+    // brackets is inside the slice, so a bound's reference or number is stated inside it.
+    let marks = word_classification(TokenScopeId::VARIABLE_SLICE, enclosing);
+    let inside = enclosing.entering(enclosing_of(TokenScopeId::META_SLICE));
+    classifications.fill(marks);
     if region.len() < 2 {
         return;
     }
     let bounds = &region[1..region.len() - 1];
     let bound_classifications = &mut classifications[1..region.len() - 1];
-    bound_classifications.fill(slice);
+    bound_classifications.fill(word_classification(TokenScopeId::VARIABLE_SLICE, inside));
 
     let mut start = 0;
     let mut idx = 0;
@@ -329,7 +332,7 @@ fn classify_slice(
                 classify_slice_bound(
                     &bounds[start..idx],
                     parameters,
-                    enclosing,
+                    inside,
                     &mut bound_classifications[start..idx],
                 );
                 idx += 2;
@@ -341,7 +344,7 @@ fn classify_slice(
     classify_slice_bound(
         &bounds[start..],
         parameters,
-        enclosing,
+        inside,
         &mut bound_classifications[start..],
     );
 }
@@ -3281,6 +3284,34 @@ mod tests {
             classifications[6].enclosing(),
             EnclosingScopeSet::default().with_scope(TokenScopeId::META_BLOCK),
             "a begin block's body"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_slice_encloses_its_bounds() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // echo $x[$i] — the brackets are the slice's own text and state no enclosing
+        // scope, and what stands between them is inside the slice.
+        let classifications = classified_without_io(vars, L!("echo $x[$i]"));
+        let slice = EnclosingScopeSet::default().with_scope(TokenScopeId::META_SLICE);
+        assert!(
+            classifications[7].enclosing().is_empty(),
+            "the opening bracket"
+        );
+        assert_eq!(classifications[8].enclosing(), slice, "the bound's sigil");
+        assert_eq!(classifications[9].enclosing(), slice, "the bound's name");
+        assert!(
+            classifications[10].enclosing().is_empty(),
+            "the closing bracket"
+        );
+        assert_eq!(
+            classifications[8].foreground(),
+            TokenScopeId::VARIABLE_SIGIL,
+            "the bound keeps the scope it has anywhere"
         );
     }
 
