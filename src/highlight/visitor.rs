@@ -559,6 +559,10 @@ fn classify_word(
                         }
                     } else if "abefnrtv*?$(){}[]'\"<>^ \\#;|&".contains(escaped_char) {
                         fill_end = in_pos + 1;
+                    } else if escaped_char == '\n' {
+                        // A line continuation joins the word's pieces without giving it a
+                        // character, so it escapes the newline as any escape does.
+                        fill_end = in_pos + 1;
                     } else if escaped_char == 'c' {
                         // Like \ci. So highlight three characters.
                         fill_scope = TokenScopeId::ESCAPE_CONTROL;
@@ -1153,6 +1157,9 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             self.classify_terminator_span(*range);
         }
 
+        // Classify the line continuations the parser consumed as whitespace.
+        self.classify_line_continuations();
+
         // Classify every error range.
         for range in &extras.errors {
             self.classify_span(*range, self.classification_of(TokenScopeId::ERROR));
@@ -1546,6 +1553,24 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         let classifications = &mut self.classifications[range.as_usize()];
         for (index, character) in text.chars().enumerate() {
             classifications[index] = if character == ';' { semicolon } else { newline };
+        }
+    }
+
+    /// Classify the escape of each line continuation between words.
+    ///
+    /// The parser consumes the backslash and the newline it escapes as whitespace, and no
+    /// node owns that whitespace, so the escape is stated here.  A continuation at the
+    /// boundary between two constructs is whitespace, and whitespace states no enclosing
+    /// scope, so the escape states none either.
+    fn classify_line_continuations(&mut self) {
+        let escape = word_classification(TokenScopeId::ESCAPE, EnclosingScopeSet::default());
+        let text = self.buff.as_char_slice();
+        for index in 0..text.len().saturating_sub(1) {
+            let unclassified = self.classifications[index] == HighlightClassification::default();
+            if unclassified && text[index] == '\\' && text[index + 1] == '\n' {
+                self.classifications[index] = escape;
+                self.classifications[index + 1] = escape;
+            }
         }
     }
 
@@ -3016,6 +3041,57 @@ mod tests {
         let classifications = classified_with_io(vars, L!("echo \"$(true)\""));
         let inside = double.with_scope(TokenScopeId::META_COMMAND_SUBSTITUTION);
         assert_eq!(classifications[8].enclosing(), inside, "the command");
+    }
+
+    #[test]
+    #[serial]
+    fn a_line_continuation_is_an_escape() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // echo a \⏎    b — the backslash escapes the newline, and the indentation after it
+        // is whitespace, which the classifier states as the source it is.
+        let classifications = classified_without_io(vars, L!("echo a \\\n    b"));
+        assert_eq!(
+            classifications[7].foreground(),
+            TokenScopeId::ESCAPE,
+            "the backslash"
+        );
+        assert_eq!(
+            classifications[8].foreground(),
+            TokenScopeId::ESCAPE,
+            "the escaped newline"
+        );
+        assert_eq!(
+            classifications[9].foreground(),
+            TokenScopeId::NORMAL,
+            "the indentation after it"
+        );
+        assert_eq!(
+            classifications[13].foreground(),
+            TokenScopeId::PARAM,
+            "the word the line continues into"
+        );
+
+        // A continuation inside a word joins its pieces, so the word is one argument and
+        // the newline is still the escape that was written.
+        let classifications = classified_without_io(vars, L!("echo a\\\nb"));
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::ESCAPE,
+            "the in-word backslash"
+        );
+        assert_eq!(
+            classifications[7].foreground(),
+            TokenScopeId::ESCAPE,
+            "the in-word newline"
+        );
+        assert_eq!(
+            classifications[8].foreground(),
+            TokenScopeId::PARAM,
+            "the word continues"
+        );
     }
 
     #[test]
