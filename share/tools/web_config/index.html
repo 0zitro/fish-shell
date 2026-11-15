@@ -9,6 +9,7 @@
     <link rel="stylesheet" type="text/css" media="print" href="fishconfig_print.css">
     <script type="text/javascript" src="js/colour_variables.js" defer></script>
     <script type="text/javascript" src="js/colorutils.js" defer></script>
+    <script type="text/javascript" src="js/oklch.js" defer></script>
     <script type="text/javascript" src="js/main.js" defer></script>
     <script type="text/javascript" src="js/alpine.js" defer></script>
 </head>
@@ -66,7 +67,7 @@
                         </div>
                         <div class="colour_sample_rows" x-ref="sampleRows">
                             <template x-for="(piece, pieceIndex) in colourSample" :key="pieceIndex">
-                                <span class="colour_sample_piece" :style="styleForPiece(piece)" @click="pickPiece(pieceIndex)"
+                                <span class="colour_sample_piece" @click="pickPiece(pieceIndex)"
                                     :data-piece-index="pieceIndex" x-text="piece.text"></span>
                             </template>
                         </div>
@@ -187,18 +188,50 @@
                                             }"
                                             :style="colourCellStyle(cell, rowIndex, columnIndex)"
                                             :title="cell.kind === 'colour' ? cell.colour : (cell.kind === 'swatch' ? 'Pick a colour for ' + fieldLetters(editingField) : (cell.kind === 'unset' ? 'clear the scope' : selectedFieldHex()))"
-                                            @click="activateColourCell(cell)">
+                                            @click="activateColourCell(cell, $event)">
                                             <template x-if="cell.kind === 'unset'"><span>X</span></template>
-                                            <template x-if="cell.kind === 'swatch'"><input type="color"
-                                                    x-ref="colourSwatch" class="colour_colour_input"
-                                                    :value="colourSwatchValue()" @input="liveSwatchColour($event)"
-                                                    @change="commitSwatchColour()"></template>
                                             <template x-if="cell.kind === 'hex'"><span
                                                     x-text="selectedFieldHex() || 'unset'"></span></template>
                                         </div>
                                     </template>
                                 </div>
                             </template>
+                            <!-- The colour picker: a card for each channel, drawing the plane the
+                                 other two span at the channel the card holds, and the strip that
+                                 states the held channel itself.  What the picker states of a
+                                 colour is written where it is shown, once per frame, so the
+                                 markup states the structure and nothing that a drag changes.  It
+                                 closes on a second click on the swatch, on escape, on a palette's
+                                 colour, and on a click anywhere else. -->
+                            <div class="colour_picker" x-show="pickerOpen" x-ref="picker" tabindex="-1"
+                                @keydown="onPickerKey($event)" @click.outside="closePickerOutside($event)" @click.stop>
+                                <template x-for="held in pickerCards()" :key="held">
+                                    <div class="colour_picker_card"
+                                        :class="{colour_picker_card_active: pickerFocus === held}">
+                                        <div class="colour_picker_head">
+                                            <span class="colour_picker_title" x-text="pickerTitle(held)"></span>
+                                            <span class="colour_picker_value"></span>
+                                        </div>
+                                        <div class="colour_picker_chart">
+                                            <canvas class="colour_picker_canvas" :data-picker-card="held"
+                                                @pointerdown.prevent="startCardDrag(held, $event)"></canvas>
+                                            <div class="colour_picker_line is-x"><span class="colour_picker_axis"
+                                                    x-text="pickerAxisLabel(held, 'horizontal')"></span></div>
+                                            <div class="colour_picker_line is-y"><span class="colour_picker_axis"
+                                                    x-text="pickerAxisLabel(held, 'vertical')"></span></div>
+                                        </div>
+                                        <div class="colour_picker_range" :data-picker-range="held"
+                                            @pointerdown.prevent="startRangeDrag(held, $event)">
+                                            <canvas class="colour_picker_strip" :data-picker-strip="held"></canvas>
+                                            <span class="colour_picker_thumb"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                                <div class="colour_picker_readout">
+                                    <span class="colour_picker_chip"></span>
+                                    <span class="colour_picker_hex"></span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <!-- What the page writes, and the themes it can write instead.  The strip is

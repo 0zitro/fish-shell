@@ -773,13 +773,173 @@ tt {
     width: 22px;
 }
 
-.colour_colour_input {
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
+/* The picker: a card for each channel, each drawing the plane the other two span as a shape of
+   what the screen can show of it, with a strip under it that states the channel the card holds.
+   The cards lie over the palettes rather than moving them, and the lines the cursor is at blend
+   against whatever colour they cross. */
+/* The picker floats over the page rather than inside a pane: a card is a plane of the colour
+   space and needs the room to be read, and the panes it covers are no taller than their contents
+   allow.  It states its own colours, because the page states its text for its own background and
+   the picker's background is its own.  Nothing here is expensive to repaint, which matters because
+   a drag repaints it: no blur, no filter, and the lines the cursor is at blend against whatever
+   colour they cross. */
+.colour_picker {
+    position: fixed;
+    z-index: 20;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(1220px, 92vw);
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    padding: 8px 10px 10px;
+    border: 1px solid #666;
+    color: #ddd;
+    background-color: #101010;
+}
+
+.colour_picker:focus {
+    outline: none;
+}
+
+.colour_picker_card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 2px;
+}
+
+.colour_picker_card_active {
+    outline: 1px solid #3399ff;
+    outline-offset: 0;
+}
+
+.colour_picker_head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.colour_picker_title {
+    opacity: 0.7;
+}
+
+.colour_picker_card_active .colour_picker_title {
+    opacity: 1;
+}
+
+.colour_picker_value {
+    white-space: pre;
+}
+
+.colour_picker_chart {
+    position: relative;
+    /* A card is a plane of the colour space, so it takes the room to be read: the shader draws
+       it at whatever size this states, at the display's own resolution. */
+    height: 264px;
+    border: 1px solid #333;
+    overflow: hidden;
+}
+
+/* A drawing is made in the display's own pixels and shown at exactly as many of them, which the page
+   states by measuring; what is left of the mapping is where the pane happens to sit, and a mark a
+   pixel wide is only a pixel wide if the browser does not sample between them. */
+.colour_picker_canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+    image-rendering: pixelated;
+}
+
+.colour_picker_line {
+    position: absolute;
+    pointer-events: none;
+    mix-blend-mode: difference;
+    background-color: #fff;
+}
+
+.colour_picker_line.is-x {
+    left: 0;
+    right: 0;
+    bottom: var(--picker-y);
+    height: 1px;
+}
+
+.colour_picker_line.is-y {
+    top: 0;
+    bottom: 0;
+    left: var(--picker-x);
+    width: 1px;
+}
+
+.colour_picker_axis {
+    position: absolute;
+    width: 1.4em;
+    height: 1.4em;
+    font-size: 9pt;
+    line-height: 1.4em;
+    text-align: center;
+    color: #fff;
+}
+
+.colour_picker_line.is-x .colour_picker_axis {
+    left: 2px;
+    bottom: 2px;
+}
+
+.colour_picker_line.is-y .colour_picker_axis {
+    right: 2px;
+    top: 2px;
+}
+
+.colour_picker_range {
+    position: relative;
+    height: 16px;
+    border: 1px solid #333;
+    overflow: hidden;
+    cursor: ew-resize;
+}
+
+.colour_picker_strip {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    image-rendering: pixelated;
+}
+
+.colour_picker_thumb {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin-top: -6px;
+    margin-left: -6px;
+    background-color: #101010;
+    border: 2px solid #fff;
+    transform: rotate(45deg);
+    pointer-events: none;
+}
+
+.colour_picker_readout {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 2px;
+    white-space: pre;
+}
+
+.colour_picker_chip {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #444;
 }
 
 .colour_colour_hex {
