@@ -89,6 +89,11 @@ declare_scope_entries! {
             switch /** ``switch`` keyword */
             while /** ``while`` keyword */
         };
+        "keyword.brace" /** the braces of a brace clause, like ``{ echo; }`` */;
+        sum "keyword.brace" {
+            open /** the ``{`` of a brace clause */
+            close /** the ``}`` of a brace clause */
+        };
         "keyword.modifier" /** ``and``, ``or``, ``not``, ``!`` and ``time`` */ ["operator"];
         sum "keyword.modifier" keyword {
             and /** ``and`` */
@@ -216,7 +221,8 @@ declare_scope_entries! {
         "meta.function.no_shadowing" /** characters inside ``function … end -S`` */ enclosing;
         "meta.function" /** characters inside ``function … end`` */ enclosing;
         "meta.command_substitution" /** characters inside ``$(…)`` */ enclosing;
-        "meta.block" /** characters inside ``begin … end`` */ enclosing;
+        "meta.block.brace" /** characters inside ``{ … }`` */ enclosing;
+        "meta.block" /** characters inside ``begin … end`` and ``{ … }`` */ enclosing;
         "meta.if" /** characters inside ``if … end`` */ enclosing;
         "meta.case" /** characters inside ``case … end`` */ enclosing;
         "meta.loop.for" /** characters inside ``for … end`` */ enclosing;
