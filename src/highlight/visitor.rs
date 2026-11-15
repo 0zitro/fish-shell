@@ -1133,9 +1133,12 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
     /// Visit a region whose characters are inside `scopes` in addition to the ones the
     /// traversal is already inside.
+    ///
+    /// The region is entered inside what encloses it, so its scopes are consulted after
+    /// the scopes of the constructs around it.
     fn visit_inside(&mut self, scopes: EnclosingScopeSet, region: impl FnOnce(&mut Self)) {
         let enclosing = self.enclosing_scopes;
-        self.enclosing_scopes = enclosing | scopes;
+        self.enclosing_scopes = enclosing.entering(scopes);
         region(self);
         self.enclosing_scopes = enclosing;
     }
@@ -2847,7 +2850,7 @@ mod tests {
             (
                 L!("function f; begin echo a; end; end"),
                 L!("echo"),
-                function | block,
+                function.with_scope(TokenScopeId::META_BLOCK),
             ),
             (
                 L!("if true; echo b; end"),
@@ -2881,6 +2884,19 @@ mod tests {
             ),
             (L!("echo a"), L!("echo"), EnclosingScopeSet::default()),
             (L!("echo $(true)"), L!("true"), command_substitution),
+            // The order the constructs are entered is stated, not the paths they are named
+            // by: whichever of the two is written inside the other is the one consulted
+            // last.
+            (
+                L!("if true; begin echo a; end; end"),
+                L!("echo"),
+                r#if.with_scope(TokenScopeId::META_BLOCK),
+            ),
+            (
+                L!("begin if true; echo a; end; end"),
+                L!("echo"),
+                block.with_scope(TokenScopeId::META_IF),
+            ),
         ];
 
         for (text, needle, expected) in cases {

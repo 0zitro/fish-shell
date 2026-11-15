@@ -1293,7 +1293,6 @@ fn make_pygments_csv(src: &wstr, io_ok: bool) -> Vec<u8> {
         let enclosing: Vec<&str> = classification
             .enclosing()
             .scopes()
-            .rev()
             .map(|scope| scope.entry().path)
             .collect();
         let attributes: Vec<String> = HighlightAttribute::entries()

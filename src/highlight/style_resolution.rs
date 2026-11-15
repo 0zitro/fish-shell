@@ -140,7 +140,9 @@ impl HighlightStyleResolver {
 /// The set is walked from the root toward the leaf — the root, the enclosing scopes
 /// outermost first, the chain from its least specific step, and the leaf — and each
 /// variable writes the fields the channel composes.  A variable carrying `--reset`
-/// clears what was written for it before.
+/// clears what was written for it before.  The enclosing scopes stand in the order the
+/// constructs that contribute them are entered, so a construct inside another is the
+/// more specific statement of the two.
 fn channel_style(
     channel: ColorChannel,
     scope: TokenScopeId,
@@ -154,7 +156,7 @@ fn channel_style(
     if scope != root {
         steps.push(ResolutionChainStep::Scope(root));
     }
-    steps.extend(enclosing.scopes().rev().map(ResolutionChainStep::Scope));
+    steps.extend(enclosing.scopes().map(ResolutionChainStep::Scope));
     steps.extend(
         chain
             .into_iter()
@@ -760,6 +762,30 @@ mod tests {
         colors.set(L!("fish_color_command"), &[L!("green")]);
         let classifications = colors.classify(L!("echo a | cat"));
         assert_eq!(colors.style_of(classifications[0]).fg, color(L!("green")));
+    }
+
+    #[test]
+    #[serial]
+    fn the_construct_entered_last_is_the_more_specific_one() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_meta_block"), &[L!("brblue")]);
+        colors.set(L!("fish_color_meta_if"), &[L!("yellow")]);
+
+        // The construct the text nests inside the other is the one that colours it, so the
+        // two nestings disagree and neither the block's nor the if's path decides it.
+        let block_in_if = colors.classify(L!("if true; begin echo a; end; end"));
+        assert_eq!(
+            colors.style_of(block_in_if[15]).fg,
+            color(L!("brblue")),
+            "a block inside an if is coloured by the block"
+        );
+
+        let if_in_block = colors.classify(L!("begin if true; echo a; end; end"));
+        assert_eq!(
+            colors.style_of(if_in_block[15]).fg,
+            color(L!("yellow")),
+            "an if inside a block is coloured by the if"
+        );
     }
 
     #[test]
