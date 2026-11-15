@@ -225,6 +225,10 @@ shell consults:
     several letters after one dash, like ``-abc``
 .. envvar:: fish_color_option_numeric
     negative numbers like ``-5``
+.. envvar:: fish_color_argument_number
+    bare numbers like ``123`` in ``test 1 -eq 123``, and slice bounds like ``-1`` in ``$x[-1]``
+.. envvar:: fish_color_argument_boolean
+    bare ``true`` and ``false``, like ``true`` in ``echo true``
 .. envvar:: fish_color_variable_definition
     ``x`` in ``set x``
 .. envvar:: fish_color_variable_definition_path
@@ -342,7 +346,7 @@ shell consults:
 .. envvar:: fish_color_variable_sigil_dereference
     ``$`` dereferencing the next one, as in ``$$x``
 .. envvar:: fish_color_variable_slice
-    slice brackets like ``[1]`` in ``$x[1]``
+    the brackets and ``..`` of a slice, like ``[1..2]`` in ``$x[1..2]``
 .. envvar:: fish_color_variable_parameter
     ``$x`` referring to a parameter inside ``function … end``
 .. envvar:: fish_color_variable_parameter_argv

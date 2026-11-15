@@ -106,7 +106,7 @@ declare_scope_entries! {
             emit /** ``emit`` builtin */
             wait /** ``wait`` builtin */
         };
-        "command.builtin.boolean" /** the ``true`` and ``false`` builtins */ builtin_boolean;
+        "command.builtin.boolean" /** the ``true`` and ``false`` builtins */ builtin_boolean ["argument.boolean", "command.builtin", "command"];
         sum "command.builtin.boolean" builtin_boolean {
             false /** ``false`` builtin */
             true /** ``true`` builtin */
@@ -129,6 +129,9 @@ declare_scope_entries! {
             gnu /** several letters after one dash, like ``-abc`` */
         };
         "argument.option.numeric" /** negative numbers like ``-5`` */ option_numeric ["argument"];
+
+        "argument.number" /** bare numbers like ``123`` in ``test 1 -eq 123``, and slice bounds like ``-1`` in ``$x[-1]`` */;
+        "argument.boolean" /** bare ``true`` and ``false``, like ``true`` in ``echo true`` */;
         product "variable.definition" ["argument"] /** ``x`` in ``set{}{}{} x`` */ {
             sum { local " -l" function " -f" global " -g" universal " -U" }
             sum { exported " -x" unexported " -u" }
@@ -157,7 +160,7 @@ declare_scope_entries! {
         "variable" /** variable names like ``x`` in ``$x`` */ ["operator"];
         "variable.sigil" /** ``$`` before a variable name */;
         "variable.sigil.dereference" /** ``$`` dereferencing the next one, as in ``$$x`` */;
-        "variable.slice" /** slice brackets like ``[1]`` in ``$x[1]`` */;
+        "variable.slice" /** the brackets and ``..`` of a slice, like ``[1..2]`` in ``$x[1..2]`` */;
         "variable.parameter" /** ``$x`` referring to a parameter inside ``function … end`` */;
         "variable.parameter.argv" /** ``$argv`` */;
         "variable.parameter.named" /** ``$x`` referring to a name from ``-a`` */;
@@ -183,7 +186,7 @@ declare_scope_entries! {
         "redirection.input.target" /** the file after ``<``, like ``/dev/null`` in ``cmd < /dev/null`` */ ["redirection.target", "redirection.input", "redirection", "argument"];
         "redirection.output.target" /** the file after ``>``, like ``out`` in ``cmd > out`` */ ["redirection.target", "redirection.output", "redirection", "argument"];
         "redirection.append.target" /** the file after ``>>``, like ``log`` in ``cmd >> log`` */ ["redirection.target", "redirection.append", "redirection", "argument"];
-        "redirection.dup.target" /** the descriptor after ``>&``, like ``1`` in ``cmd 2>&1`` */ ["redirection.target", "redirection.dup", "redirection", "argument"];
+        "redirection.dup.target" /** the descriptor after ``>&``, like ``1`` in ``cmd 2>&1`` */ ["argument.number", "redirection.target", "redirection.dup", "redirection", "argument"];
         "redirection.both.target" /** the file after ``&>``, like ``all`` in ``cmd &> all`` */ ["redirection.target", "redirection.both", "redirection", "argument"];
 
         "terminator" /** separators like ``;``, ``&`` and ``|`` */ end;

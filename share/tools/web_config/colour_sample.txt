@@ -123,6 +123,7 @@ end
 set --local -- escape \x1b
 set --local -- byte \101
 set --local -- control \ca
+set --local -- dry_run false
 if status is-interactive
     time command releases (string split -- ' ' $argv[1..-1])
     or exec echo -n -- "$escape[1m"failed"$escape[0m" >&2
