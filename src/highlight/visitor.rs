@@ -1545,6 +1545,41 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         self.classify_terminator_span(node.source_range());
     }
 
+    /// Classify the literal option tokens a `begin` header writes before its jobs.
+    ///
+    /// The parser sources them as one range and gives them no children, so each word in
+    /// the range takes the option shape its spelling has, and the whitespace between the
+    /// words stays the source it is.
+    fn classify_begin_options(&mut self, options: &ast::BeginOptions) {
+        let range = options.source_range();
+        let text = self.source_slice(range);
+        let mut words = vec![];
+        let mut word_start = None;
+        for (index, character) in text.chars().enumerate() {
+            if character.is_whitespace() {
+                if let Some(start) = word_start.take() {
+                    words.push((range.start() + start, index - start));
+                }
+            } else if word_start.is_none() {
+                word_start = Some(index);
+            }
+        }
+        if let Some(start) = word_start {
+            words.push((range.start() + start, text.len() - start));
+        }
+
+        for (start, len) in words {
+            // A quoted option of a `begin` header is a flag: it carries no value to split
+            // off, so only a whole word states its class.
+            let OptionShape::Whole(scope) = option_shape(&self.buff[start..start + len], true)
+            else {
+                continue;
+            };
+            let classification = word_classification(scope, self.enclosing_scopes);
+            self.classifications[start..start + len].fill(classification);
+        }
+    }
+
     /// Classify a terminator's characters: a semicolon and a newline part company.
     fn classify_terminator_span(&mut self, range: SourceRange) {
         let semicolon = self.classification_of(TokenScopeId::END_SEMICOLON);
@@ -1857,6 +1892,7 @@ impl<'src, 'wd, 'ctx, 'a> NodeVisitor<'a> for HighlightVisitor<'src, 'wd, 'ctx> 
             }
             Kind::BlockStatement(node) => self.visit_block_statement(node),
             Kind::BraceStatement(node) => self.visit_brace_statement(node),
+            Kind::BeginOptions(node) => self.classify_begin_options(node),
             Kind::IfClause(node) => {
                 self.visit(&node.kw_if);
                 self.visit(&node.condition);
@@ -3091,6 +3127,55 @@ mod tests {
             classifications[8].foreground(),
             TokenScopeId::PARAM,
             "the word continues"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_begin_headers_options_are_options() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // begin -qq echo hi; end — the header's quoted options are its own words, and
+        // the space around them stays whitespace.
+        let classifications = classified_without_io(vars, L!("begin -qq echo hi; end"));
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::OPTION_GNU,
+            "the quoted option"
+        );
+        assert_eq!(
+            classifications[5].foreground(),
+            TokenScopeId::NORMAL,
+            "the space before it"
+        );
+        assert_eq!(
+            classifications[10].foreground(),
+            TokenScopeId::COMMAND,
+            "the block's first job"
+        );
+
+        // begin --quoted --quoted echo hi; end — two written options are two words.
+        let classifications =
+            classified_without_io(vars, L!("begin --quoted --quoted echo hi; end"));
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::OPTION_LONG,
+            "the first option"
+        );
+        assert_eq!(
+            classifications[15].foreground(),
+            TokenScopeId::OPTION_LONG,
+            "the second option"
+        );
+
+        // begin -b echo hi; end — a barrier option is a header option too.
+        let classifications = classified_without_io(vars, L!("begin -b echo hi; end"));
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::OPTION_SHORT,
+            "the barrier option"
         );
     }
 
