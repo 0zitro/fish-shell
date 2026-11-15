@@ -368,13 +368,27 @@ shell consults:
 .. envvar:: fish_color_redirection
     redirections like ``>/dev/null``
 .. envvar:: fish_color_redirection_input
-    ``<`` and its target
+    ``<`` and ``<?``
 .. envvar:: fish_color_redirection_output
-    ``>`` and its target
+    ``>`` and ``>?``
 .. envvar:: fish_color_redirection_append
-    ``>>`` and its target
-.. envvar:: fish_color_redirection_fd
-    ``>&`` and the descriptor after it
+    ``>>``
+.. envvar:: fish_color_redirection_dup
+    ``>&`` and ``<&``
+.. envvar:: fish_color_redirection_both
+    ``&>``, ``&>?`` and ``&>>``
+.. envvar:: fish_color_redirection_target
+    ``/dev/null`` in ``cmd < /dev/null``, ``out`` in ``cmd > out``, ``log`` in ``cmd >> log``, ``1`` in ``cmd 2>&1`` and ``all`` in ``cmd &> all``
+.. envvar:: fish_color_redirection_input_target
+    the file after ``<``, like ``/dev/null`` in ``cmd < /dev/null``
+.. envvar:: fish_color_redirection_output_target
+    the file after ``>``, like ``out`` in ``cmd > out``
+.. envvar:: fish_color_redirection_append_target
+    the file after ``>>``, like ``log`` in ``cmd >> log``
+.. envvar:: fish_color_redirection_dup_target
+    the descriptor after ``>&``, like ``1`` in ``cmd 2>&1``
+.. envvar:: fish_color_redirection_both_target
+    the file after ``&>``, like ``all`` in ``cmd &> all``
 .. envvar:: fish_color_end
     separators like ``;``, ``&`` and ``|``
 .. envvar:: fish_color_end_pipe

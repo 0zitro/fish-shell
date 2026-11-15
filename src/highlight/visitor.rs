@@ -854,13 +854,38 @@ fn definition_mode<'a>(
     Some(mode)
 }
 
-/// The scope a redirection's mode denotes.
-fn redirection_mode_scope(mode: RedirectionMode) -> TokenScopeId {
-    match mode {
+/// The scope a redirection's operator takes: the action its spelling selects.
+///
+/// `&>` and its forms open a file and put stderr on the same descriptor, so they are
+/// neither the plain open nor the dup: the `&` there merges stderr, while the `&` of
+/// `>&` marks a dup.
+fn redirection_operator_scope(oper: &PipeOrRedir) -> TokenScopeId {
+    if oper.stderr_merge {
+        return TokenScopeId::REDIRECTION_BOTH;
+    }
+    match oper.mode {
         RedirectionMode::Input | RedirectionMode::TryInput => TokenScopeId::REDIRECTION_INPUT,
         RedirectionMode::Overwrite | RedirectionMode::NoClob => TokenScopeId::REDIRECTION_OUTPUT,
         RedirectionMode::Append => TokenScopeId::REDIRECTION_APPEND,
-        RedirectionMode::Fd => TokenScopeId::REDIRECTION_FD,
+        RedirectionMode::Fd => TokenScopeId::REDIRECTION_DUP,
+    }
+}
+
+/// The scope a redirection's target takes, from the action its operator spells: the
+/// operand of an open is a path, the operand of a dup is a descriptor.
+fn redirection_target_scope(oper: &PipeOrRedir) -> TokenScopeId {
+    if oper.stderr_merge {
+        return TokenScopeId::REDIRECTION_BOTH_TARGET;
+    }
+    match oper.mode {
+        RedirectionMode::Input | RedirectionMode::TryInput => {
+            TokenScopeId::REDIRECTION_INPUT_TARGET
+        }
+        RedirectionMode::Overwrite | RedirectionMode::NoClob => {
+            TokenScopeId::REDIRECTION_OUTPUT_TARGET
+        }
+        RedirectionMode::Append => TokenScopeId::REDIRECTION_APPEND_TARGET,
+        RedirectionMode::Fd => TokenScopeId::REDIRECTION_DUP_TARGET,
     }
 }
 
@@ -1032,10 +1057,25 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         node: &dyn ast::Node,
         options_allowed: bool, /* = true */
     ) {
+        self.classify_word_with_base(node, options_allowed, TokenScopeId::PARAM);
+    }
+
+    /// Classify one word, giving the characters no more specific scope claims the `base`
+    /// scope.
+    ///
+    /// A redirection's target is such a word: what it is — a variable, a quote, a
+    /// substitution — is classified by the same rules as any other word, over a base that
+    /// names the kind of redirection it belongs to.
+    fn classify_word_with_base(
+        &mut self,
+        node: &dyn ast::Node,
+        options_allowed: bool,
+        base_scope: TokenScopeId,
+    ) {
         // node does not necessarily have type symbol_argument here.
         let source_range = node.source_range();
         let arg_str = self.source_slice(source_range);
-        let parameter = self.classification_of(TokenScopeId::PARAM);
+        let parameter = self.classification_of(base_scope);
 
         match option_shape(arg_str, options_allowed) {
             OptionShape::Argument => {
@@ -1233,38 +1273,40 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             return;
         }
 
-        // The mode the operator spells classifies both the operator and its target.
-        let redirection = self.classification_of(redirection_mode_scope(oper.mode));
+        // The action the operator spells classifies the operator itself.
+        let redirection = self.classification_of(redirection_operator_scope(&oper));
         self.classify_node(&redir.oper, redirection);
 
-        // Classify the target part.
-        // Check if the argument contains a command substitution. If so, classify it as a param
-        // even though it's a command redirection, and don't try to do any other validation.
+        // The target is one word of its own, under the base its operator's action gives it.
+        let target_scope = redirection_target_scope(&oper);
+        // Check if the target contains a command substitution. If so, classify it as a word
+        // even though it is the target of a redirection, and don't try to validate it.
         if has_cmdsub(&target) {
-            self.classify_as_argument(&redir.target, true);
+            self.classify_word_with_base(&redir.target, false, target_scope);
             return;
         }
         // No command substitution, so we can classify the target file or fd. For example,
         // disallow redirections into a non-existent directory.
-        let (scope, file_exists) = if !self.whether_io_permitted() {
+        let file_exists = if !self.whether_io_permitted() {
             // I/O is disallowed, so we don't have much hope of catching anything but gross
             // errors. Assume it's valid.
-            (redirection_mode_scope(oper.mode), false)
+            Some(false)
         } else if contains_pending_variable(&self.pending_variable_names, &target) {
             // Target uses a variable defined by the current commandline. Assume it's valid.
-            (redirection_mode_scope(oper.mode), false)
+            Some(false)
         } else {
-            // Validate the redirection target..
-            if let Ok(IsFile(file_exists)) =
-                self.file_tester.test_redirection_target(&target, oper.mode)
-            {
-                (redirection_mode_scope(oper.mode), file_exists)
-            } else {
-                (TokenScopeId::ERROR_REDIRECTION, false)
-            }
+            // Validate the redirection target.
+            self.file_tester
+                .test_redirection_target(&target, oper.mode)
+                .ok()
+                .map(|is_file| is_file.0)
         };
-        let classification = self.classification_of(scope);
-        self.classify_node(&redir.target, classification);
+        let Some(file_exists) = file_exists else {
+            let invalid = self.classification_of(TokenScopeId::ERROR_REDIRECTION);
+            self.classify_span(redir.target.source_range(), invalid);
+            return;
+        };
+        self.classify_word_with_base(&redir.target, false, target_scope);
         if file_exists {
             for i in redir.target.source_range().as_usize() {
                 self.classifications[i] =
@@ -1856,7 +1898,7 @@ mod tests {
                 ("foo", fg(TokenScopeId::PARAM), ns),
                 ("&", fg(TokenScopeId::END_BACKGROUND)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("&>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("&>", fg(TokenScopeId::REDIRECTION_BOTH)),
             );
 
             validate!(
@@ -1972,12 +2014,13 @@ mod tests {
                 ("<", fg(TokenScopeId::REDIRECTION_INPUT)),
                 (
                     "/dev/null",
-                    redirection_valid_path(TokenScopeId::REDIRECTION_INPUT)
+                    redirection_valid_path(TokenScopeId::REDIRECTION_INPUT_TARGET)
                 ),
                 // Output redirection to a valid fd.
-                ("1>&2", fg(TokenScopeId::REDIRECTION_FD)),
+                ("1>&", fg(TokenScopeId::REDIRECTION_DUP)),
+                ("2", fg(TokenScopeId::REDIRECTION_DUP_TARGET), ns),
                 // Output redirection to an invalid fd.
-                ("2>&", fg(TokenScopeId::REDIRECTION_FD)),
+                ("2>&", fg(TokenScopeId::REDIRECTION_DUP)),
                 ("LO", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Just a param, not a redirection.
                 ("test/blah", fg(TokenScopeId::PARAM)),
@@ -1998,7 +2041,7 @@ mod tests {
                     "99999999999999999999>&2",
                     fg(TokenScopeId::ERROR_REDIRECTION)
                 ),
-                ("2>&", fg(TokenScopeId::REDIRECTION_FD)),
+                ("2>&", fg(TokenScopeId::REDIRECTION_DUP)),
                 ("99999999999999999999", fg(TokenScopeId::ERROR_REDIRECTION)),
                 // Output redirection containing a command substitution.
                 ("4>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
@@ -2013,12 +2056,47 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
-                ("-no-such-file", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("-no-such-file", fg(TokenScopeId::REDIRECTION_OUTPUT_TARGET)),
                 (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
                 (
                     "-filename-starting-with-dash",
-                    redirection_valid_path(TokenScopeId::REDIRECTION_OUTPUT)
+                    redirection_valid_path(TokenScopeId::REDIRECTION_OUTPUT_TARGET)
                 ),
+            );
+
+            // The `&` of `&>` merges stderr onto the file; the `&` of `>&` and `<&` marks
+            // a dup, whose operand is a descriptor.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("&>", fg(TokenScopeId::REDIRECTION_BOTH)),
+                ("all", fg(TokenScopeId::REDIRECTION_BOTH_TARGET)),
+            );
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("3>&", fg(TokenScopeId::REDIRECTION_DUP)),
+                ("1", fg(TokenScopeId::REDIRECTION_DUP_TARGET), ns),
+            );
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                ("3<&", fg(TokenScopeId::REDIRECTION_DUP)),
+                ("0", fg(TokenScopeId::REDIRECTION_DUP_TARGET), ns),
+            );
+
+            // A target is a word: what it is keeps its own scopes, and its kind is the
+            // fallback for the text no piece names.
+            validate!(
+                ("echo", fg(TokenScopeId::BUILTIN)),
+                (">>", fg(TokenScopeId::REDIRECTION_APPEND)),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("$", fg(TokenScopeId::OPERATOR_DOLLAR), ns),
+                ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
+                ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE), ns),
+                (")", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
+                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("__", fg(TokenScopeId::REDIRECTION_APPEND_TARGET), ns),
+                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("z", fg(TokenScopeId::QUOTE_SINGLE), ns),
+                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
             );
 
             validate!(
@@ -2043,7 +2121,8 @@ mod tests {
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
-                ("$x", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("x", fg(TokenScopeId::VARIABLE), ns),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("end", fg(TokenScopeId::KEYWORD_END)),
             );
@@ -2055,7 +2134,8 @@ mod tests {
                 (";", fg(TokenScopeId::END_SEMICOLON)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
-                ("$x", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("x", fg(TokenScopeId::VARIABLE), ns),
                 ("2>", fg(TokenScopeId::REDIRECTION_OUTPUT)),
                 ("$totally_not_x", fg(TokenScopeId::ERROR_REDIRECTION)),
                 ("<", fg(TokenScopeId::REDIRECTION_INPUT)),
@@ -2075,7 +2155,8 @@ mod tests {
                 ("set-by-variable-override", fg(TokenScopeId::PARAM), ns),
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 (">", fg(TokenScopeId::REDIRECTION_OUTPUT)),
-                ("$x", fg(TokenScopeId::REDIRECTION_OUTPUT)),
+                ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
+                ("x", fg(TokenScopeId::VARIABLE), ns),
             );
 
             validate!(

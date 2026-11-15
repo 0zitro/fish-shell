@@ -173,11 +173,18 @@ declare_scope_entries! {
 
         "redirection" /** redirections like ``>/dev/null`` */;
         sum "redirection" {
-            input /** ``<`` and its target */
-            output /** ``>`` and its target */
-            append /** ``>>`` and its target */
-            fd /** ``>&`` and the descriptor after it */
+            input /** ``<`` and ``<?`` */
+            output /** ``>`` and ``>?`` */
+            append /** ``>>`` */
+            dup /** ``>&`` and ``<&`` */
+            both /** ``&>``, ``&>?`` and ``&>>`` */
         };
+        "redirection.target" /** ``/dev/null`` in ``cmd < /dev/null``, ``out`` in ``cmd > out``, ``log`` in ``cmd >> log``, ``1`` in ``cmd 2>&1`` and ``all`` in ``cmd &> all`` */ ["redirection", "argument"];
+        "redirection.input.target" /** the file after ``<``, like ``/dev/null`` in ``cmd < /dev/null`` */ ["redirection.target", "redirection.input", "redirection", "argument"];
+        "redirection.output.target" /** the file after ``>``, like ``out`` in ``cmd > out`` */ ["redirection.target", "redirection.output", "redirection", "argument"];
+        "redirection.append.target" /** the file after ``>>``, like ``log`` in ``cmd >> log`` */ ["redirection.target", "redirection.append", "redirection", "argument"];
+        "redirection.dup.target" /** the descriptor after ``>&``, like ``1`` in ``cmd 2>&1`` */ ["redirection.target", "redirection.dup", "redirection", "argument"];
+        "redirection.both.target" /** the file after ``&>``, like ``all`` in ``cmd &> all`` */ ["redirection.target", "redirection.both", "redirection", "argument"];
 
         "terminator" /** separators like ``;``, ``&`` and ``|`` */ end;
         sum "terminator" {

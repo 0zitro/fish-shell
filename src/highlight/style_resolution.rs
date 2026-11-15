@@ -827,6 +827,75 @@ mod tests {
         assert_eq!(fg(&append, 5), color(L!("brblue")), "append splits");
         assert_eq!(fg(&pipe, 5), color(L!("brblue")), "pipe splits");
         assert_eq!(fg(&semicolon, 4), color(L!("green")), "semicolon stays");
+
+        // A redirection's target is a word of its own: it takes the kind its operator
+        // spells, falls back on the redirection family and then on an argument, and splits
+        // from all of them when it names its value.
+        colors.set(L!("fish_color_param"), &[L!("brred")]);
+        // A redirection's target is validated, so it is a path whose directory exists.
+        let input = colors.classify(L!("true < /dev/null"));
+        let append = colors.classify(L!("true >> /tmp/fish-colour-test"));
+        let output = colors.classify(L!("true > /tmp/fish-colour-test"));
+        let fg = |classifications: &[HighlightClassification], index: usize| {
+            colors.style_of(classifications[index]).fg
+        };
+        assert_eq!(fg(&input, 5), color(L!("green")), "the input operator");
+        assert_eq!(fg(&input, 7), color(L!("green")), "the input target");
+        assert_eq!(fg(&append, 5), color(L!("brblue")), "the append operator");
+        assert_eq!(fg(&append, 8), color(L!("brblue")), "the append target");
+        assert_eq!(fg(&output, 5), color(L!("green")), "the output operator");
+        assert_eq!(
+            fg(&output, 7),
+            color(L!("green")),
+            "the output target falls back on the redirection family"
+        );
+
+        colors.set(
+            L!("fish_color_redirection_output_target"),
+            &[L!("bryellow")],
+        );
+        let output = colors.classify(L!("true > /tmp/fish-colour-test"));
+        assert_eq!(fg(&output, 5), color(L!("green")), "the output operator");
+        assert_eq!(fg(&output, 7), color(L!("bryellow")), "the output target");
+
+        // Every operand is one group in each target's chain, ahead of its operator's action:
+        // setting the operands once sets them for every kind.
+        colors.set(L!("fish_color_redirection_input"), &[L!("brblue")]);
+        colors.set(L!("fish_color_redirection_target"), &[L!("brgreen")]);
+        let input = colors.classify(L!("true < /dev/null"));
+        assert_eq!(fg(&input, 5), color(L!("brblue")), "the input operator");
+        assert_eq!(fg(&input, 7), color(L!("brgreen")), "every operand");
+
+        // A dup's operand is a descriptor, and the dup is an action of its own.
+        colors.set(L!("fish_color_redirection_dup"), &[L!("brmagenta")]);
+        let dup = colors.classify(L!("true 2>&1"));
+        assert_eq!(fg(&dup, 5), color(L!("brmagenta")), "the dup operator");
+        assert_eq!(fg(&dup, 8), color(L!("brgreen")), "every operand");
+
+        // `&>` opens a file and merges stderr, so it is neither the open nor the dup.
+        colors.set(L!("fish_color_redirection_both"), &[L!("brbrown")]);
+        let both = colors.classify(L!("true &> /tmp/fish-colour-test"));
+        assert_eq!(fg(&both, 5), color(L!("brbrown")), "the both operator");
+        assert_eq!(fg(&both, 8), color(L!("brgreen")), "every operand");
+    }
+
+    #[test]
+    #[serial]
+    fn a_redirection_target_falls_back_on_an_argument() {
+        let colors = Colors::new();
+        colors.set(L!("fish_color_param"), &[L!("brred")]);
+
+        let output = colors.classify(L!("true > /tmp/fish-colour-test"));
+        assert_eq!(
+            output[7].foreground(),
+            TokenScopeId::REDIRECTION_OUTPUT_TARGET,
+            "the target names its kind"
+        );
+        assert_eq!(
+            colors.style_of(output[7]).fg,
+            color(L!("brred")),
+            "a kind that names nothing is an argument"
+        );
     }
 
     #[test]
