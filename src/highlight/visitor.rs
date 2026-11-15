@@ -1671,6 +1671,23 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
         // The names a definition's header declares are defined in its local scope.
         if let BlockStatementHeader::Function(header) = &block.header {
+            // A definition's name is the command it declares, and the header states that
+            // kind and whether the body shares the calling scope, so every pass names it
+            // without resolving anything.  A word the shell refuses as a name is no name.
+            let name = header.first_arg.source(self.buff);
+            if !name.is_empty() && name.char_at(0) != '-' {
+                let no_shadowing = self
+                    .enclosing_function_parameters
+                    .last()
+                    .is_some_and(|parameters| parameters.whether_no_scope_shadowing());
+                let scope = if no_shadowing {
+                    TokenScopeId::FUNCTION_DEFINITION_NO_SHADOWING
+                } else {
+                    TokenScopeId::FUNCTION_DEFINITION
+                };
+                self.classify_word_with_base(&header.first_arg, false, scope);
+            }
+
             let name_indices = self
                 .enclosing_function_parameters
                 .last()
@@ -2610,10 +2627,11 @@ mod tests {
                 ("name", fg(TokenScopeId::PARAM)),
             );
 
-            // A name a definition's header declares is defined in its local scope.
+            // A name a definition's header declares is defined in its local scope, and the
+            // definition's own name is the command it declares.
             validate!(
                 ("function", fg(TokenScopeId::KEYWORD_FUNCTION)),
-                ("f", fg(TokenScopeId::PARAM)),
+                ("f", fg(TokenScopeId::FUNCTION_DEFINITION)),
                 ("-a", fg(TokenScopeId::OPTION_SHORT)),
                 ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
                 (";", fg(TokenScopeId::END_SEMICOLON)),
@@ -2872,6 +2890,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[serial]
+    fn a_definitions_name_is_the_command_it_declares() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // The header states the kind and the flag, so every pass names the name without
+        // resolving anything, and a bundle carries the flag as the body's enclosure does.
+        for (text, expected) in [
+            (L!("function f; end"), TokenScopeId::FUNCTION_DEFINITION),
+            (
+                L!("function f -S; end"),
+                TokenScopeId::FUNCTION_DEFINITION_NO_SHADOWING,
+            ),
+            (
+                L!("function f -a x y -S; end"),
+                TokenScopeId::FUNCTION_DEFINITION_NO_SHADOWING,
+            ),
+        ] {
+            for classifications in [
+                classified_without_io(vars, text),
+                classified_with_io(vars, text),
+            ] {
+                assert_eq!(
+                    classifications[9].foreground(),
+                    expected,
+                    "the name of `{text}`"
+                );
+            }
+        }
+
+        // A word the shell refuses as a name is no name: the header's option stays an
+        // option, and the word after it an argument.
+        let classifications = classified_without_io(vars, L!("function -S foo; end"));
+        assert_eq!(classifications[9].foreground(), TokenScopeId::OPTION_SHORT);
+        assert_eq!(classifications[12].foreground(), TokenScopeId::PARAM);
     }
 
     #[test]

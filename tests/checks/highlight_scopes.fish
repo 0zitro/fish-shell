@@ -149,6 +149,30 @@ printf '%s' 'if true; end' | runs_of
 # CHECK: 8 source
 # CHECK: 9 keyword.end
 
+# A definition's name is the command it declares: the header states that kind, so the name
+# is named without resolving anything, and the flag the body's enclosure states is stated
+# on the name too.
+printf '%s' 'function f; echo; end' | runs_of
+# CHECK: 0 keyword.function
+# CHECK: 8 source
+# CHECK: 9 command.function.definition
+# CHECK: 10 terminator.semicolon
+# CHECK: 11 source
+# CHECK: 12 command
+# CHECK: 16 terminator.semicolon
+# CHECK: 17 source
+# CHECK: 18 keyword.end
+
+printf '%s' 'function g -S; end' | runs_of
+# CHECK: 0 keyword.function
+# CHECK: 8 source
+# CHECK: 9 command.function.definition.no_shadowing
+# CHECK: 10 source
+# CHECK: 11 argument.option.short
+# CHECK: 13 terminator.semicolon
+# CHECK: 14 source
+# CHECK: 15 keyword.end
+
 printf '%s' "echo 'unterminated" | runs_of
 # CHECK: 0 command
 # CHECK: 4 source

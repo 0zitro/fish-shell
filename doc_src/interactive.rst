@@ -209,6 +209,10 @@ shell consults:
     ``test`` builtin
 .. envvar:: fish_color_function
     function calls like ``myfunc``
+.. envvar:: fish_color_function_definition
+    the name a definition declares, like ``f`` in ``function f``
+.. envvar:: fish_color_function_definition_no_shadowing
+    the name of a definition whose body shares the calling scope
 .. envvar:: fish_color_command_abbreviation
     abbreviations, like ``gco`` for ``git checkout``
 .. envvar:: fish_color_command_implicit_cd
@@ -471,6 +475,12 @@ order, so ``set -l x`` names ``fish_color_variable_definition_local``, ``set -g 
 names ``fish_color_variable_definition_global_exported``, and ``set x`` names
 ``fish_color_variable_definition``. ``x=1 command`` names a local, exported variable; a
 ``for`` loop's variable and a ``-a`` name in a definition's header are local.
+
+The name a ``function`` header declares is the command it declares, and the header states
+that kind, so the name is composed through ``$fish_color_command`` and
+``$fish_color_function``, then ``$fish_color_function_definition``; a definition whose body
+shares the calling scope adds ``$fish_color_function_definition_no_shadowing`` after it.
+A word the shell refuses as a name is no name, so a header's options stay options.
 
 If a variable isn't set or is empty after subtracting any ``--theme=THEME`` options, it
 names nothing, and the color of a piece of text is composed from several variables at

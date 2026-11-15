@@ -42,6 +42,8 @@ window.__fish_colour_variables = [
     {variable: "fish_color_builtin_status", path: "command.builtin.status", description: "status builtin", chain: ["fish_color_builtin", "fish_color_command", "fish_color_normal"]},
     {variable: "fish_color_builtin_test", path: "command.builtin.test", description: "test builtin", chain: ["fish_color_builtin", "fish_color_command", "fish_color_normal"]},
     {variable: "fish_color_function", path: "command.function", description: "function calls like myfunc", chain: ["fish_color_command", "fish_color_normal"]},
+    {variable: "fish_color_function_definition", path: "command.function.definition", description: "the name a definition declares, like f in function f", chain: ["fish_color_function", "fish_color_command", "fish_color_normal"]},
+    {variable: "fish_color_function_definition_no_shadowing", path: "command.function.definition.no_shadowing", description: "the name of a definition whose body shares the calling scope", chain: ["fish_color_function_definition", "fish_color_function", "fish_color_command", "fish_color_normal"]},
     {variable: "fish_color_command_abbreviation", path: "command.abbreviation", description: "abbreviations, like gco for git checkout", chain: ["fish_color_command", "fish_color_normal"]},
     {variable: "fish_color_command_implicit_cd", path: "command.implicit_cd", description: "directories as command words, like /tmp", chain: ["fish_color_command", "fish_color_normal"]},
     {variable: "fish_color_param", path: "argument", description: "ordinary command parameters", chain: ["fish_color_normal"]},
