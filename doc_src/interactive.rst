@@ -165,6 +165,12 @@ shell consults:
     ``switch`` keyword
 .. envvar:: fish_color_keyword_while
     ``while`` keyword
+.. envvar:: fish_color_keyword_brace
+    the braces of a brace clause, like ``{ echo; }``
+.. envvar:: fish_color_keyword_brace_open
+    the ``{`` of a brace clause
+.. envvar:: fish_color_keyword_brace_close
+    the ``}`` of a brace clause
 .. envvar:: fish_color_keyword_modifier
     ``and``, ``or``, ``not``, ``!`` and ``time``
 .. envvar:: fish_color_keyword_and
@@ -423,8 +429,10 @@ shell consults:
     characters inside ``function … end``
 .. envvar:: fish_color_meta_command_substitution
     characters inside ``$(…)``
+.. envvar:: fish_color_meta_block_brace
+    characters inside ``{ … }``
 .. envvar:: fish_color_meta_block
-    characters inside ``begin … end``
+    characters inside ``begin … end`` and ``{ … }``
 .. envvar:: fish_color_meta_if
     characters inside ``if … end``
 .. envvar:: fish_color_meta_case

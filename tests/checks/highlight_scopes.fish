@@ -197,6 +197,37 @@ printf '%s' 'begin -b echo hi; end' | runs_of
 # CHECK: 17 source
 # CHECK: 18 keyword.end
 
+# A brace clause is a block of its own: its marks name the pair, and its body is a block
+# and a brace clause in particular, where a begin block's body is only a block.
+printf '%s' '{ echo hi; }' | runs_of
+# CHECK: 0 keyword.brace.open
+# CHECK: 1 source
+# CHECK: 2 command
+# CHECK: 6 source
+# CHECK: 7 argument
+# CHECK: 9 terminator.semicolon
+# CHECK: 10 source
+# CHECK: 11 keyword.brace.close
+
+printf '%s' '{ echo hi; }' | enclosing_of
+# CHECK: 0
+# CHECK: 1
+# CHECK: 2 meta.block+meta.block.brace
+# CHECK: 6
+# CHECK: 7 meta.block+meta.block.brace
+# CHECK: 9 meta.block+meta.block.brace
+# CHECK: 10
+# CHECK: 11
+
+printf '%s' 'begin; echo; end' | enclosing_of
+# CHECK: 0
+# CHECK: 5
+# CHECK: 6
+# CHECK: 7 meta.block
+# CHECK: 11 meta.block
+# CHECK: 12
+# CHECK: 13
+
 # A line continuation escapes the newline it ends, and the indentation after it is the
 # whitespace it is.
 printf 'echo a \\\n    b' | runs_of

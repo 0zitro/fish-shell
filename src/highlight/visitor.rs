@@ -1428,7 +1428,8 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             ParseTokenType::Background => TokenScopeId::END_BACKGROUND,
             // An end token is a terminator, and its characters decide which one.
             ParseTokenType::End => TokenScopeId::END,
-            ParseTokenType::LeftBrace | ParseTokenType::RightBrace => TokenScopeId::KEYWORD,
+            ParseTokenType::LeftBrace => TokenScopeId::KEYWORD_BRACE_OPEN,
+            ParseTokenType::RightBrace => TokenScopeId::KEYWORD_BRACE_CLOSE,
             ParseTokenType::AndAnd | ParseTokenType::OrOr => TokenScopeId::OPERATOR_LOGICAL,
             ParseTokenType::String => {
                 // Assume all strings are params. This handles e.g. the variables a for header or
@@ -1838,7 +1839,11 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
     fn visit_brace_statement(&mut self, brace_statement: &BraceStatement) {
         self.visit(&brace_statement.left_brace);
         self.visit(&brace_statement.args_or_redirs);
-        self.visit_inside(enclosing_of(TokenScopeId::META_BLOCK), |visitor| {
+        // A brace clause is one form of a block: its body is a block, and a brace clause's
+        // body in particular.
+        let body =
+            enclosing_of(TokenScopeId::META_BLOCK).with_scope(TokenScopeId::META_BLOCK_BRACE);
+        self.visit_inside(body, |visitor| {
             visitor.visit(&brace_statement.jobs);
         });
         self.visit(&brace_statement.right_brace);
@@ -2804,9 +2809,9 @@ mod tests {
                 ("not", fg(TokenScopeId::KEYWORD_NOT)),
                 ("time", fg(TokenScopeId::KEYWORD_TIME)),
                 ("--", fg(TokenScopeId::OPTION)),
-                ("{", fg(TokenScopeId::KEYWORD)),
+                ("{", fg(TokenScopeId::KEYWORD_BRACE_OPEN)),
                 ("echo", fg(TokenScopeId::BUILTIN)),
-                ("}", fg(TokenScopeId::KEYWORD)),
+                ("}", fg(TokenScopeId::KEYWORD_BRACE_CLOSE)),
             );
 
             // Overlong paths don't crash (#7837).
@@ -3239,6 +3244,43 @@ mod tests {
             classifications[2].foreground(),
             TokenScopeId::OPERATOR_TILDE,
             "an assignment's value"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_brace_clause_is_one_form_of_a_block() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // { echo hi; } — the marks name the pair, and the body is a block and a brace
+        // clause in particular.
+        let classifications = classified_without_io(vars, L!("{ echo hi; }"));
+        assert_eq!(
+            classifications[0].foreground(),
+            TokenScopeId::KEYWORD_BRACE_OPEN,
+            "the opening brace"
+        );
+        assert_eq!(
+            classifications[11].foreground(),
+            TokenScopeId::KEYWORD_BRACE_CLOSE,
+            "the closing brace"
+        );
+        assert_eq!(
+            classifications[2].enclosing(),
+            EnclosingScopeSet::default()
+                .with_scope(TokenScopeId::META_BLOCK)
+                .with_scope(TokenScopeId::META_BLOCK_BRACE),
+            "the body"
+        );
+
+        // begin echo hi; end — a begin block's body is a block and no brace clause.
+        let classifications = classified_without_io(vars, L!("begin echo hi; end"));
+        assert_eq!(
+            classifications[6].enclosing(),
+            EnclosingScopeSet::default().with_scope(TokenScopeId::META_BLOCK),
+            "a begin block's body"
         );
     }
 
