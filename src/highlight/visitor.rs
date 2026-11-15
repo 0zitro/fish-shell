@@ -358,6 +358,7 @@ fn classify_slice_bound(
         bound,
         parameters,
         word_classification(scope, enclosing),
+        WordPosition::Inside,
         classifications,
     );
 }
@@ -490,12 +491,26 @@ fn word_classification(
     HighlightClassification::from(scope).with_enclosing(enclosing)
 }
 
+/// Where in a word a run of its text begins.
+///
+/// The shell expands a tilde only at a word's start, and `\~` and `\%` only need their
+/// escape there, so a run that begins inside a word states neither: the value of
+/// `--opt=value` is part of the option's word, not a word of its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordPosition {
+    /// The run begins the word.
+    Start,
+    /// The run begins inside the word.
+    Inside,
+}
+
 /// This function is a disaster badly in need of refactoring. It colors an argument or command,
 /// without regard to command substitutions.
 fn classify_word(
     buffstr: &wstr,
     parameters: Option<&FunctionParameterList>,
     base: HighlightClassification,
+    position: WordPosition,
     classifications: &mut [HighlightClassification],
 ) {
     let enclosing = base.enclosing();
@@ -550,7 +565,7 @@ fn classify_word(
                         fill_end = in_pos;
                         fill_scope = TokenScopeId::ERROR;
                     } else if matches!(escaped_char, '~' | '%') {
-                        if in_pos == 1 {
+                        if in_pos == 1 && position == WordPosition::Start {
                             fill_end = in_pos + 1;
                         }
                     } else if escaped_char == ',' {
@@ -632,7 +647,7 @@ fn classify_word(
                 } else {
                     // Not a backslash.
                     match c {
-                        '~' if in_pos == 0 => {
+                        '~' if in_pos == 0 && position == WordPosition::Start => {
                             classifications[in_pos] = tilde;
                         }
                         '$' => {
@@ -1206,6 +1221,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             cmd_str,
             self.enclosing_function_parameters.last(),
             base,
+            WordPosition::Start,
             &mut self.classifications[source_range.as_usize()],
         );
         self.classify_command_substitutions(node);
@@ -1247,6 +1263,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                     arg_str,
                     self.enclosing_function_parameters.last(),
                     parameter,
+                    WordPosition::Start,
                     &mut self.classifications[source_range.as_usize()],
                 );
             }
@@ -1256,6 +1273,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                     arg_str,
                     self.enclosing_function_parameters.last(),
                     base,
+                    WordPosition::Start,
                     &mut self.classifications[source_range.as_usize()],
                 );
             }
@@ -1272,9 +1290,21 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
 
                 let classifications = &mut self.classifications[source_range.as_usize()];
                 let (name_part, value_part) = classifications.split_at_mut(name_end + 1);
-                classify_word(&arg_str[..name_end], parameters, name, name_part);
+                classify_word(
+                    &arg_str[..name_end],
+                    parameters,
+                    name,
+                    WordPosition::Start,
+                    name_part,
+                );
                 name_part[name_end] = assignment;
-                classify_word(&arg_str[name_end + 1..], parameters, value, value_part);
+                classify_word(
+                    &arg_str[name_end + 1..],
+                    parameters,
+                    value,
+                    WordPosition::Inside,
+                    value_part,
+                );
             }
         }
 
@@ -1535,6 +1565,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 value_text,
                 parameters,
                 base,
+                WordPosition::Start,
                 &mut self.classifications[value_start..source_range.end()],
             );
         }
@@ -3176,6 +3207,38 @@ mod tests {
             classifications[6].foreground(),
             TokenScopeId::OPTION_SHORT,
             "the barrier option"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_tilde_expands_at_a_words_start() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // An option's value is part of the option's word, and the shell expands no tilde
+        // there: `echo --path=~/x` prints the tilde it was written with.
+        let classifications = classified_without_io(vars, L!("echo --path=~/x"));
+        assert_eq!(
+            classifications[12].foreground(),
+            TokenScopeId::PARAM,
+            "the option's value"
+        );
+
+        // A word's start and an assignment's value are word starts, so the tilde there is
+        // the expansion it spells.
+        let classifications = classified_without_io(vars, L!("echo ~/x"));
+        assert_eq!(
+            classifications[5].foreground(),
+            TokenScopeId::OPERATOR_TILDE,
+            "a word's first character"
+        );
+        let classifications = classified_without_io(vars, L!("v=~/x echo"));
+        assert_eq!(
+            classifications[2].foreground(),
+            TokenScopeId::OPERATOR_TILDE,
+            "an assignment's value"
         );
     }
 

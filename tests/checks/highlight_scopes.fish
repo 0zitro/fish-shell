@@ -42,6 +42,15 @@ printf '%s' 'set --path P ~/x' | runs_of
 # CHECK: 13 operator.tilde
 # CHECK: 14 argument
 
+# A tilde expands at a word's start only: an option's value is inside the option's word,
+# so the tilde there is the character it was written as.
+printf '%s' 'echo --path=~/x' | runs_of
+# CHECK: 0 command
+# CHECK: 4 source
+# CHECK: 5 argument.option.long
+# CHECK: 11 operator.assignment
+# CHECK: 12 argument
+
 printf '%s' 'echo hi > /tmp/out' | runs_of
 # CHECK: 0 command
 # CHECK: 4 source
