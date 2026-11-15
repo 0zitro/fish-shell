@@ -469,6 +469,15 @@ fn classify_variable(
     idx
 }
 
+/// The scopes a quoted run contributes to the characters it encloses: the family of quoted
+/// runs, and the style of this one entered inside it, so a style is consulted after the
+/// family it refines.
+fn quoted_run_enclosing(style: TokenScopeId) -> EnclosingScopeSet {
+    EnclosingScopeSet::default()
+        .with_scope(TokenScopeId::QUOTE)
+        .with_scope(style)
+}
+
 /// The classification of one character of a word: the scope it has there, inside the scopes
 /// that enclose the word.
 ///
@@ -493,13 +502,10 @@ fn classify_word(
     let leaf = |scope| word_classification(scope, enclosing);
     let operator = leaf(TokenScopeId::OPERATOR);
     let invalid = leaf(TokenScopeId::ERROR);
-    let escape = leaf(TokenScopeId::ESCAPE);
     let glob = leaf(TokenScopeId::OPERATOR_GLOB);
     let brace = leaf(TokenScopeId::OPERATOR_BRACE);
     let parenthesis = leaf(TokenScopeId::OPERATOR_PARENTHESIS);
     let tilde = leaf(TokenScopeId::OPERATOR_TILDE);
-    let delimiter_single = leaf(TokenScopeId::QUOTE_SINGLE_DELIMITER);
-    let delimiter_double = leaf(TokenScopeId::QUOTE_DOUBLE_DELIMITER);
     let quoted_single = leaf(TokenScopeId::QUOTE_SINGLE);
     let quoted_double = leaf(TokenScopeId::QUOTE_DOUBLE);
     let buff_len = buffstr.len();
@@ -518,6 +524,8 @@ fn classify_word(
         DoubleQuoted,
     }
     let mut mode = Mode::Unquoted;
+    // The scopes the run being classified encloses its characters with.
+    let mut run: Option<EnclosingScopeSet> = None;
     let mut unclosed_quote_offset = None;
     let mut bracket_count = 0;
     let mut in_pos = 0;
@@ -655,12 +663,20 @@ fn classify_word(
                             classifications[in_pos] = brace;
                         }
                         '\'' => {
-                            classifications[in_pos] = delimiter_single;
+                            let inside = enclosing
+                                .entering(quoted_run_enclosing(TokenScopeId::QUOTE_SINGLE));
+                            classifications[in_pos] =
+                                word_classification(TokenScopeId::STRING_DELIMITER_SINGLE, inside);
+                            run = Some(inside);
                             unclosed_quote_offset = Some(in_pos);
                             mode = Mode::SingleQuoted;
                         }
                         '"' => {
-                            classifications[in_pos] = delimiter_double;
+                            let inside = enclosing
+                                .entering(quoted_run_enclosing(TokenScopeId::QUOTE_DOUBLE));
+                            classifications[in_pos] =
+                                word_classification(TokenScopeId::STRING_DELIMITER_DOUBLE, inside);
+                            run = Some(inside);
                             unclosed_quote_offset = Some(in_pos);
                             mode = Mode::DoubleQuoted;
                         }
@@ -670,24 +686,29 @@ fn classify_word(
             }
             // Mode 1 means single quoted string, i.e 'foo'.
             Mode::SingleQuoted => {
+                let inside = run.expect("a quoted mode states the run it is inside");
                 classifications[in_pos] = quoted_single;
                 if c == '\\' {
                     // backslash
                     if in_pos + 1 < buff_len {
                         let escaped_char = buffstr.as_char_slice()[in_pos + 1];
                         if matches!(escaped_char, '\\' | '\'') {
-                            classifications[in_pos] = escape; // backslash
-                            classifications[in_pos + 1] = escape; // escaped char
+                            let escaped = word_classification(TokenScopeId::ESCAPE, inside);
+                            classifications[in_pos] = escaped; // backslash
+                            classifications[in_pos + 1] = escaped; // escaped char
                             in_pos += 1; // skip over backslash
                         }
                     }
                 } else if c == '\'' {
-                    classifications[in_pos] = delimiter_single;
+                    classifications[in_pos] =
+                        word_classification(TokenScopeId::STRING_DELIMITER_SINGLE, inside);
                     mode = Mode::Unquoted;
+                    run = None;
                 }
             }
             // Mode 2 means double quoted string, i.e. "foo".
             Mode::DoubleQuoted => {
+                let inside = run.expect("a quoted mode states the run it is inside");
                 // Slices are colored in advance, past `in_pos`, and we don't want to overwrite
                 // that.
                 if classifications[in_pos] == base {
@@ -695,16 +716,19 @@ fn classify_word(
                 }
                 match c {
                     '"' => {
-                        classifications[in_pos] = delimiter_double;
+                        classifications[in_pos] =
+                            word_classification(TokenScopeId::STRING_DELIMITER_DOUBLE, inside);
                         mode = Mode::Unquoted;
+                        run = None;
                     }
                     '\\'
                         // Backslash
                         if in_pos + 1 < buff_len => {
                             let escaped_char = buffstr.as_char_slice()[in_pos + 1];
                             if matches!(escaped_char, '\\' | '"' | '\n' | '$') {
-                                classifications[in_pos] = escape; // backslash
-                                classifications[in_pos + 1] = escape; // escaped char
+                                let escaped = word_classification(TokenScopeId::ESCAPE, inside);
+                                classifications[in_pos] = escaped; // backslash
+                                classifications[in_pos + 1] = escaped; // escaped char
                                 in_pos += 1; // skip over backslash
                             }
                         }
@@ -712,7 +736,7 @@ fn classify_word(
                         in_pos += classify_variable(
                             &buffstr[in_pos..],
                             parameters,
-                            enclosing,
+                            inside,
                             &mut classifications[in_pos..],
                         );
                         // Subtract one to account for the upcoming increment in the loop.
@@ -1263,10 +1287,19 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             Some(&mut is_quoted),
             None,
         ) {
+            // A substitution inside a double-quoted run is inside that run, so everything it
+            // states is stated inside the run as well.
+            let enclosing = if is_quoted {
+                self.enclosing_scopes
+                    .entering(quoted_run_enclosing(TokenScopeId::QUOTE_DOUBLE))
+            } else {
+                self.enclosing_scopes
+            };
+
             // Classify the parens. The open parens must exist; the closed paren may not if it was
             // incomplete.
             assert!(cmdsub.opening_paren_offset() < arg_str.len());
-            let parenthesis = self.classification_of(TokenScopeId::OPERATOR_PARENTHESIS);
+            let parenthesis = word_classification(TokenScopeId::OPERATOR_PARENTHESIS, enclosing);
             self.classifications[arg_start..][cmdsub.opening_paren_range()].fill(parenthesis);
             self.classifications[arg_start..][cmdsub.closing_paren_range()].fill(parenthesis);
 
@@ -1281,8 +1314,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 self.file_tester.ctx,
                 self.working_directory,
                 self.whether_io_permitted(),
-                self.enclosing_scopes
-                    .with_scope(TokenScopeId::META_COMMAND_SUBSTITUTION),
+                enclosing.with_scope(TokenScopeId::META_COMMAND_SUBSTITUTION),
             );
             let sub_classifications = cmdsub_visitor.classify();
 
@@ -1301,7 +1333,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 classify_slice(
                     &arg_str[after..after + slice_len],
                     parameters,
-                    self.enclosing_scopes,
+                    enclosing,
                     &mut self.classifications[arg_start..][after..after + slice_len],
                 );
             }
@@ -2173,7 +2205,7 @@ mod tests {
             );
             validate!(
                 ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE)),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE)),
                 ("before", fg(TokenScopeId::QUOTE_DOUBLE), ns),
                 ("$", fg(TokenScopeId::OPERATOR_DOLLAR)),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
@@ -2181,7 +2213,7 @@ mod tests {
                 ("param1", fg(TokenScopeId::PARAM)),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS)),
                 ("after", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("param2", fg(TokenScopeId::PARAM)),
             );
             validate!(
@@ -2275,16 +2307,16 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 (">>", fg(TokenScopeId::REDIRECTION_APPEND)),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("$", fg(TokenScopeId::OPERATOR_DOLLAR), ns),
                 ("(", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
                 ("true", fg(TokenScopeId::BUILTIN_BOOLEAN_TRUE), ns),
                 (")", fg(TokenScopeId::OPERATOR_PARENTHESIS), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("__", fg(TokenScopeId::REDIRECTION_APPEND_TARGET), ns),
-                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("'", fg(TokenScopeId::STRING_DELIMITER_SINGLE), ns),
                 ("z", fg(TokenScopeId::QUOTE_SINGLE), ns),
-                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("'", fg(TokenScopeId::STRING_DELIMITER_SINGLE), ns),
             );
 
             validate!(
@@ -2373,10 +2405,10 @@ mod tests {
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
                 ("foo", fg(TokenScopeId::VARIABLE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE)),
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL), ns),
                 ("bar", fg(TokenScopeId::VARIABLE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
                 ("baz", fg(TokenScopeId::VARIABLE), ns),
                 ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
@@ -2389,12 +2421,12 @@ mod tests {
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("123", fg(TokenScopeId::ARGUMENT_NUMBER)),
                 ("true", fg(TokenScopeId::ARGUMENT_BOOLEAN)),
-                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER)),
+                ("'", fg(TokenScopeId::STRING_DELIMITER_SINGLE)),
                 ("123", fg(TokenScopeId::QUOTE_SINGLE), ns),
-                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER)),
+                ("'", fg(TokenScopeId::STRING_DELIMITER_SINGLE), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE)),
                 ("true", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("123abc", fg(TokenScopeId::PARAM)),
                 ("true1", fg(TokenScopeId::PARAM)),
             );
@@ -2416,9 +2448,9 @@ mod tests {
                 ("$", fg(TokenScopeId::VARIABLE_SIGIL)),
                 ("x", fg(TokenScopeId::VARIABLE), ns),
                 ("[", fg(TokenScopeId::VARIABLE_SLICE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("-1", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("]", fg(TokenScopeId::VARIABLE_SLICE), ns),
             );
             // A command substitution carries a slice too; the substitution is not a quoting
@@ -2471,12 +2503,12 @@ mod tests {
             validate!(
                 ("echo", fg(TokenScopeId::BUILTIN)),
                 ("a", fg(TokenScopeId::PARAM)),
-                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
+                ("'", fg(TokenScopeId::STRING_DELIMITER_SINGLE), ns),
                 ("b", fg(TokenScopeId::QUOTE_SINGLE), ns),
-                ("'", fg(TokenScopeId::QUOTE_SINGLE_DELIMITER), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("'", fg(TokenScopeId::STRING_DELIMITER_SINGLE), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
                 ("c", fg(TokenScopeId::QUOTE_DOUBLE), ns),
-                ("\"", fg(TokenScopeId::QUOTE_DOUBLE_DELIMITER), ns),
+                ("\"", fg(TokenScopeId::STRING_DELIMITER_DOUBLE), ns),
             );
 
             // An escape is classified by the shape of what follows the backslash.
@@ -2929,6 +2961,61 @@ mod tests {
         let classifications = classified_without_io(vars, L!("function -S foo; end"));
         assert_eq!(classifications[9].foreground(), TokenScopeId::OPTION_SHORT);
         assert_eq!(classifications[12].foreground(), TokenScopeId::PARAM);
+    }
+
+    #[test]
+    #[serial]
+    fn a_quoted_run_encloses_what_is_inside_it() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        let single = EnclosingScopeSet::default()
+            .with_scope(TokenScopeId::QUOTE)
+            .with_scope(TokenScopeId::QUOTE_SINGLE);
+        let double = EnclosingScopeSet::default()
+            .with_scope(TokenScopeId::QUOTE)
+            .with_scope(TokenScopeId::QUOTE_DOUBLE);
+
+        // echo "$x" — the run's own text is the run's scope, and what the run expands is stated
+        // inside the run.
+        let classifications = classified_with_io(vars, L!("echo \"$x\""));
+        assert_eq!(
+            classifications[6].enclosing(),
+            double,
+            "the reference's sigil"
+        );
+        assert_eq!(
+            classifications[7].enclosing(),
+            double,
+            "the reference's name"
+        );
+        assert_eq!(classifications[5].enclosing(), double, "the opening mark");
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::VARIABLE_SIGIL,
+            "the reference keeps the scope it has anywhere"
+        );
+
+        // The run's own characters are the run's scope and nothing else: there is no second
+        // statement of the run inside itself.
+        assert!(
+            classifications[6]
+                .enclosing()
+                .has_scope(TokenScopeId::QUOTE),
+            "the run encloses the reference"
+        );
+        let classifications = classified_with_io(vars, L!("echo 'ab'"));
+        assert_eq!(classifications[5].enclosing(), single, "the opening mark");
+        assert!(
+            classifications[6].enclosing().is_empty(),
+            "the run's own text"
+        );
+
+        // A substitution inside a run is inside the run as well as inside itself.
+        let classifications = classified_with_io(vars, L!("echo \"$(true)\""));
+        let inside = double.with_scope(TokenScopeId::META_COMMAND_SUBSTITUTION);
+        assert_eq!(classifications[8].enclosing(), inside, "the command");
     }
 
     #[test]

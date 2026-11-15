@@ -144,16 +144,16 @@ declare_scope_entries! {
             sum { path " --path" non_path " --unpath" }
         };
 
-        "string.quoted" /** quoted text like ``"abc"`` */ quote;
-        sum "string.quoted" {
-            single /** text inside ``'...'`` */
-            double /** text inside ``"..."`` */
-        };
-        sum "string.quoted.single" {
-            delimiter /** ``'`` quotes of a single-quoted run */
-        };
-        sum "string.quoted.double" {
-            delimiter /** ``"`` quotes of a double-quoted run */
+        // A quoted run is an enclosing construct: its own characters are its scope, and what
+        // it encloses — a reference, a substitution, an escape — is stated inside it.  The
+        // stems keep the variables the configuration already fixes.
+        "meta.string.quoted" /** characters of a quoted run, like ``"abc"`` */ quote enclosing;
+        "meta.string.quoted.single" /** characters of a single-quoted run, like ``'abc'`` */ quote_single enclosing;
+        "meta.string.quoted.double" /** characters of a double-quoted run, like ``"abc"`` */ quote_double enclosing;
+        "string.delimiter" /** quote marks, like the marks around ``"abc"`` */;
+        sum "string.delimiter" {
+            single /** the marks of a single-quoted run, like the ``'`` of ``'abc'`` */
+            double /** the marks of a double-quoted run, like the ``"`` of ``"abc"`` */
         };
         "string.escape" /** character escapes like ``\n`` and ``\x70`` */ escape;
         sum "string.escape" {
@@ -391,10 +391,13 @@ mod tests {
         }
 
         let cases: &[(&str, &[&str])] = &[
-            // A quote's marks resolve through the quote style and the family.
+            // A quote's marks resolve through the delimiter family, and the run they belong to
+            // reaches them as an enclosing scope rather than as a step of their chain.
+            ("string.delimiter.single", &["string.delimiter", "source"]),
+            // A quoted run's style resolves through the family of quoted runs.
             (
-                "string.quoted.double.delimiter",
-                &["string.quoted.double", "string.quoted", "source"],
+                "meta.string.quoted.double",
+                &["meta.string.quoted", "source"],
             ),
             // A written chain replaces the derivation: the modifier family falls
             // back to the operator, and a modifier to its family.

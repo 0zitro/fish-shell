@@ -324,15 +324,17 @@ shell consults:
 .. envvar:: fish_color_variable_definition_universal_unexported_non_path
     ``x`` in ``set -U -u --unpath x``
 .. envvar:: fish_color_quote
-    quoted text like ``"abc"``
+    characters of a quoted run, like ``"abc"``
 .. envvar:: fish_color_quote_single
-    text inside ``'...'``
+    characters of a single-quoted run, like ``'abc'``
 .. envvar:: fish_color_quote_double
-    text inside ``"..."``
-.. envvar:: fish_color_quote_single_delimiter
-    ``'`` quotes of a single-quoted run
-.. envvar:: fish_color_quote_double_delimiter
-    ``"`` quotes of a double-quoted run
+    characters of a double-quoted run, like ``"abc"``
+.. envvar:: fish_color_string_delimiter
+    quote marks, like the marks around ``"abc"``
+.. envvar:: fish_color_string_delimiter_single
+    the marks of a single-quoted run, like the ``'`` of ``'abc'``
+.. envvar:: fish_color_string_delimiter_double
+    the marks of a double-quoted run, like the ``"`` of ``"abc"``
 .. envvar:: fish_color_escape
     character escapes like ``\n`` and ``\x70``
 .. envvar:: fish_color_escape_unicode
