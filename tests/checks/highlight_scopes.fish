@@ -147,6 +147,17 @@ printf '%s' 'echo *' | runs_of
 # CHECK: 4 source
 # CHECK: 5 operator.glob
 
+# A line continuation escapes the newline it ends, and the indentation after it is the
+# whitespace it is.
+printf 'echo a \\\n    b' | runs_of
+# CHECK: 0 command
+# CHECK: 4 source
+# CHECK: 5 argument
+# CHECK: 6 source
+# CHECK: 7 string.escape
+# CHECK: 9 source
+# CHECK: 13 argument
+
 printf '%s' 'if true; end' | runs_of
 # CHECK: 0 keyword.if
 # CHECK: 2 source
