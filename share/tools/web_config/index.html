@@ -35,12 +35,22 @@
         </div>
         <div id="tab_contents">
             <template x-if="currentTab === 'colors'" x-data="colors">
-                <div class="colour_panes" tabindex="-1" @keydown="onPaneKey($event)">
+                <div class="colour_panes" tabindex="-1" x-ref="panes" :style="paneSizes" @keydown="onPaneKey($event)">
+                    <!-- The edges between the panes.  Each lies on a gap the grid leaves, and each
+                         corner where a column edge meets a row edge drags both; where they are is
+                         measured from the panes, so the layout states them. -->
+                    <div class="colour_sashes" x-ref="sashes">
+                        <template x-for="sash in sashes" :key="sash.edge.id">
+                            <div class="colour_sash" :style="sash.style"
+                                @pointerdown.prevent.stop="startSashDrag(sash, $event)"></div>
+                        </template>
+                    </div>
                     <!-- The sample: fish source classified by the highlighting pass itself, with
                          the style each piece resolves to.  A click picks a run; the scopes that
                          colour it appear in the rail beside it.  Nothing is marked until
                          then. -->
                     <div class="colour_pane colour_pane_sample" tabindex="-1" x-ref="samplePane"
+                        :class="{colour_sample_sized: '--sample-row' in paneSizes}"
                         @focus="pane = 'sample'"
                         :style="{'background-color': actualTerminalBackgroundColor, 'color': defaultTextColour()}">
                         <div class="colour_sample_title">
@@ -56,11 +66,8 @@
                         </div>
                         <div class="colour_sample_rows" x-ref="sampleRows">
                             <template x-for="(piece, pieceIndex) in colourSample" :key="pieceIndex">
-                                <span class="colour_sample_piece"
-                                    :class="{colour_scope_extent: pieceInActiveStop(pieceIndex), cs_editing: pickedPieceIndex == pieceIndex}"
-                                    :style="styleForPiece(piece)" @click="pickPiece(pieceIndex)"
-                                    :data-piece-index="pieceIndex"
-                                    x-text="piece.text"></span>
+                                <span class="colour_sample_piece" :style="styleForPiece(piece)" @click="pickPiece(pieceIndex)"
+                                    :data-piece-index="pieceIndex" x-text="piece.text"></span>
                             </template>
                         </div>
                     </div>
@@ -86,8 +93,8 @@
                                             :class="{colour_specificity_selected: selectedStopIndex == stopIndex, colour_specificity_unset: !stopIsSet(stop)}"
                                             :title="stop.variable" @click="selectRailStop(stopIndex)"
                                             @dblclick="revealVariableInSample(stop.variable)"
-                                            @mouseenter="hoveredStopIndex = stopIndex"
-                                            @mouseleave="hoveredStopIndex = null"><span
+                                            @mouseenter="hoverRailStop(stopIndex)"
+                                            @mouseleave="clearHoveredRailStop()"><span
                                                 class="colour_specificity_indicator"
                                                 x-text="selectedStopIndex == stopIndex ? '&gt; ' : '  '"></span><span
                                                 class="colour_specificity_bullet"
@@ -106,7 +113,7 @@
                     <!-- The variables the sample cannot show — the enclosing scopes, the family
                          fallbacks and the overlays — and every other one, so all of them are
                          reachable. -->
-                    <div class="colour_pane colour_pane_variables" tabindex="-1"
+                    <div class="colour_pane colour_pane_variables" tabindex="-1" x-ref="variablesPane"
                         :style="{'background-color': actualTerminalBackgroundColor}">
                         <div class="colour_variable_list" x-ref="variableList">
                             <template x-for="variable in colourVariables" :key="variable.variable">
@@ -141,7 +148,7 @@
                     <!-- The style the scope has and the colours a field takes.  The style pane
                          is the narrow column: the style decides the field, and the colour pane
                          is where a colour is found. -->
-                    <div class="colour_bottom">
+                    <div class="colour_bottom" x-ref="bottomPane">
                         <div class="colour_pane colour_pane_style" x-ref="stylePane" tabindex="-1"
                             @focus="pane = 'style'; styleRow = 'fields'" @click="focusPane('style')"
                             :style="{'background-color': actualTerminalBackgroundColor}">
@@ -194,8 +201,11 @@
                             </template>
                         </div>
                     </div>
-                    <!-- What the page writes, and the themes it can write instead. -->
-                    <div class="colour_footer" :style="{'background-color': actualTerminalBackgroundColor}">
+                    <!-- What the page writes, and the themes it can write instead.  The strip is
+                         as tall as its text, so the edges above and below it move the nearest
+                         row that can be sized. -->
+                    <div class="colour_footer" x-ref="footerPane"
+                        :style="{'background-color': actualTerminalBackgroundColor}">
                         <span class="colour_footer_message" :style="refusalStyle()" x-text="themeSaveMessage"></span>
                         <button class="save_button" :style="{'color': defaultTextColour()}"
                             x-show="showSaveButton" @click="setTheme" x-text="saveThemeButtonTitle"></button>

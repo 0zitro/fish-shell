@@ -1,3 +1,33 @@
+// The scopes a run resolves through, least specific first: the root, the scopes that enclose
+// the run from the outermost, the chain from its least specific step, and the run's own scope.
+// A run's resolution holds while the sample and the vocabulary do, so it is stated once per
+// run: the sample has thousands of runs, and every one of them is drawn on each render.
+const pieceResolutions = new WeakMap();
+
+function resolution_of(colourVariableOf, variableOfPath, piece) {
+    const remembered = pieceResolutions.get(piece);
+    if (remembered) return remembered;
+    const resolution = [];
+    const leaf = colourVariableOf[variableOfPath[piece.path]];
+    if (leaf) {
+        const root = "fish_color_normal";
+        resolution.push(root);
+        for (const enclosing of piece.enclosing.slice().reverse()) {
+            const variable = variableOfPath[enclosing];
+            if (variable) resolution.push(variable);
+        }
+        for (const step of leaf.chain.slice().reverse()) {
+            if (step !== root) resolution.push(step);
+        }
+        resolution.push(leaf.variable);
+    }
+    pieceResolutions.set(piece, resolution);
+    return resolution;
+}
+
+// The sample's runs that carry each mark are set as a class where the mark changes, rather than
+// read by a binding on each run: the pointer crossing the list changes the mark with every row,
+// and a binding per run would restate a class for every run in the sample each time.
 // TODO double check all defaults for nullability etc
 document.addEventListener("alpine:init", () => {
     window.Alpine.data("colors", () => ({
@@ -127,6 +157,7 @@ document.addEventListener("alpine:init", () => {
             if (!stop) return;
             this.selectedStopIndex = stopIndex;
             this.selectColorSetting(stop.variable);
+            this.refreshMarks();
         },
 
         // Walk the rail, which is what the arrows are for.
@@ -209,37 +240,96 @@ document.addEventListener("alpine:init", () => {
         // same mark the rail leaves on the runs a scope covers.
         hoverVariable(variable) {
             this.hoveredVariable = variable;
+            this.refreshMarks();
         },
 
         clearHoveredVariable() {
             this.hoveredVariable = null;
+            this.refreshMarks();
         },
 
-        // Whether a run is one the active stop covers: the picked run for the run's own
-        // scope, every run resolving through a chain step, every run a side of the
-        // enclosing scope.  A hovered variable takes over the mark while the pointer is on
-        // it.  The root colours every run, so a mark from it would cover the whole sample.
-        pieceInActiveStop(pieceIndex) {
-            const piece = this.colourSample[pieceIndex];
+        // The rail marks the runs of the stop the pointer is on, and the runs of the picked stop
+        // again when the pointer leaves.
+        hoverRailStop(stopIndex) {
+            this.hoveredStopIndex = stopIndex;
+            this.refreshMarks();
+        },
+
+        clearHoveredRailStop() {
+            this.hoveredStopIndex = null;
+            this.refreshMarks();
+        },
+
+        // The runs each variable covers, by variable: the runs whose resolution carries it, the
+        // runs whose own scope is it, and the runs whose enclosing scope is it.  The sample holds
+        // while the page runs, so the three are stated once, which is what makes a mark from a
+        // hover a lookup rather than a walk over thousands of runs.
+        runsOfVariable: { through: {}, leaves: {}, enclosing: {} },
+
+        runsPerVariable() {
+            const runs = { through: {}, leaves: {}, enclosing: {} };
+            for (const [index, piece] of this.colourSample.entries()) {
+                const leaf = this.variableForPiece(piece);
+                if (leaf) (runs.leaves[leaf] ??= []).push(index);
+                for (const variable of this.resolutionOf(piece)) (runs.through[variable] ??= []).push(index);
+                for (const path of piece.enclosing) (runs.enclosing[path] ??= []).push(index);
+            }
+            return runs;
+        },
+
+        // The runs the marking covers now: the runs of a hovered variable, or the runs of the
+        // stop the rail points at.  The root colours every run, so a mark from it covers nothing.
+        markedPieces() {
             if (this.hoveredVariable) {
-                if (this.hoveredVariable === "fish_color_normal") return false;
-                return this.resolutionOf(piece).includes(this.hoveredVariable);
+                return this.hoveredVariable === "fish_color_normal"
+                    ? []
+                    : this.runsOfVariable.through[this.hoveredVariable] || [];
             }
             const stop = this.pickedStops[this.hoveredStopIndex ?? this.selectedStopIndex];
-            if (!stop || stop.variable === "fish_color_normal") return false;
+            if (!stop || stop.variable === "fish_color_normal") return [];
             switch (stop.kind) {
                 case "leaf":
-                    // A run picked in the sample is one run; a variable picked from the
-                    // list is every run the pass gave that scope.
+                    // A run picked in the sample is one run; a variable picked from the list is
+                    // every run the pass gave that scope.
                     return this.pickedPieceIndex !== null
-                        ? pieceIndex === this.pickedPieceIndex
-                        : this.variableForPiece(piece) === stop.variable;
+                        ? [this.pickedPieceIndex]
+                        : this.runsOfVariable.leaves[stop.variable] || [];
                 case "enclosing":
-                    return piece.enclosing.includes(stop.path);
+                    return this.runsOfVariable.enclosing[stop.path] || [];
                 case "chain":
-                    return this.resolutionOf(piece).includes(stop.variable);
+                    return this.runsOfVariable.through[stop.variable] || [];
             }
-            return false;
+            return [];
+        },
+
+        // The runs the page marks, and the run it marks as picked: classes the page sets where the
+        // marking changes.
+        markedRuns: [],
+        markedPiece: null,
+
+        refreshMarks() {
+            const sample = this.$refs.sampleRows;
+            if (!sample) return;
+            const marked = new Set(this.markedPieces());
+            const previous = new Set(this.markedRuns);
+            for (const index of previous) {
+                if (!marked.has(index)) this.markRun(sample, index, "colour_scope_extent", false);
+            }
+            for (const index of marked) {
+                if (!previous.has(index)) this.markRun(sample, index, "colour_scope_extent", true);
+            }
+            this.markedRuns = [...marked];
+            if (this.markedPiece !== this.pickedPieceIndex) {
+                if (this.markedPiece !== null) this.markRun(sample, this.markedPiece, "cs_editing", false);
+                if (this.pickedPieceIndex !== null) this.markRun(sample, this.pickedPieceIndex, "cs_editing", true);
+                this.markedPiece = this.pickedPieceIndex;
+            }
+        },
+
+        // One run's class, set on the element the run is drawn in.
+        markRun(sample, index, className, marked) {
+            const run = sample.querySelector('.colour_sample_piece[data-piece-index="' + index + '"]');
+            if (run) run.classList.toggle(className, marked);
         },
 
         // The style a stop's own variable renders: its value, else the chain it resolves
@@ -407,19 +497,7 @@ document.addEventListener("alpine:init", () => {
 
         // The variables one piece resolves through, least specific first.
         resolutionOf(piece) {
-            const leaf = this.colourVariableOf[this.variableForPiece(piece)];
-            if (!leaf) return [];
-            const root = "fish_color_normal";
-            const resolution = [root];
-            for (const enclosing of piece.enclosing.slice().reverse()) {
-                const variable = this.variableOfPath[enclosing];
-                if (variable) resolution.push(variable);
-            }
-            for (const step of leaf.chain.slice().reverse()) {
-                if (step !== root) resolution.push(step);
-            }
-            resolution.push(leaf.variable);
-            return resolution;
+            return resolution_of(this.colourVariableOf, this.variableOfPath, piece);
         },
 
         // The fields a value has.
@@ -539,6 +617,7 @@ document.addEventListener("alpine:init", () => {
             this.showSaveButton = true;
 
             this.noteThemeChanged();
+            this.$nextTick(() => this.refreshMarks());
         },
 
         text_color_for_color: text_color_for_color,
@@ -786,6 +865,319 @@ document.addEventListener("alpine:init", () => {
                 const ref = refs[pane];
                 if (ref && typeof ref.focus === "function") ref.focus();
             });
+        },
+
+        // The px each sashed length is set to, by the custom property the pane grid reads it
+        // from.  A property the page has not set keeps the stylesheet's size.
+        paneSizes: {},
+        // The sash the pointer is dragging, where the drag started, and the listeners that
+        // follow it on the window for the length of the drag.
+        sashDrag: null,
+        sashListeners: null,
+        // The boxes the edges take, measured from the panes each time the layout moves.
+        sashes: [],
+
+        // The colour page is a column of rows, and a row holds the panes that share its width as
+        // columns.  A row states the custom property its height is read from when an edge sizes
+        // it, or nothing when it is as tall as its text; a pane states the property its width is
+        // read from when an edge sizes it, or nothing when the row shares the width out.  The grid
+        // reads the same properties, so the panes and the grid state one layout.
+        paneLayout() {
+            return [
+                {
+                    height: { property: "--sample-row", minimum: 120 },
+                    columns: [
+                        { element: this.$refs.samplePane },
+                        { element: this.$refs.specificity, property: "--rail-width", minimum: 96, otherMinimum: 320 },
+                    ],
+                },
+                {
+                    height: { property: "--variables-row", minimum: 40 },
+                    columns: [{ element: this.$refs.variablesPane }],
+                },
+                { height: null, columns: [{ element: this.$refs.statementPane }] },
+                {
+                    height: { property: "--bottom-row", minimum: 120 },
+                    columns: [
+                        { element: this.$refs.stylePane, property: "--style-width", minimum: 96, otherMinimum: 320 },
+                        { element: this.$refs.colourPane },
+                    ],
+                },
+                { height: null, columns: [{ element: this.$refs.footerPane }] },
+            ];
+        },
+
+        // The edges the layout states: one between each pair of rows, one between the panes of a
+        // row that holds more than one, the page's own bottom edge, and a corner wherever a column
+        // edge ends on a row edge, since both edges can be dragged from that point.
+        paneEdges() {
+            const rows = this.paneLayout();
+            const edges = [];
+            for (let between = 1; between < rows.length; between += 1) {
+                edges.push({ id: "rows-" + between, kind: "rows", between });
+            }
+            edges.push({ id: "outer", kind: "outer" });
+            for (const [rowIndex, row] of rows.entries()) {
+                for (let column = 1; column < row.columns.length; column += 1) {
+                    const columnEdge = { id: "columns-" + rowIndex + "-" + column, kind: "columns", row: rowIndex, column };
+                    edges.push(columnEdge);
+                    for (const between of [rowIndex, rowIndex + 1]) {
+                        if (between < 1 || between >= rows.length) continue;
+                        edges.push({
+                            id: "corner-" + columnEdge.id + "-" + between,
+                            kind: "corner",
+                            column: columnEdge,
+                            between,
+                        });
+                    }
+                }
+            }
+            return edges;
+        },
+
+        // The columns an edge parts, as the pane it sizes and the direction that pane grows in: a
+        // pane left of the edge grows as the pointer moves right, a pane right of it grows as the
+        // pointer moves left.
+        columnEdge(edge) {
+            const columns = this.paneLayout()[edge.row].columns;
+            const left = columns[edge.column - 1];
+            const sized = left.property ? left : columns[edge.column];
+            return {
+                axis: "x",
+                pane: sized.element,
+                property: sized.property,
+                minimum: sized.minimum,
+                otherMinimum: sized.otherMinimum,
+                sign: left.property ? 1 : -1,
+            };
+        },
+
+        // The edges one sash drags: a column edge, a row edge, the page's bottom edge, or both of
+        // the edges a corner joins.
+        sashParts(edge) {
+            if (edge.kind === "columns") return [this.columnEdge(edge)];
+            if (edge.kind === "rows") return [{ axis: "y", between: edge.between }];
+            if (edge.kind === "corner") return [this.columnEdge(edge.column), { axis: "y", between: edge.between }];
+            return [{ axis: "y", outer: true }];
+        },
+
+        // The boxes the sashes take, measured from the panes: an edge lies on the gap between the
+        // panes it parts, and a corner on the point where its two edges cross.  The stylesheet
+        // states the gap and the thicknesses, the panes state where they are.
+        layoutSashes() {
+            const container = this.$refs.sashes;
+            if (!container) return;
+            const group = container.getBoundingClientRect();
+            const style = getComputedStyle(container);
+            const gap = parseFloat(style.getPropertyValue("--pane-gap")) || 8;
+            const thickness = parseFloat(style.getPropertyValue("--sash-thickness")) || 9;
+            const cornerSize = parseFloat(style.getPropertyValue("--corner-size")) || 15;
+            const rows = this.paneLayout().map((row) => {
+                const box = row.columns[0].element.getBoundingClientRect();
+                return { top: box.top - group.top, bottom: box.bottom - group.top, height: box.height };
+            });
+            const columns = this.paneLayout().map((row) =>
+                row.columns.map((column) => {
+                    const box = column.element.getBoundingClientRect();
+                    return { left: box.left - group.left, right: box.right - group.left };
+                })
+            );
+            const sashes = [];
+            for (const edge of this.paneEdges()) {
+                if (edge.kind === "rows" || edge.kind === "outer") {
+                    const middle =
+                        edge.kind === "outer"
+                            ? rows[rows.length - 1].bottom + gap / 2
+                            : (rows[edge.between - 1].bottom + rows[edge.between].top) / 2;
+                    sashes.push({
+                        edge,
+                        style: {
+                            cursor: "row-resize",
+                            left: "0",
+                            right: "0",
+                            top: middle - thickness / 2 + "px",
+                            height: thickness + "px",
+                        },
+                    });
+                } else if (edge.kind === "columns") {
+                    const middle =
+                        (columns[edge.row][edge.column - 1].right + columns[edge.row][edge.column].left) / 2;
+                    sashes.push({
+                        edge,
+                        style: {
+                            cursor: "col-resize",
+                            left: middle - thickness / 2 + "px",
+                            top: rows[edge.row].top + "px",
+                            width: thickness + "px",
+                            height: rows[edge.row].height + "px",
+                        },
+                    });
+                } else {
+                    const x =
+                        (columns[edge.column.row][edge.column.column - 1].right +
+                            columns[edge.column.row][edge.column.column].left) /
+                        2;
+                    const y = (rows[edge.between - 1].bottom + rows[edge.between].top) / 2;
+                    sashes.push({
+                        edge,
+                        style: {
+                            cursor: "all-scroll",
+                            left: x - cornerSize / 2 + "px",
+                            top: y - cornerSize / 2 + "px",
+                            width: cornerSize + "px",
+                            height: cornerSize + "px",
+                        },
+                    });
+                }
+            }
+            this.sashes = sashes;
+        },
+
+        // The length a pane has along the axis an edge moves on.
+        paneLength(pane, axis) {
+            const box = pane.getBoundingClientRect();
+            return axis === "x" ? box.width : box.height;
+        },
+
+        // What an edge needs to know before the pointer moves: the length its pane has, the room
+        // the column across the gap keeps, and the rows it lies between with the height each has
+        // now.  Reading all of it once keeps the drag from measuring the page on every move.
+        prepareEdge(edge) {
+            if (edge.axis === "x") {
+                const container = this.$refs.panes.getBoundingClientRect();
+                return {
+                    edge,
+                    start: this.paneLength(edge.pane, "x"),
+                    longest: container.width - edge.otherMinimum,
+                };
+            }
+            return {
+                edge,
+                rows: this.paneLayout().map((row) => {
+                    const element = row.columns[0].element;
+                    return {
+                        key: row.height ? row.height.property : null,
+                        element,
+                        minimum: row.height ? row.height.minimum : 0,
+                        start: this.paneLength(element, "y"),
+                    };
+                }),
+            };
+        },
+
+        // A sash takes the drag on the window, so the pointer may leave the edge it took hold of
+        // and the drag still reports, and a press on the sash never reaches the pane under it.
+        startSashDrag(sash, event) {
+            const element = event.currentTarget;
+            this.sashDrag = {
+                element,
+                origin: { x: event.clientX, y: event.clientY },
+                pointer: { x: event.clientX, y: event.clientY },
+                parts: this.sashParts(sash.edge).map((part) => this.prepareEdge(part)),
+                frame: 0,
+            };
+            element.classList.add("colour_sash_active");
+            this.sashListeners = {
+                move: (moveEvent) => this.followSash(moveEvent),
+                stop: () => this.endSashDrag(),
+            };
+            window.addEventListener("pointermove", this.sashListeners.move);
+            window.addEventListener("pointerup", this.sashListeners.stop, { once: true });
+            window.addEventListener("pointercancel", this.sashListeners.stop, { once: true });
+        },
+
+        // The pointer moves far more often than the page can be laid out, so the move only
+        // records where the pointer is and one frame applies what it states.  Every edge of the
+        // sash is applied in one write, so the grid is laid out once per frame.
+        followSash(event) {
+            const drag = this.sashDrag;
+            if (!drag) return;
+            drag.pointer = { x: event.clientX, y: event.clientY };
+            if (drag.frame) return;
+            drag.frame = window.requestAnimationFrame(() => {
+                drag.frame = 0;
+                this.applySashDrag();
+            });
+        },
+
+        applySashDrag() {
+            const drag = this.sashDrag;
+            if (!drag) return;
+            const dx = drag.pointer.x - drag.origin.x;
+            const dy = drag.pointer.y - drag.origin.y;
+            const sizes = {};
+            for (const part of drag.parts) {
+                if (part.edge.axis === "x") this.columnSizes(part, dx, sizes);
+                else this.rowSizes(part, dy, sizes);
+            }
+            this.paneSizes = { ...this.paneSizes, ...sizes };
+            this.$nextTick(() => this.layoutSashes());
+        },
+
+        // A column edge: the pane keeps a size of its own, and the column across the gap takes
+        // what it gives up, so the edge stops where either pane reaches its smallest.
+        columnSizes(part, wanted, sizes) {
+            const edge = part.edge;
+            const smallest = edge.minimum - part.start;
+            const largest = part.longest - part.start;
+            const lowest = edge.sign > 0 ? smallest : -largest;
+            const highest = edge.sign > 0 ? largest : -smallest;
+            const delta = Math.min(Math.max(wanted, lowest), highest);
+            sizes[edge.property] = Math.round(part.start + edge.sign * delta) + "px";
+        },
+
+        // A row edge: the row on the side the pointer moves towards gives up what the row on the
+        // other side takes, so the edge stays under the pointer and nothing else on the page
+        // moves.  A side whose nearest sizable row is not the one beside the edge steps over the
+        // rows that cannot be sized.  A side with no sizable row at all is a page boundary: the
+        // other side then takes the whole travel, so the page grows or shrinks there.
+        rowSizes(part, delta, sizes) {
+            const rows = part.rows;
+            const edge = part.edge;
+            if (edge.outer) {
+                const row = this.sizableRowFrom(rows, rows.length - 1, -1);
+                if (!row) return;
+                sizes[row.key] = Math.round(Math.max(row.start + delta, row.minimum)) + "px";
+                return;
+            }
+            const shrinking =
+                delta > 0 ? this.sizableRowFrom(rows, edge.between, 1) : this.sizableRowFrom(rows, edge.between - 1, -1);
+            const growing =
+                delta > 0 ? this.sizableRowFrom(rows, edge.between - 1, -1) : this.sizableRowFrom(rows, edge.between, 1);
+            if (!shrinking && !growing) return;
+            const travel = shrinking
+                ? Math.min(Math.abs(delta), Math.max(shrinking.start - shrinking.minimum, 0))
+                : Math.abs(delta);
+            if (shrinking) sizes[shrinking.key] = Math.round(shrinking.start - travel) + "px";
+            if (growing) sizes[growing.key] = Math.round(growing.start + travel) + "px";
+        },
+
+        // The nearest row a sash can size, walking from `from` in `step` steps: a row with no
+        // property is a row the sash steps over, which is how an edge beside the theme's line
+        // reaches the row beyond it.
+        sizableRowFrom(rows, from, step) {
+            for (let index = from; index >= 0 && index < rows.length; index += step) {
+                if (rows[index].key) return rows[index];
+            }
+            return null;
+        },
+
+        endSashDrag() {
+            const drag = this.sashDrag;
+            if (!drag) return;
+            if (drag.frame) {
+                window.cancelAnimationFrame(drag.frame);
+                drag.frame = 0;
+                this.applySashDrag();
+            }
+            if (this.sashListeners) {
+                window.removeEventListener("pointermove", this.sashListeners.move);
+                window.removeEventListener("pointerup", this.sashListeners.stop);
+                window.removeEventListener("pointercancel", this.sashListeners.stop);
+                this.sashListeners = null;
+            }
+            drag.element.classList.remove("colour_sash_active");
+            this.sashDrag = null;
         },
 
         // The keyboard: arrows move inside a pane and across panes, space and enter
@@ -1320,10 +1712,37 @@ document.addEventListener("alpine:init", () => {
         async init() {
             // The prompt is in the document before anything is fetched, so its width is
             // measured before the line can have anything to draw.
-            this.$nextTick(() => this.observeStatementPrompt());
+            this.$nextTick(() => {
+                this.observeStatementPrompt();
+                this.layoutSashes();
+                new ResizeObserver(() => this.layoutSashes()).observe(this.$refs.panes);
+            });
             let schemes = await (await fetch("colors/")).json();
             this.colourSample = await (await fetch("colour_sample/")).json();
+            this.runsOfVariable = this.runsPerVariable();
+            this.addColorSchemes(schemes);
+            this.changeSelectedColorScheme(JSON.parse(JSON.stringify(this.colorSchemes[0])));
 
+            // The themes the shell ships are stated by exporting every one of them through the
+            // shell, which takes seconds.  The page asks for them once it has painted, so the
+            // colour page opens on the theme in force rather than waiting for the catalogue.
+            fetch("themes/")
+                .then((response) => response.json())
+                .then((themes) => this.addColorSchemes(themes));
+
+            this.$watch('overriddenTerminalBackgroundColor', (newValue) => {
+                if (newValue === undefined)
+                    return;
+                // see sampleTerminalBackgroundColors
+                const isLight = newValue === 'white' || newValue === "#"+solarized.base3;
+                this.terminalColorTheme = isLight ? 'light' : 'dark';
+                this.actualTerminalBackgroundColor = newValue;
+                this.changedSelectedColorSchemeOrColorTheme();
+            });
+        },
+
+        // The themes the page offers, each with the values it gives every colour theme.
+        addColorSchemes(schemes) {
             for (var scheme of schemes) {
                 var currentScheme = {
                     name: "Current",
@@ -1366,17 +1785,6 @@ document.addEventListener("alpine:init", () => {
                 }
                 this.colorSchemes.push(currentScheme);
             }
-            this.changeSelectedColorScheme(JSON.parse(JSON.stringify(this.colorSchemes[0])));
-
-            this.$watch('overriddenTerminalBackgroundColor', (newValue) => {
-                if (newValue === undefined)
-                    return;
-                // see sampleTerminalBackgroundColors
-                const isLight = newValue === 'white' || newValue === "#"+solarized.base3;
-                this.terminalColorTheme = isLight ? 'light' : 'dark';
-                this.actualTerminalBackgroundColor = newValue;
-                this.changedSelectedColorSchemeOrColorTheme();
-            });
         },
     }));
 

@@ -446,14 +446,24 @@ tt {
    so the arrow keys always have a place to move.  Every pane sits on the preview's
    background, so the page reads as one terminal, and every pane has the one font size. */
 .colour_panes {
+    position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 28em;
-    gap: 8px;
+    /* The rows and the columns inside them: the sample with its rail, the list of colour
+       variables, the line, the style and colours, and the strip a refusal is stated in.  A row
+       or a column a sash has sized is stated in px by the page; the rest are as tall or as wide
+       as their content, and the gap between them is where the edges lie. */
+    --pane-gap: 8px;
+    --sash-thickness: 9px;
+    --corner-size: 15px;
+    grid-template-columns: minmax(0, 1fr) minmax(96px, var(--rail-width, 28em));
+    grid-template-rows: var(--sample-row, auto) var(--variables-row, 10em) auto var(--bottom-row, auto) auto;
+    gap: var(--pane-gap);
     margin: 8px 12px;
     font-size: 12pt;
 }
 
 .colour_pane {
+    position: relative;
     border: 1px solid #555;
     padding: 8px 10px;
     text-align: left;
@@ -468,19 +478,33 @@ tt {
 .colour_pane_sample {
     grid-column: 1;
     grid-row: 1;
+    box-sizing: border-box;
+}
+
+/* A sample whose row a sash has sized fills that row with text, which scrolls, so the pane
+   gives the rows the room its title does not take. */
+.colour_sample_sized {
+    display: flex;
+    flex-direction: column;
+}
+
+.colour_sample_sized .colour_sample_rows {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
 }
 
 .colour_pane_rail {
     grid-column: 2;
     grid-row: 1;
     overflow: auto;
-    max-height: 70vh;
     line-height: 1.6em;
 }
 
 .colour_pane_variables {
     grid-column: 1 / span 2;
     grid-row: 2;
+    min-height: 0;
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Ubuntu Mono", "Hack", "Noto Sans Mono", Liberation Mono, monospace;
 }
 
@@ -492,17 +516,40 @@ tt {
 .colour_pane_style,
 .colour_pane_colours {
     min-width: 0;
+    overflow: auto;
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Ubuntu Mono", "Hack", "Noto Sans Mono", Liberation Mono, monospace;
 }
 
 /* The bottom row: the style pane narrow, the colour pane wide, so that the 256-colour
    table has the width its rows of 32 need. */
 .colour_bottom {
+    position: relative;
     grid-column: 1 / span 2;
     grid-row: 4;
     display: grid;
-    grid-template-columns: 1fr 3fr;
-    gap: 8px;
+    grid-template-columns: minmax(96px, var(--style-width, 25%)) minmax(0, 1fr);
+    gap: var(--pane-gap);
+}
+
+/* The edges between the panes.  Where each one lies is measured from the panes themselves, so
+   the stylesheet states only how an edge looks: the page writes the box, and an edge is drawn
+   while the pointer is on it or on the drag it started. */
+.colour_sashes {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+}
+
+.colour_sash {
+    position: absolute;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.colour_sash:hover,
+.colour_sash_active {
+    background-color: rgba(51, 153, 255, 0.5);
 }
 
 .colour_pane_hint {
@@ -513,6 +560,7 @@ tt {
 /* The strip the page writes from: it sits on the same background as the panes, so the
    button's own colours read as the terminal's rather than the document's. */
 .colour_footer {
+    position: relative;
     grid-column: 1 / span 2;
     grid-row: 5;
     text-align: right;
@@ -748,8 +796,9 @@ tt {
 }
 
 /* The variables the sample does not show, so that all of them are reachable. */
+/* The list fills the strip the sash sizes. */
 .colour_variable_list {
-    max-height: 10em;
+    height: 100%;
     overflow-y: auto;
     line-height: 1.5em;
     text-align: left;
