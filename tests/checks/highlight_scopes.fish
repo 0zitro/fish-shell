@@ -147,6 +147,47 @@ printf '%s' 'echo *' | runs_of
 # CHECK: 4 source
 # CHECK: 5 operator.glob
 
+# A begin header's options are the header's own words, and the whitespace around them is
+# whitespace.
+printf '%s' 'begin -qq echo hi; end' | runs_of
+# CHECK: 0 keyword.begin
+# CHECK: 5 source
+# CHECK: 6 argument.option.gnu
+# CHECK: 9 source
+# CHECK: 10 command
+# CHECK: 14 source
+# CHECK: 15 argument
+# CHECK: 17 terminator.semicolon
+# CHECK: 18 source
+# CHECK: 19 keyword.end
+
+printf '%s' 'begin --quoted --quoted echo hi; end' | runs_of
+# CHECK: 0 keyword.begin
+# CHECK: 5 source
+# CHECK: 6 argument.option.long
+# CHECK: 14 source
+# CHECK: 15 argument.option.long
+# CHECK: 23 source
+# CHECK: 24 command
+# CHECK: 28 source
+# CHECK: 29 argument
+# CHECK: 31 terminator.semicolon
+# CHECK: 32 source
+# CHECK: 33 keyword.end
+
+# A barrier option is a header option too.
+printf '%s' 'begin -b echo hi; end' | runs_of
+# CHECK: 0 keyword.begin
+# CHECK: 5 source
+# CHECK: 6 argument.option.short
+# CHECK: 8 source
+# CHECK: 9 command
+# CHECK: 13 source
+# CHECK: 14 argument
+# CHECK: 16 terminator.semicolon
+# CHECK: 17 source
+# CHECK: 18 keyword.end
+
 # A line continuation escapes the newline it ends, and the indentation after it is the
 # whitespace it is.
 printf 'echo a \\\n    b' | runs_of
