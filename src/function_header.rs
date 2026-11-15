@@ -10,6 +10,21 @@
 use fish_wgetopt::{ArgType, NON_OPTION_CHAR, WGetopter, WOption, wopt};
 use fish_widestring::{L, WString, wstr};
 
+/// An event a definition's header makes the function handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    /// A signal, named after the signal.
+    Signal,
+    /// A variable change, named after the variable.
+    Variable,
+    /// An event named by a string the caller supplies.
+    Generic,
+    /// A job's exit, named after the job.
+    Job,
+    /// A process's exit, named after the process.
+    Process,
+}
+
 /// What an option of a function header declares about the function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunctionHeaderEffect {
@@ -23,8 +38,8 @@ pub enum FunctionHeaderEffect {
     InheritVariable,
     /// The command the function wraps.
     Wraps,
-    /// An event the function handles.
-    Event,
+    /// An event the function handles, of the kind its argument names.
+    Event(EventKind),
     /// The option prints the help text.
     Help,
 }
@@ -75,7 +90,7 @@ pub static FUNCTION_HEADER_FLAGS: &[FunctionHeaderFlag] = &[
         short: 'e',
         long: L!("on-event"),
         argument: true,
-        effect: FunctionHeaderEffect::Event,
+        effect: FunctionHeaderEffect::Event(EventKind::Generic),
     },
     FunctionHeaderFlag {
         short: 'h',
@@ -87,19 +102,19 @@ pub static FUNCTION_HEADER_FLAGS: &[FunctionHeaderFlag] = &[
         short: 'j',
         long: L!("on-job-exit"),
         argument: true,
-        effect: FunctionHeaderEffect::Event,
+        effect: FunctionHeaderEffect::Event(EventKind::Job),
     },
     FunctionHeaderFlag {
         short: 'p',
         long: L!("on-process-exit"),
         argument: true,
-        effect: FunctionHeaderEffect::Event,
+        effect: FunctionHeaderEffect::Event(EventKind::Process),
     },
     FunctionHeaderFlag {
         short: 's',
         long: L!("on-signal"),
         argument: true,
-        effect: FunctionHeaderEffect::Event,
+        effect: FunctionHeaderEffect::Event(EventKind::Signal),
     },
     FunctionHeaderFlag {
         short: 'S',
@@ -111,7 +126,7 @@ pub static FUNCTION_HEADER_FLAGS: &[FunctionHeaderFlag] = &[
         short: 'v',
         long: L!("on-variable"),
         argument: true,
-        effect: FunctionHeaderEffect::Event,
+        effect: FunctionHeaderEffect::Event(EventKind::Variable),
     },
     FunctionHeaderFlag {
         short: 'V',
