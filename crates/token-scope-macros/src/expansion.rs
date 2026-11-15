@@ -376,8 +376,8 @@ fn resolve_step(
     })
 }
 
-/// The scopes that enclose, in the order they are consulted: deepest path first,
-/// then by path.  A member's bit is its index here.
+/// The scopes that enclose, and the index a set stores for each: deepest path first,
+/// then by path, so a deterministic order exists for the indices.
 fn enclosing_bits(scopes: &[Scope]) -> Result<Vec<usize>, DeclarationError> {
     let mut enclosing: Vec<usize> = scopes
         .iter()
@@ -395,7 +395,7 @@ fn enclosing_bits(scopes: &[Scope]) -> Result<Vec<usize>, DeclarationError> {
     if enclosing.len() > 16 {
         return Err(DeclarationError::at(
             Span::call_site(),
-            "more scopes enclose than an `EnclosingScopeSet` has bits",
+            "more scopes enclose than an `EnclosingScopeSet` has levels",
         ));
     }
 
@@ -418,8 +418,7 @@ fn render(scopes: &[Scope], chains: &[Vec<ChainStep>], enclosing: &[usize]) -> S
     source.blank();
 
     source
-        .line("/// The scopes that enclose, in the order they are consulted: a scope's bit in an");
-    source.line("/// `EnclosingScopeSet` is its index here.");
+        .line("/// The scopes that enclose, and the index an `EnclosingScopeSet` stores for one.");
     source.line("pub(crate) static ENCLOSING_SCOPE_IDS: &[crate::entries::TokenScopeId] = &[");
     for index in enclosing {
         source.line(format!(
@@ -431,14 +430,14 @@ fn render(scopes: &[Scope], chains: &[Vec<ChainStep>], enclosing: &[usize]) -> S
     source.blank();
 
     source.line("impl crate::entries::TokenScopeId {");
-    source.line("    /// The bit this scope occupies in an `EnclosingScopeSet`, or none when");
-    source.line("    /// the scope encloses nothing.");
-    source.line("    pub(crate) fn enclosing_bit(self) -> Option<u16> {");
+    source.line("    /// The index this scope has among the enclosing scopes, or none when the");
+    source.line("    /// scope encloses nothing.");
+    source.line("    pub(crate) fn enclosing_index(self) -> Option<u8> {");
     source.line("        match self {");
-    for (bit, index) in enclosing.iter().enumerate() {
+    for (index, scope) in enclosing.iter().enumerate() {
         source.line(format!(
-            "            Self::{} => Some({bit}),",
-            constant(&scopes[*index])
+            "            Self::{} => Some({index}),",
+            constant(&scopes[*scope])
         ));
     }
     source.line("            _ => None,");

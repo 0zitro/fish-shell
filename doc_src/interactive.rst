@@ -481,10 +481,14 @@ then ``$fish_color_builtin``. A construct that encloses the character contribute
 scope between the root and the character's own: a command inside a pipeline is composed
 from ``$fish_color_normal``, then ``$fish_color_meta_pipeline``, then
 ``$fish_color_command``, then the command's kind, so the enclosing scope supplies a
-field that nothing more specific names. A field that a more specific variable names
-replaces the field a less specific variable named, and a field that no variable names is
-drawn as the terminal draws it. A value that carries ``--reset`` clears what the less
-specific variables named before it.
+field that nothing more specific names. The constructs that enclose a character are
+composed from the outermost inward, in the order the text enters them, so a construct
+written inside another is the more specific of the two: in ``if true; begin echo a;
+end; end`` the command is composed from ``$fish_color_meta_if`` before
+``$fish_color_meta_block``, and the other way round in ``begin if true; echo a; end;
+end``. A field that a more specific variable names replaces the field a less specific
+variable named, and a field that no variable names is drawn as the terminal draws it. A
+value that carries ``--reset`` clears what the less specific variables named before it.
 
 Four variables are overlays applied after that composition:
 
