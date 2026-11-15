@@ -43,7 +43,26 @@ printf '%s' 'echo hi > /tmp/out' | runs_of
 # CHECK: 7 source
 # CHECK: 8 redirection.output
 # CHECK: 9 source
-# CHECK: 10 redirection.output
+# CHECK: 10 redirection.output.target
+
+# A redirection's target is a word: its substitution, its quotes and its escapes keep
+# their own scopes, and the scope of the target is what the text no piece names takes.
+printf '%s' 'echo hi >>"$(true)"__\'z\'' | runs_of
+# CHECK: 0 command
+# CHECK: 4 source
+# CHECK: 5 argument
+# CHECK: 7 source
+# CHECK: 8 redirection.append
+# CHECK: 10 string.quoted.double.delimiter
+# CHECK: 11 operator.dollar
+# CHECK: 12 operator.parenthesis
+# CHECK: 13 command
+# CHECK: 17 operator.parenthesis
+# CHECK: 18 string.quoted.double.delimiter
+# CHECK: 19 redirection.append.target
+# CHECK: 21 string.quoted.single.delimiter
+# CHECK: 22 string.quoted.single
+# CHECK: 23 string.quoted.single.delimiter
 
 printf '%s' 'echo hi | cat' | runs_of
 # CHECK: 0 command
