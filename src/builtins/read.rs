@@ -67,7 +67,7 @@ impl Options {
 }
 
 /// The definition flags `read` accepts: it declares no path status.
-const READ_MODE_FIELDS: &[EnvModeField] = &[
+pub(crate) const READ_MODE_FIELDS: &[EnvModeField] = &[
     EnvModeField::Local,
     EnvModeField::Function,
     EnvModeField::Global,
@@ -77,7 +77,7 @@ const READ_MODE_FIELDS: &[EnvModeField] = &[
 ];
 
 /// The options `read` declares itself; the definition flags come from their own table.
-static OWN_OPTIONS: &[WOption] = &[
+pub(crate) static OWN_OPTIONS: &[WOption<'static>] = &[
     wopt(L!("array"), ArgType::NoArgument, 'a'),
     wopt(L!("command"), ArgType::RequiredArgument, 'c'),
     wopt(L!("delimiter"), ArgType::RequiredArgument, 'd'),

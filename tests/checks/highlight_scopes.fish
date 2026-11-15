@@ -197,6 +197,24 @@ printf '%s' 'begin -b echo hi; end' | runs_of
 # CHECK: 17 source
 # CHECK: 18 keyword.end
 
+# A definition command's own options are read, so an option's value is never a name, and a
+# name an erasure acts on is the variable's name rather than a definition.
+printf '%s' 'read -d , name' | runs_of
+# CHECK: 0 command.builtin.read
+# CHECK: 4 source
+# CHECK: 5 argument.option.short
+# CHECK: 7 source
+# CHECK: 8 argument
+# CHECK: 9 source
+# CHECK: 10 variable.definition
+
+printf '%s' 'set -e name' | runs_of
+# CHECK: 0 command.builtin.set
+# CHECK: 3 source
+# CHECK: 4 argument.option.short
+# CHECK: 6 source
+# CHECK: 7 variable
+
 # A slice encloses what stands between its brackets, and the brackets themselves state no
 # enclosing scope.
 printf '%s' 'echo $x[$i]' | enclosing_of

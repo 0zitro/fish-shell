@@ -8,7 +8,7 @@ use crate::{
     builtins::builtin_exists,
     common::{valid_var_name, valid_var_name_char},
     complete::complete_wrap_map,
-    env::{ENV_MODE_FLAGS, EnvMode, Environment, VariableScope},
+    env::{ENV_MODE_FLAGS, EnvMode, EnvModeField, Environment, NameUse, VariableScope, flag_of},
     expand::{ExpandFlags, ExpandResultCode, expand_one, expand_to_command_and_args},
     function,
     highlight::HighlightClassification,
@@ -34,6 +34,7 @@ use fish_token_scope::{
     EnclosingScopeSet, HighlightAttribute, TokenScopeId, builtin_word_scope, keyword_word_scope,
 };
 use fish_wcstringutil::string_prefixes_string;
+use fish_wgetopt::{ArgType, WOption};
 use fish_widestring::{
     ASCII_MAX, EXPAND_RESERVED_BASE, EXPAND_RESERVED_END, L, PROCESS_EXPAND_SELF_STR, WExt as _,
     WString, wstr,
@@ -954,61 +955,154 @@ impl DefinitionCommand {
         }
     }
 
-    /// Whether every name the command is given is defined, rather than only the first.
-    fn whether_defines_each_name(self) -> bool {
-        self == Self::Read
+    /// The options the command declares beside the definition flags.
+    fn own_options(self) -> &'static [WOption<'static>] {
+        match self {
+            Self::Set => crate::builtins::set::OWN_OPTIONS,
+            Self::Read => crate::builtins::read::OWN_OPTIONS,
+        }
+    }
+
+    /// Whether the command defines variables in this field.
+    fn accepts(self, field: EnvModeField) -> bool {
+        match self {
+            Self::Set => true,
+            Self::Read => crate::builtins::read::READ_MODE_FIELDS.contains(&field),
+        }
+    }
+
+    /// What the command does with the names it is given, from the options it was given.
+    fn name_use(self, val: char) -> NameUse {
+        match self {
+            Self::Set => crate::builtins::set::name_use(val),
+            Self::Read => NameUse::Writes,
+        }
+    }
+
+    /// The declaration of the option a spelling names, over the flags the command accepts
+    /// and its own table.
+    fn find_option(
+        self,
+        mut names: impl FnMut(&WOption<'static>) -> bool,
+    ) -> Option<WOption<'static>> {
+        ENV_MODE_FLAGS
+            .iter()
+            .filter(|flag| self.accepts(flag.sets))
+            .map(|flag| flag.option())
+            .chain(self.own_options().iter().copied())
+            .find(|option| names(option))
+    }
+
+    /// Record what one option declares: the mode field it requests, or what it makes the
+    /// command do with the names.
+    fn record_option(
+        self,
+        option: &WOption,
+        mode: &mut EnvMode,
+        use_of_names: &mut NameUse,
+    ) -> bool {
+        if let Some(flag) = flag_of(option.val) {
+            // A definition flag the command does not accept is no option of its own.
+            if !self.accepts(flag.sets) {
+                return false;
+            }
+            flag.sets.set(mode);
+            return true;
+        }
+        *use_of_names = self.name_use(option.val);
+        true
     }
 }
 
-/// The mode a definition command's arguments request, or none when they carry an option
-/// the classifier does not read.
-///
-/// The flags are read against the one declaration the definition commands share.  A word
-/// that is no flag ends the scan, which is exactly the order `set` reads its arguments in,
-/// and is the conservative reading for `read`: its names are classified with the mode the
-/// leading flags request.
-fn definition_mode<'a>(
-    arguments: impl Iterator<Item = &'a ast::ArgumentOrRedirection>,
-    source: &wstr,
-) -> Option<EnvMode> {
-    let mut mode = EnvMode::default();
-    let mut reading_flags = true;
-    for argument_or_redirection in arguments {
-        let ast::ArgumentOrRedirection::Argument(argument) = argument_or_redirection else {
-            continue;
-        };
-        let word = argument.source(source);
-        if !reading_flags {
-            continue;
-        }
-        if word == "--" {
-            reading_flags = false;
-            continue;
-        }
-        if !word.starts_with('-') || word == "-" {
-            reading_flags = false;
-            continue;
-        }
-        let flag = ENV_MODE_FLAGS
-            .iter()
-            .find(|flag| flag.whether_spelled_by(word));
-        if let Some(flag) = flag {
-            flag.sets.set(&mut mode);
-            continue;
-        }
+/// The names a definition command's arguments name, and the mode its options request.
+struct DefinitionScan {
+    /// The mode the options request.
+    mode: EnvMode,
+    /// What the command does with the names it names.
+    use_of_names: NameUse,
+    /// The indices of the arguments that are names, in argument order.
+    names: Vec<usize>,
+}
 
-        // A short option may bundle several flags, and none of them takes an argument.
-        if word.char_at(1) == '-' || word.len() <= 2 {
-            return None;
+/// Read a definition command's arguments as the command itself reads them.
+///
+/// The options come from the declarations the command reads: the definition flags at
+/// `ENV_MODE_FLAGS`, filtered to the fields it accepts, and its own table with the arity of
+/// every option.  An option that takes an argument consumes the word after it, so a value is
+/// never read as a name, and an option the declarations do not hold ends the scan rather than
+/// naming the wrong words: the shell rejects that command line, so no fact is stated.
+fn definition_scan(command: DefinitionCommand, words: &[&wstr]) -> Option<DefinitionScan> {
+    let mut scan = DefinitionScan {
+        mode: EnvMode::default(),
+        use_of_names: NameUse::Writes,
+        names: Vec::new(),
+    };
+    let mut reading_options = true;
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        index += 1;
+        if reading_options {
+            if word == "--" {
+                reading_options = false;
+                continue;
+            }
+            if word.len() > 1 && word.char_at(0) == '-' {
+                index += read_definition_option(command, word, &mut scan)?;
+                continue;
+            }
+            // A word that is no option: `set` states the name and its values here, and
+            // `read` takes every word that is no option or value as a name.
+            reading_options = false;
         }
-        for index in 1..word.len() {
-            let flag = ENV_MODE_FLAGS
-                .iter()
-                .find(|flag| flag.short == word.char_at(index))?;
-            flag.sets.set(&mut mode);
+        scan.names.push(index - 1);
+        if command == DefinitionCommand::Set {
+            // The words after the name are the values it is given.
+            break;
         }
     }
-    Some(mode)
+    Some(scan)
+}
+
+/// Read one option word of a definition command, and return how many words after it are its
+/// argument.
+///
+/// The word is a short option, a bundle like `-abc`, `-sVALUE`, a long option or
+/// `--long=value`; an argument the declaration marks as required is consumed, and any other
+/// spelling of the word is the option's own.
+fn read_definition_option(
+    command: DefinitionCommand,
+    word: &wstr,
+    scan: &mut DefinitionScan,
+) -> Option<usize> {
+    let chars = word.as_char_slice();
+    if chars[1] == '-' {
+        let body = &word[2..];
+        let (name, inline_value) = match body.chars().position(|character| character == '=') {
+            Some(equals) => (&body[..equals], Some(&body[equals + 1..])),
+            None => (body, None),
+        };
+        let option = command.find_option(|option| option.name == name)?;
+        if !command.record_option(&option, &mut scan.mode, &mut scan.use_of_names) {
+            return None;
+        }
+        let takes_next_word =
+            option.arg_type == ArgType::RequiredArgument && inline_value.is_none();
+        return Some(usize::from(takes_next_word));
+    }
+
+    for (index, character) in chars.iter().enumerate().skip(1) {
+        let option = command.find_option(|option| option.val == *character)?;
+        if !command.record_option(&option, &mut scan.mode, &mut scan.use_of_names) {
+            return None;
+        }
+        if option.arg_type == ArgType::RequiredArgument {
+            // The rest of the word is the argument, or the next word when the option stands
+            // at the word's end.
+            return Some(usize::from(index + 1 == chars.len()));
+        }
+    }
+    Some(0)
 }
 
 /// The scope a bare literal word takes: digits are a number, `true` and `false` a boolean.
@@ -1726,31 +1820,46 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         // Classify arguments and redirections.
         // Except if our command is 'cd' we have special logic for how arguments are classified.
         let is_cd = is_veritable_cd(&expanded_cmd);
-        // A definition command's names take the scope of the mode its flags request.
-        // The word is read from the buffer, so a pass that resolves no commands — no I/O, a
-        // pager row, `fish_indent` — still classifies the definitions the text declares; a
-        // decorated word is some other command, not the builtin that defines.
+        // A definition command's names take the scope its options request, and the options
+        // are read from the same declarations the command reads.  The words are read from
+        // the buffer, so a pass that resolves no commands — no I/O, a pager row,
+        // `fish_indent` — still classifies the names the text states; a decorated word is
+        // some other command, not the builtin that names.
+        let words: Vec<&wstr> = stmt
+            .args_or_redirs
+            .iter()
+            .filter_map(|argument_or_redirection| match argument_or_redirection {
+                ast::ArgumentOrRedirection::Argument(argument) => Some(argument.source(self.buff)),
+                ast::ArgumentOrRedirection::Redirection(_) => None,
+            })
+            .collect();
         let definitions = (stmt.decoration() == StatementDecoration::None)
             .then(|| DefinitionCommand::of_command(stmt.command.source(self.buff)))
             .flatten()
-            .and_then(|command| {
-                definition_mode(stmt.args_or_redirs.iter(), self.buff).map(|mode| (command, mode))
-            });
-        let mut defining = definitions.is_some();
+            .and_then(|command| definition_scan(command, &words));
         // If we have seen a "--" argument, classify all options from then on as normal arguments.
         let mut have_dashdash = false;
+        let mut argument_index = 0;
         for v in &stmt.args_or_redirs {
             if v.is_argument() {
                 let name = v.argument().source(self.buff);
                 let mut definition = None;
-                if defining
-                    && let Some((command, mode)) = definitions
+                if let Some(scan) = &definitions
+                    && scan.names.contains(&argument_index)
                     && valid_var_name(name)
                 {
-                    definition = Some(definition_scope(&mode));
-                    self.pending_variable_names.push(name);
-                    defining = command.whether_defines_each_name();
+                    definition = Some(match scan.use_of_names {
+                        // A name the command writes takes the mode its options request.
+                        NameUse::Writes => definition_scope(&scan.mode),
+                        // A name the command acts on is the variable's name, whatever
+                        // scope the command acts in.
+                        NameUse::Reads => TokenScopeId::VARIABLE,
+                    });
+                    if scan.use_of_names == NameUse::Writes {
+                        self.pending_variable_names.push(name);
+                    }
                 }
+                argument_index += 1;
                 self.visit_argument(v.argument(), is_cd, !have_dashdash);
                 if let Some(scope) = definition {
                     let classification = self.classification_of(scope);
@@ -2752,11 +2861,12 @@ mod tests {
                 ("name", fg(TokenScopeId::VARIABLE_DEFINITION_LOCAL)),
                 ("value", fg(TokenScopeId::PARAM)),
             );
-            // An option the classifier cannot read makes it claim no definition.
+            // A name an erasure acts on is the variable's name, and the option that makes it
+            // an erasure is read from the command's own declaration.
             validate!(
                 ("set", fg(TokenScopeId::BUILTIN_SET)),
                 ("-e", fg(TokenScopeId::OPTION_SHORT)),
-                ("name", fg(TokenScopeId::PARAM)),
+                ("name", fg(TokenScopeId::VARIABLE)),
             );
 
             // A name a definition's header declares is defined in its local scope, and the
@@ -3312,6 +3422,62 @@ mod tests {
             classifications[8].foreground(),
             TokenScopeId::VARIABLE_SIGIL,
             "the bound keeps the scope it has anywhere"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_definition_reads_each_commands_own_options() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // read -d , name — the delimiter is an option's value, and the word after it is the
+        // name `read` defines.
+        let classifications = classified_without_io(vars, L!("read -d , name"));
+        assert_eq!(
+            classifications[10].foreground(),
+            TokenScopeId::VARIABLE_DEFINITION,
+            "the name after the option's value"
+        );
+        assert_eq!(
+            classifications[8].foreground(),
+            TokenScopeId::PARAM,
+            "the option's value"
+        );
+
+        // set -e name and set -n name — an erasure and a listing act on the variable's name
+        // rather than defining it.
+        for text in [L!("set -e name"), L!("set -n name")] {
+            let classifications = classified_without_io(vars, text);
+            assert_eq!(
+                classifications[7].foreground(),
+                TokenScopeId::VARIABLE,
+                "the name `{text}` acts on"
+            );
+        }
+
+        // set -a name and set -l name — an append writes the name, with the mode the options
+        // request.
+        let classifications = classified_without_io(vars, L!("set -a name"));
+        assert_eq!(
+            classifications[7].foreground(),
+            TokenScopeId::VARIABLE_DEFINITION,
+            "the name an append writes"
+        );
+        let classifications = classified_without_io(vars, L!("set -l name"));
+        assert_eq!(
+            classifications[7].foreground(),
+            TokenScopeId::VARIABLE_DEFINITION_LOCAL,
+            "the name a local write defines"
+        );
+
+        // An option the declarations do not hold states no name at all.
+        let classifications = classified_without_io(vars, L!("set --bogus name"));
+        assert_eq!(
+            classifications[12].foreground(),
+            TokenScopeId::PARAM,
+            "the word after an option nothing declares"
         );
     }
 
