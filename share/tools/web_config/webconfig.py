@@ -252,6 +252,23 @@ def parse_colors(colors_str):
     }
 
 
+def current_theme_for_webconfig(colors_str, terminal_color_theme):
+    """The theme in force, in the shape the page reads a theme in."""
+    return {
+        "theme": "Current",
+        "by_color_theme": {
+            # Hack-ish: we don't know about the light/dark variants.
+            "unknown": parse_colors(colors_str)
+            | {
+                "preferred_background": "white"
+                if terminal_color_theme == "light"
+                else "black",
+            }
+        },
+        "terminal_color_theme": terminal_color_theme,
+    }
+
+
 def parse_color(comps):
     """A basic function to parse a color string, for example, ['red', '--bold']."""
     color = ""
@@ -844,6 +861,10 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         self.wfile.write(txt.encode("utf-8"))
 
     def do_get_colors(self):
+        """The colours of the theme in force, which the page paints with.
+
+        The page needs only this one theme to draw itself, and dumping it is a fraction of the
+        work of exporting every theme the shell ships: the catalogue is `do_get_themes`."""
         out, err = run_fish_cmd(
             ""
             + "if set -q __fish_initialized && test $__fish_initialized -lt 4300\n"
@@ -854,28 +875,31 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                 TERMINAL_COLOR_THEME
             )
             + "or __fish_color_theme=unknown __fish_apply_theme\n"
-            + "__fish_theme_export_for_webconfig",
+            + '__fish_posix_quote "$(fish_config theme dump)"',
+            env=os.environ | {"__fish_force_load_default_theme": "1"},
+        )
+        assert err == "", err
+
+        return [
+            current_theme_for_webconfig(
+                next(iter(shlex.split(out))), TERMINAL_COLOR_THEME
+            )
+        ]
+
+    def do_get_themes(self):
+        """The themes the shell ships, for the page's list of themes to write instead.
+
+        Exporting every theme states each one's colours through the shell itself, which takes
+        seconds: the page asks for this after it has painted, not before."""
+        out, err = run_fish_cmd(
+            "__fish_theme_export_for_webconfig",
             env=os.environ | {"__fish_force_load_default_theme": "1"},
         )
         assert err == "", err
 
         words = iter(shlex.split(out))
-        current = next(words)
-        themes = [
-            {
-                "theme": "Current",
-                "by_color_theme": {
-                    # Hack-ish: we don't know about the light/dark variants.
-                    "unknown": parse_colors(current)
-                    | {
-                        "preferred_background": "white"
-                        if TERMINAL_COLOR_THEME == "light"
-                        else "black",
-                    }
-                },
-                "terminal_color_theme": TERMINAL_COLOR_THEME,
-            }
-        ]
+        next(words)  # The theme in force, which `do_get_colors` states.
+        themes = []
         while True:
             try:
                 theme_name = next(words)
@@ -1216,6 +1240,8 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
 
         if p == "/colors/":
             output = self.do_get_colors()
+        elif p == "/themes/":
+            output = self.do_get_themes()
         elif p == "/colour_sample/":
             output = self.do_get_colour_sample()
         elif p.startswith("/code_styles/"):
