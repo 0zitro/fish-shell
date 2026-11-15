@@ -225,7 +225,8 @@ declare_scope_entries! {
         "meta.block.brace" /** characters inside ``{ … }`` */ enclosing;
         "meta.block" /** characters inside ``begin … end`` and ``{ … }`` */ enclosing;
         "meta.if" /** characters inside ``if … end`` */ enclosing;
-        "meta.case" /** characters inside ``case … end`` */ enclosing;
+        "meta.switch" /** characters inside ``switch … end`` */ enclosing;
+        "meta.case" /** characters inside ``case …`` */ enclosing;
         "meta.loop.for" /** characters inside ``for … end`` */ enclosing;
         "meta.loop.while" /** characters inside ``while … end`` */ enclosing;
         "meta.loop" /** characters inside ``for … end`` and ``while … end`` */ enclosing;

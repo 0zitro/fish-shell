@@ -24,8 +24,10 @@ impl EnclosingScopeSet {
     /// How many constructs one character's set can name.
     ///
     /// A set names each declared enclosing scope once, so this bounds the declaration's
-    /// enclosing scopes as much as it bounds a character's nesting.
-    const LEVELS: usize = 16;
+    /// enclosing scopes as much as it bounds a character's nesting: a character nested
+    /// deeper than this loses the outermost construct's scope, and the declaration is
+    /// refused at build time when it marks more scopes than a set holds.
+    const LEVELS: usize = 20;
 
     /// Whether the set contains this enclosing scope.
     ///
@@ -93,7 +95,10 @@ impl fmt::Debug for EnclosingScopeSet {
 }
 
 /// A set holds one level per declared enclosing scope.
-const _: () = assert!(ENCLOSING_SCOPE_IDS.len() <= EnclosingScopeSet::LEVELS);
+const _: () = assert!(
+    ENCLOSING_SCOPE_IDS.len() <= EnclosingScopeSet::LEVELS,
+    "more scopes enclose than an `EnclosingScopeSet` has levels"
+);
 
 #[cfg(test)]
 mod tests {

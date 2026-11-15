@@ -392,13 +392,6 @@ fn enclosing_bits(scopes: &[Scope]) -> Result<Vec<usize>, DeclarationError> {
             .then_with(|| scopes[*left].path.cmp(&scopes[*right].path))
     });
 
-    if enclosing.len() > 16 {
-        return Err(DeclarationError::at(
-            Span::call_site(),
-            "more scopes enclose than an `EnclosingScopeSet` has levels",
-        ));
-    }
-
     Ok(enclosing)
 }
 
