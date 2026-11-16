@@ -619,16 +619,44 @@ document.addEventListener("alpine:init", () => {
             return named;
         },
 
+        // The two colour fields a style shows, each with the channel it is held under: the
+        // text's colour and the fill behind it.  `reverse` exchanges the two, because the
+        // terminal draws the pair exchanged.
+        colourFields(named) {
+            const reversed = !!(named.flags || {}).reverse;
+            return {
+                reversed,
+                colour: reversed ? named.background : named.foreground,
+                fill: reversed ? named.foreground : named.background,
+            };
+        },
+
+        // The CSS fields a style's colours feed, each rendered by `render(field, channel)`.
+        //
+        // A side a reversed style leaves empty is the terminal's other default: the text takes
+        // the background it is drawn on, and the fill takes the terminal's text colour, so a
+        // reversed style that names one colour states the other as the terminal would.
+        colourFieldsOf(named, render) {
+            const { reversed, colour, fill } = this.colourFields(named);
+            const css = {};
+            if (colour) {
+                css["color"] = render(colour, reversed ? "background" : "foreground");
+            } else if (reversed) {
+                css["color"] = this.actualTerminalBackgroundColor;
+            }
+            if (fill) {
+                css["background-color"] = render(fill, reversed ? "foreground" : "background");
+            } else if (reversed) {
+                css["background-color"] = this.defaultTextColour();
+            }
+            return css;
+        },
+
         // The CSS properties a composed style has, with each colour resolved to what the terminal
         // shows it as.
         styleOf(named) {
-            const css = {};
-            let foreground = named.foreground;
-            let background = named.background;
             const flags = named.flags || {};
-            if (flags.reverse) [foreground, background] = [background, foreground];
-            if (foreground) css["color"] = interpret_color(foreground.value);
-            if (background) css["background-color"] = interpret_color(background.value);
+            const css = this.colourFieldsOf(named, (field) => interpret_color(field.value));
             const decorations = this.decorationsOf(flags, named);
             if (Object.keys(decorations).length) Object.assign(css, decorations);
             if (named.underline_colour) {
@@ -639,16 +667,15 @@ document.addEventListener("alpine:init", () => {
 
         // The CSS properties a run of the sample has: the same, with each colour stated as the
         // custom property the sample holds that variable in.
+        //
+        // A value is held under the channel its variable stated it in, so an exchanged channel
+        // reads the property the variable was written to, and the CSS property is what the
+        // exchange changes.
         runStyleOf(named) {
-            const css = {};
-            let foreground = named.foreground;
-            let background = named.background;
             const flags = named.flags || {};
-            if (flags.reverse) [foreground, background] = [background, foreground];
-            if (foreground) css["color"] = this.colourVariableReference("foreground", foreground.variable);
-            if (background) {
-                css["background-color"] = this.colourVariableReference("background", background.variable);
-            }
+            const css = this.colourFieldsOf(
+                named,
+                (field, channel) => this.colourVariableReference(channel, field.variable));
             const decorations = this.decorationsOf(flags, named);
             if (Object.keys(decorations).length) Object.assign(css, decorations);
             if (named.underline_colour) {
