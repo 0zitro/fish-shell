@@ -1219,11 +1219,13 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             working_directory,
             can_do_io,
             EnclosingScopeSet::default(),
+            None,
         )
     }
 
-    /// A visitor for a region that lies inside `inherited`: the enclosing scopes of
-    /// the buffer this visit descends from become every character's.
+    /// A visitor for a region that lies inside `inherited`: the enclosing scopes of the
+    /// buffer this visit descends from become every character's, and `parameters` is the
+    /// definition the region lies inside, when it lies inside one.
     fn inside(
         buff: &'src wstr,
         cursor: Option<usize>,
@@ -1231,6 +1233,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
         working_directory: &'wd wstr,
         can_do_io: bool,
         inherited: EnclosingScopeSet,
+        parameters: Option<FunctionParameterList>,
     ) -> Self {
         let file_tester = FileTester::new(working_directory, ctx);
         Self {
@@ -1241,7 +1244,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
             file_tester,
             classifications: vec![],
             pending_variable_names: vec![],
-            enclosing_function_parameters: vec![],
+            enclosing_function_parameters: parameters.map_or_else(Vec::new, |list| vec![list]),
             enclosing_scopes: inherited,
             done: false,
         }
@@ -1471,6 +1474,7 @@ impl<'src, 'wd, 'ctx> HighlightVisitor<'src, 'wd, 'ctx> {
                 self.working_directory,
                 self.whether_io_permitted(),
                 enclosing.with_scope(TokenScopeId::META_COMMAND_SUBSTITUTION),
+                self.enclosing_function_parameters.last().cloned(),
             );
             let sub_classifications = cmdsub_visitor.classify();
 
@@ -3594,6 +3598,31 @@ mod tests {
             classifications[7].foreground(),
             TokenScopeId::VARIABLE,
             "the reference's name"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_substitution_inside_a_definition_reads_its_parameters() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // echo (string join -- "" $x $argv) inside a definition — a substitution's region is
+        // part of the body it is written in, so the body's parameters are the region's too.
+        let classifications = classified_without_io(
+            vars,
+            L!("function f --argument-names x; echo (string join -- \"\" $x $argv); end"),
+        );
+        assert_eq!(
+            classifications[56].foreground(),
+            TokenScopeId::VARIABLE_PARAMETER_NAMED,
+            "a declared parameter, inside the substitution"
+        );
+        assert_eq!(
+            classifications[59].foreground(),
+            TokenScopeId::VARIABLE_PARAMETER_ARGV,
+            "argv, inside the substitution"
         );
     }
 

@@ -170,7 +170,7 @@ pub fn header_options() -> Vec<WOption<'static>> {
 ///
 /// The first word is the function's name, which `wgetopt` takes to be the program name;
 /// the rest are its options and the names and values they take.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FunctionHeaderFacts {
     /// The argument names the header declares, in the order it declares them.
     pub argument_names: Vec<WString>,
