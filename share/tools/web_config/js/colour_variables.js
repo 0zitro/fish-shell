@@ -125,6 +125,7 @@ window.__fish_colour_variables = [
     {variable: "fish_color_operator_brace", path: "operator.brace", description: "{, } and the , between them", chain: ["fish_color_operator", "fish_color_normal"]},
     {variable: "fish_color_operator_parenthesis", path: "operator.parenthesis", description: "( and )", chain: ["fish_color_operator", "fish_color_normal"]},
     {variable: "fish_color_operator_tilde", path: "operator.tilde", description: "~ at the start of a word", chain: ["fish_color_operator", "fish_color_normal"]},
+    {variable: "fish_color_user", path: "operator.tilde.user", description: "the username in a home expansion, like bob in ~bob/x", chain: ["fish_color_operator_tilde", "fish_color_operator", "fish_color_normal"]},
     {variable: "fish_color_operator_dollar", path: "operator.dollar", description: "$ of $(command)", chain: ["fish_color_operator", "fish_color_normal"]},
     {variable: "fish_color_operator_logical", path: "operator.logical", description: "&& and ||", chain: ["fish_color_operator", "fish_color_normal"]},
     {variable: "fish_color_operator_assignment", path: "operator.assignment", description: "= between a name and its value", chain: ["fish_color_operator", "fish_color_normal"]},

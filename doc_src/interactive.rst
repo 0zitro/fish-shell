@@ -375,6 +375,8 @@ shell consults:
     ``(`` and ``)``
 .. envvar:: fish_color_operator_tilde
     ``~`` at the start of a word
+.. envvar:: fish_color_user
+    the username in a home expansion, like ``bob`` in ``~bob/x``
 .. envvar:: fish_color_operator_dollar
     ``$`` of ``$(command)``
 .. envvar:: fish_color_operator_logical
@@ -468,8 +470,6 @@ directory history rather than any source text:
     the current working directory in the default prompt
 .. envvar:: fish_color_cwd_root
     the current working directory in the default prompt for the root user
-.. envvar:: fish_color_user
-    the username in the default prompt
 .. envvar:: fish_color_host
     the hostname in the default prompt
 .. envvar:: fish_color_host_remote
@@ -480,6 +480,10 @@ directory history rather than any source text:
     the '^C' indicator on a canceled command
 .. envvar:: fish_color_history_current
     the current position in the history for commands like ``dirh`` and ``cdh``
+
+:envvar:`fish_color_user` is the one variable of this group that also colours source text: it
+states the username a home expansion names, as in ``~bob/x``, and the default prompt draws the
+user with it as well.
 
 A definition's name takes the mode its command requests, and each factor of that mode
 extends the variable's name: the scope (``local``, ``function``, ``global``,

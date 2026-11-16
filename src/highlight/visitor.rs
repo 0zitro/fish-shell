@@ -525,6 +525,7 @@ fn classify_word(
     let brace = leaf(TokenScopeId::OPERATOR_BRACE);
     let parenthesis = leaf(TokenScopeId::OPERATOR_PARENTHESIS);
     let tilde = leaf(TokenScopeId::OPERATOR_TILDE);
+    let username = leaf(TokenScopeId::USER);
     let quoted_single = leaf(TokenScopeId::QUOTE_SINGLE);
     let quoted_double = leaf(TokenScopeId::QUOTE_DOUBLE);
     let buff_len = buffstr.len();
@@ -547,6 +548,8 @@ fn classify_word(
     let mut run: Option<EnclosingScopeSet> = None;
     let mut unclosed_quote_offset = None;
     let mut bracket_count = 0;
+    // The characters a home expansion names a user with, when the word opens with one.
+    let mut username_range = None;
     let mut in_pos = 0;
     while in_pos < buff_len {
         let c = buffstr.as_char_slice()[in_pos];
@@ -653,6 +656,14 @@ fn classify_word(
                     match c {
                         '~' if in_pos == 0 && position == WordPosition::Start => {
                             classifications[in_pos] = tilde;
+                            // The name before the first `/` is the user the expansion
+                            // names, and what escapes or expands inside it keeps its own
+                            // class.
+                            let mut end = in_pos + 1;
+                            while end < buff_len && buffstr.as_char_slice()[end] != '/' {
+                                end += 1;
+                            }
+                            username_range = Some(in_pos + 1..end);
                         }
                         '$' => {
                             assert!(in_pos < buff_len);
@@ -775,6 +786,17 @@ fn classify_word(
     // Error on unclosed quotes.
     if mode != Mode::Unquoted {
         classifications[unclosed_quote_offset.unwrap()] = invalid;
+    }
+
+    // The user a home expansion names is stated by the characters the pieces around it left
+    // alone.
+    if let Some(range) = username_range {
+        let untouched: Vec<usize> = range
+            .filter(|index| classifications[*index] == base)
+            .collect();
+        for index in untouched {
+            classifications[index] = username;
+        }
     }
 }
 
@@ -3519,6 +3541,59 @@ mod tests {
         assert!(
             classifications[25].enclosing().is_empty(),
             "the end keyword"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_home_expansion_names_its_user() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+
+        // echo ~root/x — the tilde opens an expansion, the name before the first `/` is the
+        // user, and the rest of the word is the argument it was.
+        let classifications = classified_without_io(vars, L!("echo ~root/x"));
+        assert_eq!(
+            classifications[5].foreground(),
+            TokenScopeId::OPERATOR_TILDE,
+            "the tilde"
+        );
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::USER,
+            "the user's first character"
+        );
+        assert_eq!(
+            classifications[9].foreground(),
+            TokenScopeId::USER,
+            "the user's last character"
+        );
+        assert_eq!(
+            classifications[10].foreground(),
+            TokenScopeId::PARAM,
+            "the path after the name"
+        );
+
+        // ~/x names no user, and a word that only opens with a tilde names none either.
+        let classifications = classified_without_io(vars, L!("echo ~/x"));
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::PARAM,
+            "the path of a home expansion"
+        );
+
+        // What expands inside the name keeps its own class: a reference is a reference.
+        let classifications = classified_without_io(vars, L!("echo ~$USER"));
+        assert_eq!(
+            classifications[6].foreground(),
+            TokenScopeId::VARIABLE_SIGIL,
+            "the reference's sigil"
+        );
+        assert_eq!(
+            classifications[7].foreground(),
+            TokenScopeId::VARIABLE,
+            "the reference's name"
         );
     }
 

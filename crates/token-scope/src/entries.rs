@@ -181,6 +181,7 @@ declare_scope_entries! {
         "operator.brace" /** ``{``, ``}`` and the ``,`` between them */;
         "operator.parenthesis" /** ``(`` and ``)`` */;
         "operator.tilde" /** ``~`` at the start of a word */;
+        "operator.tilde.user" /** the username in a home expansion, like ``bob`` in ``~bob/x`` */ user;
         "operator.dollar" /** ``$`` of ``$(command)`` */;
         "operator.logical" /** ``&&`` and ``||`` */;
         "operator.assignment" /** ``=`` between a name and its value */;

@@ -246,6 +246,15 @@ printf '%s' 'echo $x[$i]' | enclosing_of
 # CHECK: 9 meta.slice
 # CHECK: 10
 
+# A home expansion names its user before the first slash, and the path after the name stays
+# the argument it is.
+printf '%s' 'echo ~root/x' | runs_of
+# CHECK: 0 command
+# CHECK: 4 source
+# CHECK: 5 operator.tilde
+# CHECK: 6 operator.tilde.user
+# CHECK: 10 argument
+
 # A brace clause is a block of its own: its marks name the pair, and its body is a block
 # and a brace clause in particular, where a begin block's body is only a block.
 printf '%s' '{ echo hi; }' | runs_of
