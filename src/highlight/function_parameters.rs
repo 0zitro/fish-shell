@@ -12,6 +12,7 @@ use fish_token_scope::TokenScopeId;
 /// parameters, so a reference inside the body is classified without consulting the
 /// process.  Nested definitions nest lists; a reference resolves against the innermost
 /// list alone.
+#[derive(Clone)]
 pub struct FunctionParameterList {
     facts: FunctionHeaderFacts,
 }
