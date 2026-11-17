@@ -850,7 +850,7 @@ pub enum BeginQuoteMode {
     RawSource,
 }
 
-/// The literal quoted-option tokens written in a `begin` header.
+/// The quoted-option tokens written in a `begin` header.
 ///
 /// A plain `begin` holds no `BeginQuote`: absence is the plain mode, so no leaf
 /// stands for options that were not written. A header that writes the tokens
@@ -2677,8 +2677,13 @@ impl<'s> Populator<'s> {
             );
         }
     }
-    /// Return the number of quoted options the literal header token at `idx`
-    /// spells, or `None` when the token is not a quoted option.
+    /// Return the number of quoted options the header token at `idx` denotes,
+    /// or `None` when it does not denote one.
+    ///
+    /// The token's value decides, not its source spelling: quoting, escapes,
+    /// and line continuations do not change what a token denotes - the same
+    /// rule that keeps `'begin'` the keyword - so they do not protect an
+    /// option-shaped token.  A statement breaker before the token does.
     ///
     /// `--quoted` is one option, and `-q` followed by a run of `q` counts its
     /// q's.
@@ -2688,7 +2693,9 @@ impl<'s> Populator<'s> {
             return None;
         }
         let start = token.source_start();
-        let text = &self.tokens.src[start..start + token.source_length()];
+        let source = &self.tokens.src[start..start + token.source_length()];
+        let value = unescape_string(source, UnescapeStringStyle::default())?;
+        let text = value.as_utfstr();
         if text == L!("--quoted") {
             return Some(1);
         }

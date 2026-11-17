@@ -179,6 +179,56 @@ eval $code
 echo (string escape -- (begin -qq echo (printf x); end))
 # CHECK: ' echo (printf x); '
 
+# A quoted option is recognised by the token's value, as keywords and every
+# other option are: quoting, escaping, and line continuations do not change
+# what it denotes, so they do not prevent it from selecting its mode.
+echo (string escape -- (begin '-q'
+echo 1; end))
+# CHECK: \necho\ 1\;\ 
+
+echo (string escape -- (begin "-q" echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin \-q
+echo 1; end))
+# CHECK: \necho\ 1\;\ 
+
+echo (string escape -- (begin '--quoted' echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin \
+-q
+echo 1; end))
+# CHECK: \necho\ 1\;\ 
+
+echo (string escape -- (begin -\
+q
+echo 1; end))
+# CHECK: \necho\ 1\;\ 
+
+echo (string escape -- (begin -q\
+q
+echo 1; end))
+# CHECK: \necho\ 1\;\ 
+
+echo (string escape -- (begin --quo\
+ted
+echo 1; end))
+# CHECK: \necho\ 1\;\ 
+
+# A statement breaker before the token keeps it a body command.
+$fish -c 'begin; -q; end'
+# CHECKERR: fish: Unknown command: -q
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+
+$fish -c "begin; '-q'; end"
+# CHECKERR: fish: Unknown command: -q
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+
 # More than two quoted options is an error.
 $fish -c 'begin -qq -q echo 1; end'
 # CHECKERR: fish: begin accepts at most two quoted options

@@ -34,7 +34,11 @@ executing it.  ``begin -q`` and ``begin --quoted`` evaluate command
 substitutions eagerly and leave everything else suspended.  ``begin -qq``,
 ``begin -q -q``, and ``begin --quoted --quoted`` are equivalent spellings that
 leave command substitutions suspended as well.  The modes differ only in
-whether command substitutions are evaluated, not in what the value is.
+whether command substitutions are evaluated, not in what the value is.  A
+quoted option is recognised by the token's value, as keywords and every other
+option are: quoting, escaping, or a line continuation inside it does not
+prevent it from selecting its mode.  A statement breaker before it keeps it a
+body command.
 
 ::
 
