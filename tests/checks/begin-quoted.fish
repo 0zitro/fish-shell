@@ -1,101 +1,129 @@
 # RUN: fish=%fish %fish %s
 
-# Raw quoted begin emits its body without expansion.
-begin -qq echo (printf x); end
-# CHECK: echo (printf x)
+# A quoted block emits its body span: the bytes between the header and the
+# closing `end`, verbatim.  The breakers, comments, blank lines, and interior
+# whitespace are the value, so each check captures the span and escapes it to
+# make every byte visible.
 
-begin -q -q echo $x; end
-# CHECK: echo $x
+echo (string escape -- (begin -qq echo 1; end | string collect -aN))
+# CHECK: ' echo 1; '
 
-begin --quoted --quoted echo 1; echo 2; end
-# CHECK: echo 1; echo 2
+# -q and -qq emit the same framing; they differ only in substitution.
+echo (string escape -- (begin -q echo 1; end | string collect -aN))
+# CHECK: ' echo 1; '
 
-begin -qq; echo 1; end
-# CHECK: echo 1
+# A one-line body and the same body closed on the next line have different
+# spans: the closing break is part of the value.
+echo (string escape -- (begin -qq; code; end | string collect -aN) (begin -qq; code
+end | string collect -aN))
+# CHECK: '; code; ' \;\ code\n
 
-# The block's own redirections and pipelines apply to the emitted source.
-begin -qq echo 1; end | cat
-# CHECK: echo 1
+# A body that starts on the header line and one that starts on the next line
+# have different lead breakers.
+echo (string escape -- (begin -qq echo 1; end | string collect -aN) (begin -qq
+echo 1; end | string collect -aN))
+# CHECK: ' echo 1; ' \necho\ 1\;\ 
 
-# Inner redirections remain part of the source.
-begin -qq echo (cmd) > inner; end
-# CHECK: echo (cmd) > inner
+# An empty body still has its span: the breakers alone.
+echo (string escape -- (begin -qq end | string collect -aN))
+# CHECK: ' '
+echo (string escape -- (begin -qq; end | string collect -aN))
+# CHECK: '; '
+echo (string escape -- (begin -qq
+end | string collect -aN))
+# CHECK: \n
 
-# Comments and nested blocks are preserved.
-begin -qq
+# A comment is part of the span, including the newline that closes it.
+echo (string escape -- (begin -qq # c
+end | string collect -aN))
+# CHECK: \ \#\ c\n
+echo (string escape -- (begin -qq
+# c
+end | string collect -aN))
+# CHECK: \n\#\ c\n
+
+# A comment on the last line is followed by the newline that closes it, so no
+# capture ends inside a comment.
+echo (string escape -- (begin -qq
+echo 1
+# trailing
+end | string collect -aN))
+# CHECK: \necho\ 1\n\#\ trailing\n
+
+# Interior whitespace, blank lines, and indentation are the author's.
+echo (string escape -- (begin -qq
+echo 1
+
+    echo 2
+end | string collect -aN))
+# CHECK: \necho\ 1\n\n\ \ \ \ echo\ 2\n
+
+# A continuation is emitted as its two bytes, never escaped.
+echo (string escape -- (begin -qq \
+code; end | string collect -aN))
+# CHECK: \ \\\ncode\;\ 
+
+# Re-embedding the span between the header and `end` reproduces the block.
+set -l span (begin -qq
+echo 1
+
+    echo 2
+end | string collect -aN)
+echo (string escape -- $span)
+# CHECK: \necho\ 1\n\n\ \ \ \ echo\ 2\n
+echo (string escape -- (eval "begin -qq""$span""end" | string collect -aN))
+# CHECK: \necho\ 1\n\n\ \ \ \ echo\ 2\n
+
+# A block's own redirection or pipeline applies to the emitted span bytes.
+echo (string escape -- (begin -qq echo 1; end | cat | string collect -aN))
+# CHECK: ' echo 1; '
+
+# Inner redirections remain part of the span.
+echo (string escape -- (begin -qq echo (cmd) > inner; end | string collect -aN))
+# CHECK: ' echo (cmd) > inner; '
+
+# Comments and nested blocks are span bytes.
+echo (string escape -- (begin -qq
 # comment
 begin
     echo 1
 end
-end
-# CHECK: # comment
-# CHECK: begin
-# CHECK:     echo 1
-# CHECK: end
+end | string collect -aN))
+# CHECK: \n\#\ comment\nbegin\n\ \ \ \ echo\ 1\nend\n
 
-# More than two quoted options is an error.
-$fish -c 'begin -qq -q echo 1; end'
-# CHECKERR: fish: begin accepts at most two quoted options
-# CHECKERR: {{^}}begin -qq -q echo 1; end
-# CHECKERR: {{^}}          ^^
+# In -q mode only command-substitution sites change; every other byte is the
+# span verbatim.
+echo (string escape -- (begin -q echo (printf x); end | string collect -aN))
+# CHECK: ' echo x; '
 
-# A compact spelling carries one option per q, so a third q is an error too.
-$fish -c 'begin -qqq echo 1; end'
-# CHECKERR: fish: begin accepts at most two quoted options
-# CHECKERR: {{^}}begin -qqq echo 1; end
-# CHECKERR: {{^}}      ^~~^
+echo (string escape -- (begin -q echo pre(printf 'a\nb')post; end | string collect -aN))
+# CHECK: ' echo preapost prebpost; '
 
-# A single quoted option evaluates command substitutions only.
-begin -q echo (printf x); end
-# CHECK: echo x
+echo (string escape -- (begin -q echo "$(printf 'a\nb')"; end | string collect -aN))
+# CHECK: \ echo\ \"a\nb\"\;\ 
 
-begin -q echo (printf 'a\nb\n')[2]; end
-# CHECK: echo b
+echo (string escape -- (begin -q echo (printf ''); end | string collect -aN))
+# CHECK: ' echo ; '
 
-begin -qq echo foo\; ; end
-# CHECK: echo foo\;
+echo (string escape -- (begin -q echo (printf 'a\nb') (printf 'c\nd'); end | string collect -aN))
+# CHECK: ' echo a b c d; '
 
-begin -q $$(printf 'x[1]\n'); end
-# CHECK: $x[1]
-
-$fish -c 'begin -q $$(printf "x\ny\n"); end'
-# CHECKERR: fish: Dynamic variable reference must be exactly one variable reference
-# CHECKERR: {{.*}}
-# CHECKERR: {{.*}}
-
-begin -q echo pre(printf 'a\nb')post; end
-# CHECK: echo preapost prebpost
-
-begin -q echo (printf 'a\nb') (printf 'c\nd'); end
-# CHECK: echo a b c d
-
-begin -q echo "$(printf '')"; end
-# CHECK: echo ""
-
-begin -q echo (printf ''); end
-# CHECK: echo
-
-begin -q echo "$(printf 'a\nb')"; end
-# CHECK: echo "a
-# CHECK: b"
-
-begin -q
+# Comments, variables, braces, globs, and tildes remain span bytes in -q mode.
+echo (string escape -- (begin -q
 # comment
 set x 1
 echo $x
-end
-# CHECK: # comment
-# CHECK: set x 1
-# CHECK: echo $x
+end | string collect -aN))
+# CHECK: \n\#\ comment\nset\ x\ 1\necho\ \$x\n
 
-begin -q echo {a,b} ~; end
-# CHECK: echo {a,b} ~
+echo (string escape -- (begin -q echo {a,b} ~; end | string collect -aN))
+# CHECK: ' echo {a,b} ~; '
 
-begin -q echo {pre(printf 'a,b')}; end
-# CHECK: echo {pre'a,b'}
+echo (string escape -- (begin -q echo {pre(printf 'a,b')}; end | string collect -aN))
+# CHECK: " echo {pre'a,b'}; "
 
-begin -q echo 1 > (printf out); end
-# CHECK: echo 1 > out
+echo (string escape -- (begin -q echo 1 > (printf out); end | string collect -aN))
+# CHECK: ' echo 1 > out; '
 
 # A command-substitution result keeps the boundary of the value beside it.
 set foo 1
@@ -116,12 +144,35 @@ set x 123
 eval (begin -q echo $$(echo n)post; end)
 # CHECK: xpost
 
-# Line continuations are transparent to the captured value boundary.
+# An eager substitution inside a continuation-joined word is rendered; the
+# continuation is inside the substituted word, not span trivia.
 set foo 1
 set code (begin -q echo $foo\
 (printf bar); end | string collect)
 eval $code
 # CHECK: 1bar
+
+# A raw block keeps its body unexpanded.
+begin -qq echo (printf x); end
+# CHECK: echo (printf x);
+
+# More than two quoted options is an error.
+$fish -c 'begin -qq -q echo 1; end'
+# CHECKERR: fish: begin accepts at most two quoted options
+# CHECKERR: {{^}}begin -qq -q echo 1; end
+# CHECKERR: {{^}}          ^^
+
+# A compact spelling carries one option per q, so a third q is an error too.
+$fish -c 'begin -qqq echo 1; end'
+# CHECKERR: fish: begin accepts at most two quoted options
+# CHECKERR: {{^}}begin -qqq echo 1; end
+# CHECKERR: {{^}}      ^~~^
+
+# A dynamic variable reference must be exactly one reference.
+$fish -c 'begin -q $$(printf "x\ny\n"); end'
+# CHECKERR: fish: Dynamic variable reference must be exactly one variable reference
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
 
 # A later substitution reports its own span, not the token start.
 $fish -c "begin -q echo (printf a)(printf b)[0]; end"

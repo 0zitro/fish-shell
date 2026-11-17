@@ -33,7 +33,8 @@ A quoted option makes ``begin`` emit its body as source text instead of
 executing it.  ``begin -q`` and ``begin --quoted`` evaluate command
 substitutions eagerly and leave everything else suspended.  ``begin -qq``,
 ``begin -q -q``, and ``begin --quoted --quoted`` are equivalent spellings that
-leave command substitutions suspended as well.
+leave command substitutions suspended as well.  The modes differ only in
+whether command substitutions are evaluated, not in what the value is.
 
 ::
 
@@ -42,9 +43,12 @@ leave command substitutions suspended as well.
         echo $x
     end
 
-This emits ``echo <date output>`` and the literal line ``echo $x``.  Variables,
-braces, globs, tildes, and the structure of the body remain source; only
-command substitutions are replaced by their output.
+This emits the body span: the bytes between the header and the closing ``end``,
+with each command substitution replaced by its output.  Variables, braces,
+globs, tildes, comments, indentation, and the structure of the body remain
+source.  Nothing is trimmed and no terminator is added; the span carries the
+author's own separators, so re-embedding it between ``begin`` and ``end``
+reproduces the block byte for byte.
 
 With two quoted options nothing is expanded:
 
@@ -54,10 +58,11 @@ With two quoted options nothing is expanded:
         echo (date)
     end
 
-This writes ``echo (date)`` without running ``date``.  The body is still parsed
-so that nested blocks and the matching ``end`` are found.
+The span is a newline, four spaces, ``echo (date)``, and the newline before
+``end``.  ``date`` is not run.  The body is still parsed so that nested blocks
+and the matching ``end`` are found.
 
-The emitted text can be captured or redirected like any other command output:
+The emitted source can be captured or redirected like any other command output:
 
 ::
 
@@ -66,9 +71,15 @@ The emitted text can be captured or redirected like any other command output:
     end)"
     eval $code
 
-A redirection or pipeline applied to the construct itself applies to the
-emitted text.  Redirections inside the body remain part of the emitted source.
-More than two quoted options is an error.
+Unquoted command substitution splits the span into one element per line, as it
+does for any command; quoted substitution collects it and trims trailing
+newlines.  A consumer that needs the exact span as one value captures it with
+``string collect -aN``.
+
+A redirection or pipeline applied to the construct itself receives the span
+bytes: ``begin -q ... end > file`` writes the source text.  Redirections inside
+the body remain part of the spanned source.  More than two quoted options is an
+error.
 
 Example
 -------

@@ -125,12 +125,20 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
 
 /// The captured source of a quoted `begin` body and its offset in the parsed
 /// source, so errors found in the body can be reported where they stand.
+///
+/// The text is the whole body span: the bytes between the header and the
+/// closing `end`, including comments, whitespace, and the breakers around the
+/// statements.  The emitted value is this span verbatim, so a capture
+/// re-embeds into the block unchanged.
 struct BeginBody {
     text: WString,
     source_start: usize,
 }
 
 /// Tokenize a captured `begin` body, keeping comments.
+///
+/// The eager serialiser uses the tokens only to locate command-substitution
+/// sites; every byte outside a substitution site is copied through verbatim.
 ///
 /// The body was parsed as fish source before it reached the executor, so a
 /// tokenizer error here is a programmer error rather than input error.
@@ -151,32 +159,6 @@ fn begin_body_tokens(text: &wstr) -> Vec<Tok> {
         tokens.push(token);
     }
     tokens
-}
-
-/// Extend an optional half-open extent by one emitted span.
-fn extend_extent(extent: &mut Option<(usize, usize)>, start: usize, end: usize) {
-    *extent = Some(match *extent {
-        Some((first, _)) => (first, end),
-        None => (start, end),
-    });
-}
-
-/// The first and one-past-last offsets a token list covers.
-fn token_extent(tokens: &[Tok]) -> Option<(usize, usize)> {
-    let mut extent = None;
-    for token in tokens {
-        extend_extent(
-            &mut extent,
-            token.offset as usize,
-            (token.offset + token.length) as usize,
-        );
-    }
-    extent
-}
-
-fn trim_begin_body(text: &wstr) -> &wstr {
-    let tokens = begin_body_tokens(text);
-    token_extent(&tokens).map_or_else(|| L!(""), |(start, end)| &text[start..end])
 }
 
 fn finish_internal_process_status(ctx: &mut OperationContext<'_>, status: c_int) {
@@ -1014,6 +996,12 @@ impl ExecutionContext {
             .collect())
     }
 
+    /// Serialise the body span with each command-substitution site replaced by
+    /// its rendered value.
+    ///
+    /// Every byte outside a substitution site - the breakers, comments,
+    /// whitespace, and continuations - is copied through verbatim, so `-q` and
+    /// `-qq` differ only in what happens at substitution sites.
     fn serialize_eager_body(
         &mut self,
         ctx: &mut OperationContext<'_>,
@@ -1021,7 +1009,6 @@ impl ExecutionContext {
     ) -> Result<WString, BeginSerializationError> {
         let tokens = begin_body_tokens(&body.text);
         let mut out = WString::new();
-        let mut extent = None;
         let mut cursor = 0;
         for token in &tokens {
             let offset = token.offset as usize;
@@ -1034,28 +1021,19 @@ impl ExecutionContext {
                     &body.text[offset..end],
                     body.source_start + offset,
                 )?;
-                let start = out.len();
                 for (i, variant) in variants.iter().enumerate() {
                     if i > 0 {
                         out.push(' ');
                     }
                     out.push_utfstr(variant);
                 }
-                if !variants.is_empty() {
-                    extend_extent(&mut extent, start, out.len());
-                }
             } else {
-                let start = out.len();
                 out.push_utfstr(&body.text[offset..offset + length]);
-                extend_extent(&mut extent, start, out.len());
             }
             cursor = offset + length;
         }
         out.push_utfstr(&body.text[cursor..]);
-        Ok(match extent {
-            Some((first, last)) => out[first..last].to_owned(),
-            None => WString::new(),
-        })
+        Ok(out)
     }
 
     fn run_eager_begin_statement(
@@ -1080,19 +1058,22 @@ impl ExecutionContext {
         let Some(body) = self.begin_body_source(statement) else {
             return EndExecutionReason::Ok;
         };
-        self.emit_begin_body(ctx, trim_begin_body(&body.text))
+        self.emit_begin_body(ctx, &body.text)
     }
 
+    /// Emit the body span as the construct's value.
+    ///
+    /// Nothing is trimmed and no terminator is appended: the span between the
+    /// header and `end` carries the author's own breakers, so the value
+    /// re-embeds into the block byte for byte and a splice is the text the
+    /// author wrote.
     fn emit_begin_body(
         &mut self,
         ctx: &mut OperationContext<'_>,
         body: &wstr,
     ) -> EndExecutionReason {
         let mut out = create_output_stream_for_fd(STDOUT_FILENO, &self.block_io, false);
-        if !body.is_empty() {
-            out.append(body.chars());
-            out.append('\n');
-        }
+        out.append(body.chars());
         let status = out.flush_and_check_error();
         finish_internal_process_status(ctx, status);
         EndExecutionReason::Ok
