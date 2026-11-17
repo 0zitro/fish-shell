@@ -23,7 +23,7 @@ use crate::{
     flog::flog,
     function,
     io::{
-        FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream,
+        FdOutputStream, IoChain, IoStreams, OutputStream, SeparationType, StringOutputStream,
         create_output_stream_for_fd,
     },
     job_group::JobGroup,
@@ -1067,13 +1067,21 @@ impl ExecutionContext {
     /// header and `end` carries the author's own breakers, so the value
     /// re-embeds into the block byte for byte and a splice is the text the
     /// author wrote.
+    ///
+    /// The span is emitted as one explicitly separated element.  Source-text
+    /// consumers such as `eval` join their argument lists with spaces, so a
+    /// multi-element value would insert separators between the body's
+    /// statements; the arity is intrinsic to the value and only the producer
+    /// can state it.  A command substitution consumes the separation as one
+    /// element, while a redirection, a pipeline target, or a terminal receives
+    /// the span bytes unchanged.
     fn emit_begin_body(
         &mut self,
         ctx: &mut OperationContext<'_>,
         body: &wstr,
     ) -> EndExecutionReason {
         let mut out = create_output_stream_for_fd(STDOUT_FILENO, &self.block_io, false);
-        out.append(body.chars());
+        out.append_with_separation(body.chars(), SeparationType::Explicitly, false);
         let status = out.flush_and_check_error();
         finish_internal_process_status(ctx, status);
         EndExecutionReason::Ok

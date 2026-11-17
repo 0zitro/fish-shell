@@ -71,10 +71,20 @@ The emitted source can be captured or redirected like any other command output:
     end)"
     eval $code
 
-Unquoted command substitution splits the span into one element per line, as it
-does for any command; quoted substitution collects it and trims trailing
-newlines.  A consumer that needs the exact span as one value captures it with
-``string collect -aN``.
+The emitted value is one element, whatever the statement count of the body.
+Unquoted command substitution is the lossless capture: it yields the span as a
+single element, including its breakers and trailing newlines::
+
+    set -l code (begin -q
+        echo $x
+        echo $y
+    end)
+    eval $code
+
+Quoted substitution yields the same text as one element, but it applies the
+usual quoted-substitution trimming, so it is a convenience for text producers
+rather than the lossless channel.  Consumers that want lines or statements take
+that view explicitly, for example with ``string split``.
 
 A redirection or pipeline applied to the construct itself receives the span
 bytes: ``begin -q ... end > file`` writes the source text.  Redirections inside

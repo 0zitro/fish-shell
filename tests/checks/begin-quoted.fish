@@ -1,45 +1,45 @@
 # RUN: fish=%fish %fish %s
 
 # A quoted block emits its body span: the bytes between the header and the
-# closing `end`, verbatim.  The breakers, comments, blank lines, and interior
-# whitespace are the value, so each check captures the span and escapes it to
-# make every byte visible.
+# closing `end`, verbatim, as one element.  The breakers, comments, blank
+# lines, and interior whitespace are the value, so each check captures the
+# span and escapes it to make every byte visible.
 
-echo (string escape -- (begin -qq echo 1; end | string collect -aN))
+echo (string escape -- (begin -qq echo 1; end))
 # CHECK: ' echo 1; '
 
 # -q and -qq emit the same framing; they differ only in substitution.
-echo (string escape -- (begin -q echo 1; end | string collect -aN))
+echo (string escape -- (begin -q echo 1; end))
 # CHECK: ' echo 1; '
 
 # A one-line body and the same body closed on the next line have different
 # spans: the closing break is part of the value.
-echo (string escape -- (begin -qq; code; end | string collect -aN) (begin -qq; code
-end | string collect -aN))
+echo (string escape -- (begin -qq; code; end) (begin -qq; code
+end))
 # CHECK: '; code; ' \;\ code\n
 
 # A body that starts on the header line and one that starts on the next line
 # have different lead breakers.
-echo (string escape -- (begin -qq echo 1; end | string collect -aN) (begin -qq
-echo 1; end | string collect -aN))
+echo (string escape -- (begin -qq echo 1; end) (begin -qq
+echo 1; end))
 # CHECK: ' echo 1; ' \necho\ 1\;\ 
 
 # An empty body still has its span: the breakers alone.
-echo (string escape -- (begin -qq end | string collect -aN))
+echo (string escape -- (begin -qq end))
 # CHECK: ' '
-echo (string escape -- (begin -qq; end | string collect -aN))
+echo (string escape -- (begin -qq; end))
 # CHECK: '; '
 echo (string escape -- (begin -qq
-end | string collect -aN))
+end))
 # CHECK: \n
 
 # A comment is part of the span, including the newline that closes it.
 echo (string escape -- (begin -qq # c
-end | string collect -aN))
+end))
 # CHECK: \ \#\ c\n
 echo (string escape -- (begin -qq
 # c
-end | string collect -aN))
+end))
 # CHECK: \n\#\ c\n
 
 # A comment on the last line is followed by the newline that closes it, so no
@@ -47,7 +47,7 @@ end | string collect -aN))
 echo (string escape -- (begin -qq
 echo 1
 # trailing
-end | string collect -aN))
+end))
 # CHECK: \necho\ 1\n\#\ trailing\n
 
 # Interior whitespace, blank lines, and indentation are the author's.
@@ -55,31 +55,54 @@ echo (string escape -- (begin -qq
 echo 1
 
     echo 2
-end | string collect -aN))
+end))
 # CHECK: \necho\ 1\n\n\ \ \ \ echo\ 2\n
 
 # A continuation is emitted as its two bytes, never escaped.
 echo (string escape -- (begin -qq \
-code; end | string collect -aN))
+code; end))
 # CHECK: \ \\\ncode\;\ 
+
+# The value is one element, whatever the statement count of the body.
+set -l value (begin -qq
+echo 1
+echo 2
+end)
+echo (count $value)
+# CHECK: 1
+echo (string escape -- $value)
+# CHECK: \necho\ 1\necho\ 2\n
+
+# An empty body is one element holding its breaker span.
+set -l empty (begin -qq end)
+echo (count $empty) (string escape -- $empty)
+# CHECK: 1 ' '
+
+# Unquoted capture keeps the span's trailing newlines; quoted capture applies
+# fish's quoted-substitution trimming, so it is not the lossless channel.
+set -l quoted "$(begin -qq
+echo 1
+end)"
+echo (count $quoted) (string escape -- $quoted)
+# CHECK: 1 \necho\ 1
 
 # Re-embedding the span between the header and `end` reproduces the block.
 set -l span (begin -qq
 echo 1
 
     echo 2
-end | string collect -aN)
+end)
 echo (string escape -- $span)
 # CHECK: \necho\ 1\n\n\ \ \ \ echo\ 2\n
-echo (string escape -- (eval "begin -qq""$span""end" | string collect -aN))
+echo (string escape -- (eval "begin -qq""$span""end"))
 # CHECK: \necho\ 1\n\n\ \ \ \ echo\ 2\n
 
-# A block's own redirection or pipeline applies to the emitted span bytes.
-echo (string escape -- (begin -qq echo 1; end | cat | string collect -aN))
+# A block's own redirection or pipeline receives the span bytes.
+echo (string escape -- (begin -qq echo 1; end | cat))
 # CHECK: ' echo 1; '
 
 # Inner redirections remain part of the span.
-echo (string escape -- (begin -qq echo (cmd) > inner; end | string collect -aN))
+echo (string escape -- (begin -qq echo (cmd) > inner; end))
 # CHECK: ' echo (cmd) > inner; '
 
 # Comments and nested blocks are span bytes.
@@ -88,24 +111,24 @@ echo (string escape -- (begin -qq
 begin
     echo 1
 end
-end | string collect -aN))
+end))
 # CHECK: \n\#\ comment\nbegin\n\ \ \ \ echo\ 1\nend\n
 
 # In -q mode only command-substitution sites change; every other byte is the
 # span verbatim.
-echo (string escape -- (begin -q echo (printf x); end | string collect -aN))
+echo (string escape -- (begin -q echo (printf x); end))
 # CHECK: ' echo x; '
 
-echo (string escape -- (begin -q echo pre(printf 'a\nb')post; end | string collect -aN))
+echo (string escape -- (begin -q echo pre(printf 'a\nb')post; end))
 # CHECK: ' echo preapost prebpost; '
 
-echo (string escape -- (begin -q echo "$(printf 'a\nb')"; end | string collect -aN))
+echo (string escape -- (begin -q echo "$(printf 'a\nb')"; end))
 # CHECK: \ echo\ \"a\nb\"\;\ 
 
-echo (string escape -- (begin -q echo (printf ''); end | string collect -aN))
+echo (string escape -- (begin -q echo (printf ''); end))
 # CHECK: ' echo ; '
 
-echo (string escape -- (begin -q echo (printf 'a\nb') (printf 'c\nd'); end | string collect -aN))
+echo (string escape -- (begin -q echo (printf 'a\nb') (printf 'c\nd'); end))
 # CHECK: ' echo a b c d; '
 
 # Comments, variables, braces, globs, and tildes remain span bytes in -q mode.
@@ -113,16 +136,16 @@ echo (string escape -- (begin -q
 # comment
 set x 1
 echo $x
-end | string collect -aN))
+end))
 # CHECK: \n\#\ comment\nset\ x\ 1\necho\ \$x\n
 
-echo (string escape -- (begin -q echo {a,b} ~; end | string collect -aN))
+echo (string escape -- (begin -q echo {a,b} ~; end))
 # CHECK: ' echo {a,b} ~; '
 
-echo (string escape -- (begin -q echo {pre(printf 'a,b')}; end | string collect -aN))
+echo (string escape -- (begin -q echo {pre(printf 'a,b')}; end))
 # CHECK: " echo {pre'a,b'}; "
 
-echo (string escape -- (begin -q echo 1 > (printf out); end | string collect -aN))
+echo (string escape -- (begin -q echo 1 > (printf out); end))
 # CHECK: ' echo 1 > out; '
 
 # A command-substitution result keeps the boundary of the value beside it.
@@ -148,13 +171,13 @@ eval (begin -q echo $$(echo n)post; end)
 # continuation is inside the substituted word, not span trivia.
 set foo 1
 set code (begin -q echo $foo\
-(printf bar); end | string collect)
+(printf bar); end)
 eval $code
 # CHECK: 1bar
 
 # A raw block keeps its body unexpanded.
-begin -qq echo (printf x); end
-# CHECK: echo (printf x);
+echo (string escape -- (begin -qq echo (printf x); end))
+# CHECK: ' echo (printf x); '
 
 # More than two quoted options is an error.
 $fish -c 'begin -qq -q echo 1; end'
