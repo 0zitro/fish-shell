@@ -525,3 +525,32 @@ echo foo | read -lf var
 # CHECKERR: {{^}}echo foo | read -lf var
 # CHECKERR: {{^}}^
 # CHECKERR: (Type 'help read' for related documentation)
+
+# Reserved codepoints are encoded as their UTF-8 bytes, not dropped.
+printf \xef\xb7\x98 | read -Ll reserved_line
+string escape -- $reserved_line
+# CHECK: \Xef\Xb7\X98
+
+printf \xef\xb7\x98 | read -n1 reserved_char
+string escape -- $reserved_char
+# CHECK: \Xef\Xb7\X98
+
+printf a\xef\xb7\x98 | read -Ll reserved_after
+string escape -- $reserved_after
+# CHECK: a\Xef\Xb7\X98
+
+# A reserved codepoint at the start of a later line is also preserved.
+printf 'a\n\xef\xb7\x98' | begin
+    read -Ll first_line
+    read -Ll second_line
+    string escape -- "$first_line$second_line"
+    # CHECK: a\Xef\Xb7\X98
+end
+
+# The special-key and encoded-byte reserved ranges follow the same rule.
+printf \xef\x94\x80 | read -Ll special_key_range
+string escape -- $special_key_range
+# CHECK: \Xef\X94\X80
+printf \xef\x98\x80 | read -Ll encoded_byte_range
+string escape -- $encoded_byte_range
+# CHECK: \Xef\X98\X80

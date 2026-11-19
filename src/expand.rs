@@ -964,7 +964,7 @@ fn expand_braces(
             assert!(pos >= item_begin);
             let item_len = pos - item_begin;
             let item = &input[item_begin..pos];
-            let item = trim(item, Some(wstr::from_char_slice(&[BRACE_SPACE, '\0'])));
+            let item = trim(item, Some(wstr::from_char_slice(&[BRACE_SPACE])));
 
             // `whole_item` is a whitespace- and brace-stripped member of a single pass of brace
             // expansion, e.g. in `{ alpha , b,{c, d }}`, `alpha`, `b`, and `c, d` will, in the
@@ -2363,6 +2363,24 @@ mod tests {
             noflags,
             ("abe", "ace", "ade"),
             "Bracket expansion is broken"
+        );
+        expand_test!(
+            "\\x61{,{,Z}}",
+            noflags,
+            ("a", "a", "aZ"),
+            "Brace expansion lost a group after a shortening escape"
+        );
+        expand_test!(
+            "\\x00{,{,Z}}",
+            noflags,
+            ("\0", "\0", "\0Z"),
+            "Brace expansion mishandled a NUL"
+        );
+        expand_test!(
+            "{a\\x00,x}",
+            noflags,
+            ("a\0", "x"),
+            "Brace expansion trimmed a trailing NUL"
         );
         expand_test!(
             "a*",

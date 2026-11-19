@@ -223,3 +223,22 @@ $fish -c 'begin; }'
 # CHECKERR: fish: Unexpected '}' for unopened brace
 # CHECKERR: {{^}}begin; }
 # CHECKERR: {{^}}       ^
+
+# A NUL in a brace item does not prevent the group from expanding, and braces
+# preserve a trailing NUL in an item.
+v=\x00{,{,Z}} set -S v
+# CHECK: $v: set in local scope, exported, with 3 elements
+# CHECK: $v[1]: |\x00|
+# CHECK: $v[2]: |\x00|
+# CHECK: $v[3]: |\x00Z|
+
+v=\x61{,{,Z}} set -S v
+# CHECK: $v: set in local scope, exported, with 3 elements
+# CHECK: $v[1]: |a|
+# CHECK: $v[2]: |a|
+# CHECK: $v[3]: |aZ|
+
+v={a\x00,x} set -S v
+# CHECK: $v: set in local scope, exported, with 2 elements
+# CHECK: $v[1]: |a\x00|
+# CHECK: $v[2]: |x|

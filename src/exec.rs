@@ -698,8 +698,9 @@ fn fork_child_for_process(
 ) -> LaunchResult {
     // Claim the tty from fish, if the job wants it and we are the pgroup leader.
     let claim_tty_from = if p.leads_pgrp && job.group().wants_terminal() {
-        // getpgrp(2) cannot fail and always returns the (positive) caller's pgid
-        Some(NonZeroU32::new(getpgrp().as_raw() as u32).unwrap())
+        // A PID namespace can hide fish's process group, in which case getpgrp()
+        // reports zero and there is no tty owner to claim.
+        NonZeroU32::new(getpgrp().as_raw() as u32)
     } else {
         None
     };
