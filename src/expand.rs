@@ -13,7 +13,7 @@ use crate::{
     },
     common::{valid_var_name, valid_var_name_char},
     complete::{Completion, CompletionList, CompletionReceiver},
-    env::{EnvVar, Environment},
+    env::{EnvVar, Environment, Statuses},
     exec::exec_subshell_for_expand,
     history::{History, history_id},
     operation_context::OperationContext,
@@ -42,7 +42,7 @@ use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP, BRACE_SPACE,
     HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, QUOTED_BOUNDARY, SLICE_BEGIN,
     SLICE_END, UNQUOTED_BOUNDARY, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
-    osstr2wcstring,
+    osstr2wcstring, wcs2bytes,
 };
 use nix::unistd::{User, getpid};
 
@@ -71,6 +71,15 @@ impl CmdsubstMode {
             }
         )
     }
+}
+
+/// The source form `expand_cmdsubst` writes for each substitution site.
+#[derive(Copy, Clone, PartialEq)]
+pub enum CmdsubstRendering {
+    /// Insert the expanded elements into the surrounding word.
+    Expansion,
+    /// Emit a command substitution that reproduces the site's elements and status.
+    Reification,
 }
 
 /// Do expansions specifically to support cd. This means using CDPATH as a list of potential
@@ -1044,6 +1053,78 @@ fn escape_quoted_cmdsubst(lines: &[WString]) -> WString {
     joined
 }
 
+/// Append the status chain a reified substitution ends with.
+///
+/// The chain sets the substitution's status and pipestatus to the captured
+/// values: a single captured status is one `return`, and several statuses are
+/// one `return` per pipeline stage.
+fn append_reified_status_chain(source: &mut WString, statuses: &Statuses) {
+    let statuses_to_return: &[libc::c_int] = if statuses.pipestatus.is_empty() {
+        std::slice::from_ref(&statuses.status)
+    } else {
+        &statuses.pipestatus
+    };
+    for (index, pipestatus) in statuses_to_return.iter().enumerate() {
+        if index > 0 {
+            source.push_utfstr(L!(" | "));
+        }
+        source.push_utfstr(L!("return "));
+        let status = if index + 1 == statuses_to_return.len() {
+            statuses.status
+        } else {
+            *pipestatus
+        };
+        source.push_utfstr(&status.to_wstring());
+    }
+}
+
+/// Append one element to a reified substitution's `for` list.
+///
+/// The loop word's value is the `printf '%b'` argument.  A printable ASCII
+/// byte other than `\` and `'` is literal; the backslash and the quote
+/// delimiter are escaped because the single-quoted word or the `%b` argument
+/// would interpret them; every other byte is a hex escape so the source word
+/// contains no control byte and NUL never reaches the builtin's argument.
+/// `%` stays literal because the format is a fixed `%b`.
+fn append_reified_loop_word(source: &mut WString, element: &wstr) {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    source.push('\'');
+    for byte in wcs2bytes(element) {
+        match byte {
+            b'\\' => source.push_utfstr(L!("\\\\")),
+            b'\'' => source.push_utfstr(L!("\\x27")),
+            0x20..=0x7e => source.push(byte as char),
+            _ => {
+                source.push_utfstr(L!("\\x"));
+                source.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+                source.push(HEX_DIGITS[(byte & 0xf) as usize] as char);
+            }
+        }
+    }
+    source.push('\'');
+}
+
+/// The reified substitution for one eager element site.
+///
+/// The substitution writes the captured elements as explicitly separated
+/// output and ends with the captured status chain, so it reproduces the site's
+/// elements and statuses at its position in the emitted program.
+fn reified_element_substitution(elements: &[WString], statuses: &Statuses) -> WString {
+    let mut source = WString::new();
+    source.push_utfstr(L!("$(for __ in"));
+    for element in elements {
+        source.push(' ');
+        append_reified_loop_word(&mut source, element);
+    }
+    source.push_utfstr(L!(
+        "; builtin printf '%b' \"$__\" | builtin string collect -aN; end; "
+    ));
+    append_reified_status_chain(&mut source, statuses);
+    source.push(')');
+    source
+}
+
 fn dynamic_variable_reference(operand: &wstr) -> bool {
     let Some(bracket) = operand.chars().position(|c| c == '[') else {
         return valid_var_name(operand);
@@ -1064,6 +1145,7 @@ pub fn expand_cmdsubst(
     ctx: &mut OperationContext,
     out: &mut CompletionReceiver,
     errors: &mut Option<&mut ParseErrorList>,
+    rendering: CmdsubstRendering,
 ) -> ExpandResult {
     let mut cursor = 0;
     let mut is_quoted = false;
@@ -1151,6 +1233,9 @@ pub fn expand_cmdsubst(
         return ExpandResult::make_error(subshell_status);
     }
 
+    let reified_statuses =
+        (rendering == CmdsubstRendering::Reification).then(|| ctx.parser().last_statuses());
+
     let opening = cmdsub.opening_paren_offset();
     let dollar_count = cmdsub_dollar_run(&input, opening);
     if dollar_count >= 2 {
@@ -1164,6 +1249,70 @@ pub fn expand_cmdsubst(
             );
             return ExpandResult::make_error(STATUS_EXPAND_ERROR);
         }
+        if rendering == CmdsubstRendering::Reification {
+            let statuses = reified_statuses
+                .as_ref()
+                .expect("reification captures the site's statuses");
+
+            let mut reference_source = input[..opening - dollar_count].to_owned();
+            for _ in 1..dollar_count {
+                reference_source.push('$');
+            }
+            reference_source.push_utfstr(&sub_res[0]);
+
+            // The produced operand is a complete variable reference; following source
+            // must not extend its name.
+            let tail_start = cmdsub.end();
+            if first_source_char(&input[tail_start..]).is_some_and(valid_var_name_char) {
+                reference_source.push(if is_quoted {
+                    QUOTED_BOUNDARY
+                } else {
+                    UNQUOTED_BOUNDARY
+                });
+            }
+
+            let mut status_source = WString::new();
+            status_source.push('(');
+            status_source.push_utfstr(L!("builtin echo; "));
+            append_reified_status_chain(&mut status_source, statuses);
+            status_source.push(')');
+
+            let mut tail_input = input[tail_start..].to_owned();
+            if is_quoted {
+                tail_input.insert(0, '"');
+            }
+
+            let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+            let mut tail_recv = out.subreceiver();
+            let tail_result = expand_cmdsubst(tail_input, ctx, &mut tail_recv, errors, rendering);
+            if let Some(errors) = errors.as_mut() {
+                let shift = tail_start.saturating_sub(usize::from(is_quoted));
+                for error in errors.iter_mut().skip(prior_errors) {
+                    if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                        error.source_start += shift;
+                    }
+                }
+            }
+            if tail_result.failed() {
+                return tail_result;
+            }
+
+            for tail_item in tail_recv.take() {
+                let mut whole_item = reference_source.clone();
+                whole_item.push_utfstr(&status_source);
+                if is_quoted {
+                    whole_item.push(INTERNAL_SEPARATOR);
+                    whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
+                } else {
+                    whole_item.push_utfstr(&tail_item.completion);
+                }
+                if out.add(whole_item).is_err() {
+                    return append_overflow_error(errors, None);
+                }
+            }
+            return ExpandResult::ok();
+        }
+
         let mut result = input[..opening - dollar_count].to_owned();
         for _ in 1..dollar_count {
             result.push('$');
@@ -1180,7 +1329,7 @@ pub fn expand_cmdsubst(
             });
         }
         result.push_utfstr(tail);
-        return expand_cmdsubst(result, ctx, out, errors);
+        return expand_cmdsubst(result, ctx, out, errors, rendering);
     }
 
     // Expand slices like (cat /var/words)[1]
@@ -1224,7 +1373,7 @@ pub fn expand_cmdsubst(
     }
 
     let prior_errors = errors.as_ref().map_or(0, |list| list.len());
-    let tail_result = expand_cmdsubst(tail, ctx, &mut tail_expand_recv, errors);
+    let tail_result = expand_cmdsubst(tail, ctx, &mut tail_expand_recv, errors, rendering);
     if let Some(errors) = errors.as_mut() {
         let shift = tail_begin.saturating_sub(usize::from(is_quoted));
         for error in errors.iter_mut().skip(prior_errors) {
@@ -1248,7 +1397,15 @@ pub fn expand_cmdsubst(
 
     if is_quoted {
         // Awkwardly reconstruct the command output.
-        let sub_res_joined = escape_quoted_cmdsubst(&sub_res);
+        let sub_res_joined = match rendering {
+            CmdsubstRendering::Expansion => escape_quoted_cmdsubst(&sub_res),
+            CmdsubstRendering::Reification => reified_element_substitution(
+                &sub_res,
+                reified_statuses
+                    .as_ref()
+                    .expect("reification captures the site's statuses"),
+            ),
+        };
         // Instead of performing cartesian product expansion, we directly insert the command
         // substitution output into the current expansion results.
         for tail_item in tail_expand {
@@ -1275,8 +1432,20 @@ pub fn expand_cmdsubst(
         return ExpandResult::ok();
     }
 
-    for sub_item in sub_res {
-        let sub_item2 = escape_unquoted_cmdsubst(&sub_item);
+    let sub_items: Vec<WString> = match rendering {
+        CmdsubstRendering::Expansion => sub_res
+            .iter()
+            .map(|item| escape_unquoted_cmdsubst(item))
+            .collect(),
+        CmdsubstRendering::Reification => vec![reified_element_substitution(
+            &sub_res,
+            reified_statuses
+                .as_ref()
+                .expect("reification captures the site's statuses"),
+        )],
+    };
+
+    for sub_item2 in sub_items {
         for tail_item in &*tail_expand {
             let mut whole_item = WString::new();
             whole_item.reserve(
@@ -1578,7 +1747,13 @@ impl<'a, 'b, 'c> Expander<'a, 'b, 'c> {
             self.ctx.has_parser(),
             "Must have a parser to expand command substitutions"
         );
-        expand_cmdsubst(input, self.ctx, out, self.errors)
+        expand_cmdsubst(
+            input,
+            self.ctx,
+            out,
+            self.errors,
+            CmdsubstRendering::Expansion,
+        )
     }
 
     // We pass by value to match other stages. NOLINTNEXTLINE(performance-unnecessary-value-param)

@@ -17,8 +17,8 @@ use crate::{
     event::{self, Event},
     exec::exec_job,
     expand::{
-        self, ExpandFlags, ExpandResultCode, completion_to_source, expand_cmdsubst, expand_one,
-        expand_string, expand_to_command_and_args,
+        self, CmdsubstRendering, ExpandFlags, ExpandResultCode, completion_to_source,
+        expand_cmdsubst, expand_one, expand_string, expand_to_command_and_args,
     },
     flog::flog,
     function,
@@ -992,7 +992,13 @@ impl ExecutionContext {
         }
         let mut errors = ParseErrorList::new();
         let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
-        let result = expand_cmdsubst(word.to_owned(), ctx, &mut receiver, &mut Some(&mut errors));
+        let result = expand_cmdsubst(
+            word.to_owned(),
+            ctx,
+            &mut receiver,
+            &mut Some(&mut errors),
+            CmdsubstRendering::Reification,
+        );
         if result.failed() || !errors.is_empty() {
             let status = if result.status != 0 {
                 result.status

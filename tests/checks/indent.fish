@@ -755,5 +755,6 @@ eval "$raw"
 # CHECK: echo hi
 
 set -l eager (printf 'begin -q echo (printf hi); end\n' | $fish_indent | string collect)
-eval "$eager"
-# CHECK: echo hi
+set -l emitted (eval "$eager")
+eval "$emitted"
+# CHECK: hi

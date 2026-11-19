@@ -114,22 +114,24 @@ end
 end))
 # CHECK: \n\#\ comment\nbegin\n\ \ \ \ echo\ 1\nend\n
 
-# In -q mode only command-substitution sites change; every other byte is the
-# span verbatim.
-echo (string escape -- (begin -q echo (printf x); end))
-# CHECK: ' echo x; '
+# In -q mode each eager substitution site is reified, so evaluating the
+# capture reproduces the direct command's arguments.
+eval (begin -q echo (printf x); end)
+# CHECK: x
 
-echo (string escape -- (begin -q echo pre(printf 'a\nb')post; end))
-# CHECK: ' echo preapost prebpost; '
+eval (begin -q echo pre(printf 'a\nb')post; end)
+# CHECK: preapost prebpost
 
-echo (string escape -- (begin -q echo "$(printf 'a\nb')"; end))
-# CHECK: \ echo\ \"a\nb\"\;\ 
+eval (begin -q echo "$(printf 'a\nb')"; end) | string escape
+# CHECK: a
+# CHECK: b
 
-echo (string escape -- (begin -q echo (printf ''); end))
-# CHECK: ' echo ; '
+set -l empty_word (eval (begin -q echo (printf ''); end))
+count $empty_word
+# CHECK: 1
 
-echo (string escape -- (begin -q echo (printf 'a\nb') (printf 'c\nd'); end))
-# CHECK: ' echo a b c d; '
+eval (begin -q echo (printf 'a\nb') (printf 'c\nd'); end)
+# CHECK: a b c d
 
 # Comments, variables, braces, globs, and tildes remain span bytes in -q mode.
 echo (string escape -- (begin -q
@@ -142,11 +144,14 @@ end))
 echo (string escape -- (begin -q echo {a,b} ~; end))
 # CHECK: ' echo {a,b} ~; '
 
-echo (string escape -- (begin -q echo {pre(printf 'a,b')}; end))
-# CHECK: " echo {pre'a,b'}; "
+eval (begin -q echo {pre(printf 'a,b')}; end)
+# CHECK: {prea,b}
 
-echo (string escape -- (begin -q echo 1 > (printf out); end))
-# CHECK: ' echo 1 > out; '
+set -l target (mktemp)
+eval (begin -q echo 1 > (printf '%s' $target); end)
+cat $target
+# CHECK: 1
+rm -f $target
 
 # A command-substitution result keeps the boundary of the value beside it.
 set foo 1
@@ -361,14 +366,16 @@ echo (string escape -- (begin -q
 end))
 # CHECK: \n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n
 
-# Eager expansion outside the barrier is unchanged.
-echo (string escape -- (begin -q
+# Eager expansion outside the barrier is reified; the barrier body runs when
+# the capture is evaluated.
+eval (begin -q
     echo (printf outer)
     begin -b
         echo (printf inner)
     end
-end))
-# CHECK: \n\ \ \ \ echo\ outer\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n
+end)
+# CHECK: outer
+# CHECK: inner
 
 # The block is opaque at every depth in the body's block structure, including
 # inside a nested quoted block.
@@ -411,16 +418,18 @@ echo (string escape -- $rescanned)
 # CHECK: \n\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n\n
 
 # The flag covers the block's own bytes: a redirection after its `end` is
-# expanded by the enclosing pass, and deferring it takes another barrier around
-# the whole statement.
-set -l marker capture
-echo (string escape -- (begin -q
+# reified by the enclosing pass, and the reified target is used when the
+# capture is evaluated.
+set -l target (mktemp)
+eval (begin -q
     set -l marker program
     begin -b
         echo (printf inner)
-    end > (printf %s $marker)
-end))
-# CHECK: \n\ \ \ \ set\ -l\ marker\ program\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\ \>\ capture\n
+    end > (printf %s $target)
+end)
+cat $target
+# CHECK: inner
+rm -f $target
 
 echo (string escape -- (begin -q
     set -l marker program
@@ -447,8 +456,10 @@ set -l staged (begin -q
         echo $marker (printf inner)
     end
 end)
-eval $staged
-# CHECK: echo $marker inner
+set -l staged_source (eval $staged)
+set marker program
+eval $staged_source
+# CHECK: program inner
 
 set -l raw_staged (begin -q
     set -l marker program
@@ -567,9 +578,9 @@ echo (string escape -- (begin -q echo (echo (begin -b; echo x; end)); end))
 echo (string escape -- (begin -q echo (printf a)(begin -b; echo x; end)(printf b); end))
 # CHECK: ' echo (printf a)(begin -b; echo x; end)(printf b); '
 
-# A barrier-free site stays eager.
-echo (string escape -- (begin -q echo (printf eager); end))
-# CHECK: ' echo eager; '
+# A barrier-free site stays eager and its capture evaluates to the same value.
+eval (begin -q echo (printf eager); end)
+# CHECK: eager
 
 # The flag survives a second capture pass in a substitution's source too.
 set -l site_source (begin -q
