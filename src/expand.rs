@@ -24,7 +24,7 @@ use crate::{
     },
     parse_util::{
         cmdsub_dollar_run, ends_in_open_variable_reference, expand_variable_error,
-        first_source_char, locate_cmdsubst_range,
+        first_source_char, locate_cmdsubst_range, program_has_barrier_block,
     },
     path::path_apply_working_directory,
     prelude::*,
@@ -1174,6 +1174,55 @@ pub fn expand_cmdsubst(
         }
         Ok(Some(cmdsub)) => cmdsub,
     };
+
+    if rendering == CmdsubstRendering::Reification
+        && program_has_barrier_block(&input[cmdsub.command_range()])
+    {
+        let opening = cmdsub.opening_paren_offset();
+        let site_start = opening - cmdsub_dollar_run(&input, opening);
+        let mut site_end = cmdsub.end();
+        if input.as_char_slice().get(site_end) == Some(&'[') {
+            if let Ok(slice_length) = slice_consumed_len(&input[site_end..]) {
+                site_end += slice_length;
+            }
+        }
+
+        let mut tail_input = input[site_end..].to_owned();
+        if is_quoted {
+            tail_input.insert(0, '"');
+        }
+
+        let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+        let mut tail_recv = out.subreceiver();
+        let tail_result = expand_cmdsubst(tail_input, ctx, &mut tail_recv, errors, rendering);
+        if let Some(errors) = errors.as_mut() {
+            let shift = site_end.saturating_sub(usize::from(is_quoted));
+            for error in errors.iter_mut().skip(prior_errors) {
+                if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                    error.source_start += shift;
+                }
+            }
+        }
+        if tail_result.failed() {
+            return tail_result;
+        }
+
+        for tail_item in tail_recv.take() {
+            let mut whole_item = WString::new();
+            whole_item.push_utfstr(&input[..site_start]);
+            whole_item.push_utfstr(&input[site_start..site_end]);
+            if is_quoted {
+                whole_item.push(INTERNAL_SEPARATOR);
+                whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
+            } else {
+                whole_item.push_utfstr(&tail_item.completion);
+            }
+            if out.add(whole_item).is_err() {
+                return append_overflow_error(errors, None);
+            }
+        }
+        return ExpandResult::ok();
+    }
 
     let mut sub_res = vec![];
     let job_group = ctx.job_group.clone();

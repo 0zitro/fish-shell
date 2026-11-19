@@ -554,29 +554,39 @@ eval $nested_output
 # CHECK: inner
 # CHECK: inner
 
-# A command substitution whose program contains a barrier block is not eager:
-# the whole word containing it is emitted as written, and its sites expand when
-# the emitted program runs.
-echo (string escape -- (begin -q echo (begin -b; echo x; end); end))
-# CHECK: ' echo (begin -b; echo x; end); '
+# A command substitution whose program contains a barrier block is forwarded as
+# written, and its eager peers in the word are reified.  Evaluating the capture
+# runs every site at program time.
+set -l forwarded_site (begin -q echo (begin -b; echo x; end); end)
+eval $forwarded_site
+# CHECK: x
 
-echo (string escape -- (begin -q echo (begin -b; echo x; end)(printf suffix); end))
-# CHECK: ' echo (begin -b; echo x; end)(printf suffix); '
+set -l forwarded_pair (begin -q echo (begin -b; echo x; end)(printf suffix); end)
+eval $forwarded_pair
+# CHECK: xsuffix
 
 # The test is conservative: a barrier inside a quoted part of the site's
-# program retains the site too.
+# program forwards the site too.
 echo (string escape -- (begin -q echo (begin -qq; begin -b; echo x; end; end); end))
 # CHECK: ' echo (begin -qq; begin -b; echo x; end; end); '
 
 # Executing a site executes the substitutions inside it, so a barrier in a
-# nested substitution retains the outer site as well.
+# nested substitution forwards the outer site as well.
 echo (string escape -- (begin -q echo (echo (begin -b; echo x; end)); end))
 # CHECK: ' echo (echo (begin -b; echo x; end)); '
 
-# A word that contains such a site keeps its other sites as written too: the
-# retained site's element arity cannot be composed at expansion time.
-echo (string escape -- (begin -q echo (printf a)(begin -b; echo x; end)(printf b); end))
-# CHECK: ' echo (printf a)(begin -b; echo x; end)(printf b); '
+# A forwarded site does not keep the eager sites around it as written.
+set -l mixed_word (begin -q echo (printf a)(begin -b; echo x; end)(printf b); end)
+eval $mixed_word
+# CHECK: axb
+
+# A forwarded site composes with eager peers and literal brace code in the
+# direct execution's order.
+eval (begin -q echo (begin -b; printf 'X\nY'; end)(printf 'c\nd'); end)
+# CHECK: Xc Xd Yc Yd
+
+eval (begin -q echo (begin -b; printf 'X\nY'; end){a,b}; end)
+# CHECK: Xa Xb Ya Yb
 
 # A barrier-free site stays eager and its capture evaluates to the same value.
 eval (begin -q echo (printf eager); end)

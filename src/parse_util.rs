@@ -1502,7 +1502,7 @@ pub fn word_has_barrier_substitution(word: &wstr) -> bool {
 
 /// Whether `src`, parsed as a program, contains a barrier block, including in
 /// the program of a command substitution inside it.
-fn program_has_barrier_block(src: &wstr) -> bool {
+pub(crate) fn program_has_barrier_block(src: &wstr) -> bool {
     let ast = ast::parse(src, Default::default(), None);
     if !ast.top().barrier_block_spans().is_empty() {
         return true;

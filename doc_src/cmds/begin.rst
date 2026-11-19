@@ -133,10 +133,10 @@ wrap the whole statement in another barrier block.  More than one barrier option
 is an error.
 
 A command substitution whose program contains a barrier block is not evaluated
-by the enclosing capture: the word containing it is emitted as written, and the
-site expands when the emitted program runs.  The test is syntactic and
-conservative - a barrier anywhere in the substitution's parsed program retains
-the whole word.
+by the enclosing capture: the site is emitted as written, and the other
+substitution sites in its word are evaluated eagerly.  The site expands when
+the emitted program runs.  The test is syntactic and conservative - a barrier
+anywhere in the substitution's parsed program forwards that site.
 
 Example
 -------
