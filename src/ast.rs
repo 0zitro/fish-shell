@@ -12,9 +12,10 @@
 use crate::{
     flog::{flog, flogf},
     parse_constants::{
-        ERROR_BAD_COMMAND_ASSIGN_ERR_MSG, ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS,
-        INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
-        ParseTokenType, ParseTreeFlags, SOURCE_OFFSET_INVALID, SourceRange, StatementDecoration,
+        ERROR_BAD_COMMAND_ASSIGN_ERR_MSG, ERROR_BEGIN_TOO_MANY_BARRIER_OPTIONS,
+        ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS, INVALID_PIPELINE_CMD_ERR_MSG, ParseError,
+        ParseErrorCode, ParseErrorList, ParseKeyword, ParseTokenType, ParseTreeFlags,
+        SOURCE_OFFSET_INVALID, SourceRange, StatementDecoration,
         token_type_user_presentable_description,
     },
     parse_tree::ParseToken,
@@ -152,7 +153,7 @@ pub trait Node: Acceptor + AsNode + std::fmt::Debug {
             Kind::VariableAssignment(n) => Some(n),
             Kind::MaybeNewlines(n) => Some(n),
             Kind::Argument(n) => Some(n),
-            Kind::BeginQuote(n) => Some(n),
+            Kind::BeginOptions(n) => Some(n),
             _ => None,
         }
     }
@@ -281,7 +282,7 @@ pub enum Kind<'a> {
     WhileHeader(&'a WhileHeader),
     FunctionHeader(&'a FunctionHeader),
     BeginHeader(&'a BeginHeader),
-    BeginQuote(&'a BeginQuote),
+    BeginOptions(&'a BeginOptions),
     BlockStatement(&'a BlockStatement),
     BraceStatement(&'a BraceStatement),
     IfClause(&'a IfClause),
@@ -325,7 +326,7 @@ pub enum KindMut<'a> {
     WhileHeader(&'a mut WhileHeader),
     FunctionHeader(&'a mut FunctionHeader),
     BeginHeader(&'a mut BeginHeader),
-    BeginQuote(&'a mut BeginQuote),
+    BeginOptions(&'a mut BeginOptions),
     BlockStatement(&'a mut BlockStatement),
     BraceStatement(&'a mut BraceStatement),
     IfClause(&'a mut IfClause),
@@ -850,28 +851,34 @@ pub enum BeginQuoteMode {
     RawSource,
 }
 
-/// The quoted-option tokens written in a `begin` header.
+/// The option tokens written in a `begin` header, and the behaviour they select.
 ///
-/// A plain `begin` holds no `BeginQuote`: absence is the plain mode, so no leaf
-/// stands for options that were not written. A header that writes the tokens
+/// A plain `begin` holds no `BeginOptions`: absence is the plain mode, so no
+/// leaf stands for options that were not written. A header that writes options
 /// sources them as one contiguous range; a parse that cannot source leaves
 /// allocates no leaf.
+///
+/// The quoted mode and the barrier flag are independent: `quote` records the
+/// mode the header's quoted options select, and `barrier` records whether the
+/// header writes the barrier option, which makes the block opaque to enclosing
+/// expansion passes whatever the quoted mode is.
 #[derive(Default, Debug, Node!, Leaf!)]
-pub struct BeginQuote {
+pub struct BeginOptions {
     range: Option<SourceRange>,
-    pub mode: BeginQuoteMode,
+    pub quote: Option<BeginQuoteMode>,
+    pub barrier: bool,
 }
 
-impl CheckParse for BeginQuote {
+impl CheckParse for BeginOptions {
     fn can_be_parsed(pop: &mut Populator<'_>) -> bool {
-        !pop.unsource_leaves() && pop.begin_quote_option_weight_at(0).is_some()
+        !pop.unsource_leaves() && pop.begin_option_counts_at(0).is_some()
     }
 }
 
 #[derive(Default, Debug, Node!, Acceptor!)]
 pub struct BeginHeader {
     pub kw_begin: KeywordBegin,
-    pub quote: Option<BeginQuote>,
+    pub options: Option<BeginOptions>,
     /// Note that 'begin' does NOT require a semi or nl afterwards.
     /// This is valid: begin echo hi; end
     pub semi_nl: Option<SemiNl>,
@@ -899,9 +906,9 @@ impl BlockStatement {
             return None;
         };
         let start = header
-            .quote
+            .options
             .as_ref()
-            .and_then(|quote| quote.range())
+            .and_then(|options| options.range())
             .map_or_else(|| header.kw_begin.source_range().end(), |range| range.end());
         let end = self.end.try_source_range()?;
         Some(SourceRange::new(start, end.start() - start))
@@ -1302,7 +1309,7 @@ pub fn ast_kind_to_string(k: Kind<'_>) -> &'static wstr {
         Kind::WhileHeader(_) => L!("while_header"),
         Kind::FunctionHeader(_) => L!("function_header"),
         Kind::BeginHeader(_) => L!("begin_header"),
-        Kind::BeginQuote(_) => L!("begin_quote"),
+        Kind::BeginOptions(_) => L!("begin_options"),
         Kind::BlockStatement(_) => L!("block_statement"),
         Kind::BraceStatement(_) => L!("brace_statement"),
         Kind::IfClause(_) => L!("if_clause"),
@@ -1857,7 +1864,7 @@ impl<'s> NodeVisitorMut for Populator<'s> {
             KM::WhileHeader(node) => node.accept_mut(self),
             KM::FunctionHeader(node) => node.accept_mut(self),
             KM::BeginHeader(node) => return self.visit_begin_header(node),
-            KM::BeginQuote(node) => return self.visit_begin_quote(node),
+            KM::BeginOptions(node) => return self.visit_begin_options(node),
             KM::BlockStatement(node) => node.accept_mut(self),
             KM::BraceStatement(node) => node.accept_mut(self),
             KM::IfClause(node) => node.accept_mut(self),
@@ -2677,17 +2684,17 @@ impl<'s> Populator<'s> {
             );
         }
     }
-    /// Return the number of quoted options the header token at `idx` denotes,
-    /// or `None` when it does not denote one.
+    /// Return the number of quoted options and of barrier options the header
+    /// token at `idx` denotes, or `None` when it denotes no header option.
     ///
     /// The token's value decides, not its source spelling: quoting, escapes,
     /// and line continuations do not change what a token denotes - the same
     /// rule that keeps `'begin'` the keyword - so they do not protect an
     /// option-shaped token.  A statement breaker before the token does.
     ///
-    /// `--quoted` is one option, and `-q` followed by a run of `q` counts its
-    /// q's.
-    fn begin_quote_option_weight_at(&mut self, idx: usize) -> Option<usize> {
+    /// `--quoted` and `--barrier` are one option each.  A token that is a dash
+    /// followed by a run of `b` and `q` letters carries one option per letter.
+    fn begin_option_counts_at(&mut self, idx: usize) -> Option<(usize, usize)> {
         let token = *self.peek_token(idx);
         if token.typ != ParseTokenType::String {
             return None;
@@ -2697,47 +2704,76 @@ impl<'s> Populator<'s> {
         let value = unescape_string(source, UnescapeStringStyle::default())?;
         let text = value.as_utfstr();
         if text == L!("--quoted") {
-            return Some(1);
+            return Some((1, 0));
         }
-        text.strip_prefix('-')
-            .filter(|qs| !qs.is_empty() && qs.chars().all(|c| c == 'q'))
-            .map(|qs| qs.len())
+        if text == L!("--barrier") {
+            return Some((0, 1));
+        }
+        let option_letters = text.strip_prefix('-')?;
+        if option_letters.is_empty() {
+            return None;
+        }
+        let mut quoted_options = 0;
+        let mut barrier_options = 0;
+        for option_letter in option_letters.chars() {
+            match option_letter {
+                'q' => quoted_options += 1,
+                'b' => barrier_options += 1,
+                _ => return None,
+            }
+        }
+        Some((quoted_options, barrier_options))
     }
 
     fn visit_begin_header(&mut self, node: &mut BeginHeader) -> VisitResult {
         node.kw_begin = self.allocate_visit::<KeywordBegin>();
-        node.quote = self.try_parse::<BeginQuote>();
+        node.options = self.try_parse::<BeginOptions>();
         node.semi_nl = self.try_parse::<SemiNl>();
         VisitResult::Continue(())
     }
 
-    fn visit_begin_quote(&mut self, node: &mut BeginQuote) -> VisitResult {
+    fn visit_begin_options(&mut self, node: &mut BeginOptions) -> VisitResult {
         let mut range: Option<SourceRange> = None;
-        let mut count = 0;
-        let mut too_many = None;
-        while let Some(weight) = self.begin_quote_option_weight_at(0) {
+        let mut quoted_options = 0;
+        let mut barrier_options = 0;
+        // The option that first exceeded its limit, and whether it is a quoted
+        // option: a later excess cannot be the one the diagnostic points at.
+        let mut excess_option: Option<(ParseToken, bool)> = None;
+        while let Some((quoted, barrier)) = self.begin_option_counts_at(0) {
             let token = self.consume_any_token();
             let token_range = token.range();
             range = Some(range.map_or(token_range, |range| range.combine(token_range)));
-            count += weight;
-            if count > 2 && too_many.is_none() {
-                too_many = Some(token);
+            quoted_options += quoted;
+            barrier_options += barrier;
+            if excess_option.is_none() && (quoted_options > 2 || barrier_options > 1) {
+                excess_option = Some((token, quoted_options > 2));
             }
         }
-        if let Some(token) = too_many {
-            parse_error!(
-                self,
-                token,
-                ParseErrorCode::Generic,
-                "%s",
-                wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
-            );
+        if let Some((token, quoted_limit_exceeded)) = excess_option {
+            if quoted_limit_exceeded {
+                parse_error!(
+                    self,
+                    token,
+                    ParseErrorCode::Generic,
+                    "%s",
+                    wgettext!(ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS)
+                );
+            } else {
+                parse_error!(
+                    self,
+                    token,
+                    ParseErrorCode::Generic,
+                    "%s",
+                    wgettext!(ERROR_BEGIN_TOO_MANY_BARRIER_OPTIONS)
+                );
+            }
         }
-        node.mode = match count {
-            1 => BeginQuoteMode::EagerSubstitutions,
-            2.. => BeginQuoteMode::RawSource,
-            0 => unreachable!("a BeginQuote requires at least one option"),
+        node.quote = match quoted_options {
+            0 => None,
+            1 => Some(BeginQuoteMode::EagerSubstitutions),
+            _ => Some(BeginQuoteMode::RawSource),
         };
+        node.barrier = barrier_options != 0;
         *node.range_mut() = range;
         VisitResult::Continue(())
     }

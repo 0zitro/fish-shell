@@ -258,3 +258,96 @@ $fish -c "begin -q echo (printf 'a')[0]; end"
 # CHECKERR: fish: array indices start at 1, not 0.
 # CHECKERR: {{^}}begin -q echo (printf 'a')[0]; end
 # CHECKERR: {{^}}                           ^
+
+# A barrier option is a header option: it is consumed before the body, like a
+# quoted option, and never runs as a command.  A barrier combines with a quoted
+# mode; the quoted mode still selects the emitted span.
+echo (string escape -- (begin -bq echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin -qb echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin -bqq echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin -qqb echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin -b -q echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin --barrier --quoted --quoted echo 1; end))
+# CHECK: ' echo 1; '
+
+# A bare barrier header is consumed too; the body is the block's body.
+$fish -c 'begin -b; echo 1; end'
+# CHECK: 1
+
+$fish -c 'begin --barrier; echo 1; end'
+# CHECK: 1
+
+# A barrier with two quoted options still emits the raw span.
+echo (string escape -- (begin -bqq echo (printf x); end))
+# CHECK: ' echo (printf x); '
+
+# Barrier recognition is by token value, like every other header option.
+echo (string escape -- (begin '-bq' echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin "-bq" echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin \-bq echo 1; end))
+# CHECK: ' echo 1; '
+
+echo (string escape -- (begin --bar\
+rier -q echo 1; end))
+# CHECK: ' echo 1; '
+
+# A barrier option is a header option for the span rule: the span begins after
+# it, so a continuation inside the token is not body bytes.
+echo (string escape -- (begin -b\
+q echo 1; end))
+# CHECK: ' echo 1; '
+
+# A statement breaker before the token keeps it a body command.
+$fish -c 'begin; -b; end'
+# CHECKERR: fish: Unknown command: -b
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+
+$fish -c 'begin; -bq; end'
+# CHECKERR: fish: Unknown command: -bq
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}
+
+# More than one barrier option is an error.
+$fish -c 'begin -bb echo 1; end'
+# CHECKERR: fish: begin accepts at most one barrier option
+# CHECKERR: {{^}}begin -bb echo 1; end
+# CHECKERR: {{^}}      ^~^
+
+$fish -c 'begin -b -b echo 1; end'
+# CHECKERR: fish: begin accepts at most one barrier option
+# CHECKERR: {{^}}begin -b -b echo 1; end
+# CHECKERR: {{^}}         ^^
+
+$fish -c 'begin --barrier --barrier echo 1; end'
+# CHECKERR: fish: begin accepts at most one barrier option
+# CHECKERR: {{^}}begin --barrier --barrier echo 1; end
+# CHECKERR: {{^}}                ^~~~~~~~^
+
+# A third quoted option is an error with a barrier present, however it is
+# spelled.
+$fish -c 'begin -bqqq echo 1; end'
+# CHECKERR: fish: begin accepts at most two quoted options
+# CHECKERR: {{^}}begin -bqqq echo 1; end
+# CHECKERR: {{^}}      ^~~~^
+
+$fish -c 'begin -b -q -q -q echo 1; end'
+# CHECKERR: fish: begin accepts at most two quoted options
+# CHECKERR: {{^}}begin -b -q -q -q echo 1; end
+# CHECKERR: {{^}}               ^^

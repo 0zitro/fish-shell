@@ -728,6 +728,22 @@ echo 'begin echo 1; end' | $fish_indent
 # CHECK: {{^}}    echo 1
 # CHECK: {{^}}end
 
+# Barrier options belong to the header and survive reformatting; dropping one
+# changes whether the block is opaque to an enclosing capture.
+echo 'begin -bq echo 1; end' | $fish_indent
+# CHECK: {{^}}begin -bq
+# CHECK: {{^}}    echo 1
+# CHECK: {{^}}end
+
+echo 'begin --barrier --quoted echo 1; end' | $fish_indent
+# CHECK: {{^}}begin --barrier --quoted
+# CHECK: {{^}}    echo 1
+# CHECK: {{^}}end
+
+printf 'begin -bqq echo 1; end\n' | $fish_indent | $fish_indent --check
+echo $status
+# CHECK: 0
+
 # Reformatting is stable and preserves the selected mode.
 printf 'begin -q echo 1; end\n' | $fish_indent | $fish_indent --check
 echo $status

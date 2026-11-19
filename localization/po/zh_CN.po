@@ -1581,6 +1581,9 @@ msgstr "数组索引起始为 1，而不是 0。"
 msgid "autoloading"
 msgstr "自动加载"
 
+msgid "begin accepts at most one barrier option"
+msgstr ""
+
 msgid "begin accepts at most two quoted options"
 msgstr ""
 

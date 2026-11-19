@@ -522,6 +522,10 @@ localizable_consts!(
     pub ERROR_BEGIN_TOO_MANY_QUOTED_OPTIONS
     "begin accepts at most two quoted options"
 
+    /// Error issued when begin has more than one barrier option.
+    pub ERROR_BEGIN_TOO_MANY_BARRIER_OPTIONS
+    "begin accepts at most one barrier option"
+
     /// Error issued when a dynamic variable reference is malformed.
     pub ERROR_DYNAMIC_VARIABLE_REFERENCE
     "Dynamic variable reference must be exactly one variable reference"

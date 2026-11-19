@@ -1555,6 +1555,9 @@ msgstr "陣列索引值從 1 開始而非 0。"
 msgid "autoloading"
 msgstr "自動載入"
 
+msgid "begin accepts at most one barrier option"
+msgstr ""
+
 msgid "begin accepts at most two quoted options"
 msgstr ""
 

@@ -1556,6 +1556,9 @@ msgstr ""
 msgid "autoloading"
 msgstr ""
 
+msgid "begin accepts at most one barrier option"
+msgstr ""
+
 msgid "begin accepts at most two quoted options"
 msgstr ""
 

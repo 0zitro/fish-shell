@@ -851,8 +851,8 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
 
     fn visit_begin_header(&mut self, node: &ast::BeginHeader) {
         self.emit_node_text(&node.kw_begin);
-        if let Some(quote) = &node.quote {
-            self.emit_node_text(quote);
+        if let Some(options) = &node.options {
+            self.emit_node_text(options);
         }
         if let Some(semi_nl) = &node.semi_nl {
             self.visit_semi_nl(semi_nl);

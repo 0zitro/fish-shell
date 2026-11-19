@@ -1559,6 +1559,9 @@ msgstr "配列のインデックスは 0 ではなく 1 から始まります"
 msgid "autoloading"
 msgstr "オートロード中"
 
+msgid "begin accepts at most one barrier option"
+msgstr ""
+
 msgid "begin accepts at most two quoted options"
 msgstr ""
 
