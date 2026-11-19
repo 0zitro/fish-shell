@@ -1454,6 +1454,42 @@ pub fn detect_errors_in_argument(
     }
 }
 
+/// Whether a command substitution in `word` has a program containing a barrier
+/// block.
+///
+/// A barrier block is code for the program an enclosing capture produces, so a
+/// substitution whose program contains one is not expanded by that capture: the
+/// word is emitted as written.  The test is syntactic and follows nested
+/// substitutions, because executing the outer one executes the inner one.
+pub fn word_has_barrier_substitution(word: &wstr) -> bool {
+    let mut cursor = 0;
+    let mut is_quoted = false;
+    loop {
+        match locate_cmdsubst_range(word, &mut cursor, false, Some(&mut is_quoted), None) {
+            Ok(Some(site)) => {
+                if program_has_barrier_block(&word[site.command_range()]) {
+                    return true;
+                }
+            }
+            Ok(None) | Err(()) => return false,
+        }
+    }
+}
+
+/// Whether `src`, parsed as a program, contains a barrier block, including in
+/// the program of a command substitution inside it.
+fn program_has_barrier_block(src: &wstr) -> bool {
+    let ast = ast::parse(src, Default::default(), None);
+    if !ast.top().barrier_block_spans().is_empty() {
+        return true;
+    }
+    ast.walk().any(|node| {
+        node.as_leaf()
+            .and_then(|leaf| leaf.range())
+            .is_some_and(|range| word_has_barrier_substitution(&src[range.start()..range.end()]))
+    })
+}
+
 fn detect_errors_in_job_conjunction(
     job_conjunction: &ast::JobConjunction,
     parse_errors: &mut Option<&mut ParseErrorList>,

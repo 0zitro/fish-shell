@@ -35,7 +35,7 @@ use crate::{
         ParseTokenType, SourceRange, StatementDecoration, parse_error_offset_source_start,
     },
     parse_tree::{NodeRef, ParsedSourceRef},
-    parse_util::{locate_cmdsubst_range, unescape_wildcards},
+    parse_util::{locate_cmdsubst_range, unescape_wildcards, word_has_barrier_substitution},
     parser::{
         Block, BlockData, BlockId, BlockType, LoopStatus, Parser, ParserEnvSetMode, ProfileItem,
     },
@@ -976,12 +976,20 @@ impl ExecutionContext {
         })
     }
 
+    /// Serialise one word of the body span.
+    ///
+    /// A word whose substitution has a program containing a barrier block is
+    /// emitted as written: the retained site's element arity is unknown to the
+    /// pass, so the word's concatenation cannot be composed here.
     fn serialize_eager_word(
         &mut self,
         ctx: &mut OperationContext<'_>,
         word: &wstr,
         source_start: usize,
     ) -> Result<Vec<WString>, BeginSerializationError> {
+        if word_has_barrier_substitution(word) {
+            return Ok(vec![word.to_owned()]);
+        }
         let mut errors = ParseErrorList::new();
         let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
         let result = expand_cmdsubst(word.to_owned(), ctx, &mut receiver, &mut Some(&mut errors));

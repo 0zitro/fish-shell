@@ -542,3 +542,54 @@ eval $combined_output
 eval $nested_output
 # CHECK: inner
 # CHECK: inner
+
+# A command substitution whose program contains a barrier block is not eager:
+# the whole word containing it is emitted as written, and its sites expand when
+# the emitted program runs.
+echo (string escape -- (begin -q echo (begin -b; echo x; end); end))
+# CHECK: ' echo (begin -b; echo x; end); '
+
+echo (string escape -- (begin -q echo (begin -b; echo x; end)(printf suffix); end))
+# CHECK: ' echo (begin -b; echo x; end)(printf suffix); '
+
+# The test is conservative: a barrier inside a quoted part of the site's
+# program retains the site too.
+echo (string escape -- (begin -q echo (begin -qq; begin -b; echo x; end; end); end))
+# CHECK: ' echo (begin -qq; begin -b; echo x; end; end); '
+
+# Executing a site executes the substitutions inside it, so a barrier in a
+# nested substitution retains the outer site as well.
+echo (string escape -- (begin -q echo (echo (begin -b; echo x; end)); end))
+# CHECK: ' echo (echo (begin -b; echo x; end)); '
+
+# A word that contains such a site keeps its other sites as written too: the
+# retained site's element arity cannot be composed at expansion time.
+echo (string escape -- (begin -q echo (printf a)(begin -b; echo x; end)(printf b); end))
+# CHECK: ' echo (printf a)(begin -b; echo x; end)(printf b); '
+
+# A barrier-free site stays eager.
+echo (string escape -- (begin -q echo (printf eager); end))
+# CHECK: ' echo eager; '
+
+# The flag survives a second capture pass in a substitution's source too.
+set -l site_source (begin -q
+    echo (begin -b; echo x; end)
+end)
+set -l site_rescanned (eval "begin -q
+$site_source
+end")
+echo (string escape -- $site_rescanned)
+# CHECK: \n\n\ \ \ \ echo\ \(begin\ -b\;\ echo\ x\;\ end\)\n\n
+
+# Evaluating the capture expands the retained sites at program time.
+set -l deferred_word (begin -q
+    echo pre(begin -b; echo x; end)post
+end)
+eval $deferred_word
+# CHECK: prexpost
+
+set -l deferred_pair (begin -q
+    echo (printf left)(begin -b; printf mid; end)(printf right)
+end)
+eval $deferred_pair
+# CHECK: leftmidright

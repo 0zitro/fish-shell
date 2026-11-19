@@ -113,12 +113,12 @@ command substitutions inside it:
     end
 
 The captured source contains the ``begin -b`` block unchanged, so ``date`` runs
-when the emitted program reaches the block, not during the capture.  A quoted
+when the emitted program executes the block, not during the capture.  A quoted
 mode decides what a block does to its own body; the barrier decides what an
 enclosing pass may do to the block.
 
 A barrier combines with a quoted mode.  ``begin -b -q`` is a stage that expands
-its body when the emitted program reaches it, and ``begin -b -qq`` is a
+its body when the emitted program executes it, and ``begin -b -qq`` is a
 quotation that emits its body as raw data at that point.  The combined spelling
 is a shorthand for nesting the two blocks.
 
@@ -127,10 +127,16 @@ scope, so ``set -l`` binds in the enclosing scope, and an explicit nested
 ``begin`` asks for block-local scope.  ``break``, ``continue`` and ``return``
 pass through the grouping as they would through the body alone.
 
-The flag covers the block's own bytes.  A redirection written after its ``end``
-belongs to the enclosing capture, so wrapping the whole statement in another
-barrier block is how its target is kept for the program.  More than one barrier
-option is an error.
+The flag covers the block's own bytes: a redirection written after its ``end``
+is expanded by the enclosing capture.  To defer that redirection to the program,
+wrap the whole statement in another barrier block.  More than one barrier option
+is an error.
+
+A command substitution whose program contains a barrier block is not evaluated
+by the enclosing capture: the word containing it is emitted as written, and the
+site expands when the emitted program runs.  The test is syntactic and
+conservative - a barrier anywhere in the substitution's parsed program retains
+the whole word.
 
 Example
 -------
