@@ -17,7 +17,10 @@ use crate::{
         SourceRange, StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
     },
     prelude::*,
-    tokenizer::{Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end},
+    tokenizer::{
+        Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end,
+        variable_assignment_equals_pos,
+    },
 };
 use fish_common::{UnescapeFlags, UnescapeStringStyle, help_section, unescape_string};
 use fish_feature_flags::{FeatureFlag, feature_test};
@@ -646,14 +649,7 @@ pub fn argument_is_help(s: &wstr) -> bool {
 
 /// Returns true if the specified command is a builtin that may not be used in a pipeline.
 fn parser_is_pipe_forbidden(word: &wstr) -> bool {
-    [
-        L!("exec"),
-        L!("case"),
-        L!("break"),
-        L!("return"),
-        L!("continue"),
-    ]
-    .contains(&word)
+    [L!("exec"), L!("case"), L!("break"), L!("continue")].contains(&word)
 }
 
 // Return a pointer to the first argument node of an argument_or_redirection_list_t, or nullptr if
@@ -1172,6 +1168,23 @@ pub fn detect_parse_errors_in_ast(
                     issue.incomplete |= e.incomplete;
                 }
             }
+            Kind::VariableAssignment(assignment) => {
+                let Some(range) = assignment.range() else {
+                    continue;
+                };
+                let assignment_src = &buff_src[range.start()..range.end()];
+                let Some(equals_pos) = variable_assignment_equals_pos(assignment_src) else {
+                    continue;
+                };
+                let value_start = range.start() + equals_pos + 1;
+                let value_src = &buff_src[value_start..range.end()];
+                if let Err(e) =
+                    detect_errors_in_argument_source(value_start, value_src, &mut out_errors)
+                {
+                    issue.error |= e.error;
+                    issue.incomplete |= e.incomplete;
+                }
+            }
             Kind::JobPipeline(job)
                 // Disallow background in the following cases:
                 //
@@ -1325,8 +1338,19 @@ pub fn detect_errors_in_argument(
     let Some(source_range) = arg.try_source_range() else {
         return Ok(());
     };
+    detect_errors_in_argument_source(source_range.start(), arg_src, out_errors)
+}
 
-    let source_start = source_range.start();
+/// Test if one argument-shaped source span contains any errors.
+///
+/// `source_start` is the span's absolute offset in the buffer whose source is
+/// `arg_src`, so a variable-assignment value is validated by the same scan as
+/// an argument.
+fn detect_errors_in_argument_source(
+    source_start: usize,
+    arg_src: &wstr,
+    out_errors: &mut Option<&mut ParseErrorList>,
+) -> Result<(), ParseIssue> {
     let mut issue = ParseIssue::default();
 
     // Check if a subtoken contains errors. Returns true if there is an error, and appends to out_errors if provided.

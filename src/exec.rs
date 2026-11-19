@@ -1283,6 +1283,24 @@ fn exec_process_in_job(
 
     // Execute the process.
     p.check_generations_before_launch();
+
+    // A `return` in an in-process pipeline stage ends the stage, not the
+    // enclosing function or script.  The stage's block-stack depth marks the
+    // boundary for boundaries entered inside it.
+    let is_pipeline_stage = j.processes().len() > 1;
+    let returning_at_entry = parser.libdata().returning;
+    let previous_stage_depth = parser.libdata().pipeline_stage_depth;
+    if is_pipeline_stage {
+        parser.libdata_mut().pipeline_stage_depth = Some(parser.blocks_size());
+    }
+    let mut stage_guard = ScopeGuard::new(parser, move |parser| {
+        if is_pipeline_stage && !returning_at_entry && parser.libdata().returning {
+            parser.libdata_mut().returning = false;
+        }
+        parser.libdata_mut().pipeline_stage_depth = previous_stage_depth;
+    });
+    let parser = &mut **stage_guard;
+
     match p.typ {
         ProcessType::Function { .. } | ProcessType::BlockNode(_) => exec_block_or_func_process(
             parser,
@@ -1457,10 +1475,18 @@ fn exec_subshell_internal(
         return Err(STATUS_CMD_ERROR);
     };
 
+    let returning_at_entry = parser.libdata().returning;
     let mut io_chain = IoChain::new();
     io_chain.push(bufferfill.clone());
     let eval_res = parser.eval_with(cmd, &io_chain, job_group, BlockType::Subst);
     let buffer = IoBufferfill::finish(bufferfill);
+
+    // A return inside the substitution ends the substitution, not the
+    // enclosing function or script.
+    if !returning_at_entry && parser.libdata().returning {
+        parser.libdata_mut().returning = false;
+    }
+
     if buffer.discarded() {
         *break_expand = true;
         return Err(STATUS_READ_TOO_MUCH);
