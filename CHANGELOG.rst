@@ -27,6 +27,7 @@ Scripting improvements
 Regression fixes:
 -----------------
 - (From 4.0.0) Short options are no longer offered as completions if an old-style completion matches (like `-foo`).
+- Brace expansion no longer leaves a brace group with a separator as literal text after an escape shortens the word, and it no longer drops a trailing NUL from an item.
 
 fish 4.9.3 (released September 08, 2026)
 ========================================
