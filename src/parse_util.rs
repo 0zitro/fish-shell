@@ -10,18 +10,21 @@ use crate::{
     operation_context::OperationContext,
     parse_constants::{
         ERROR_BAD_VAR_CHAR1, ERROR_BRACKETED_VARIABLE_QUOTED1, ERROR_BRACKETED_VARIABLE1,
-        ERROR_NO_VAR_NAME, ERROR_NOT_ARGV_AT, ERROR_NOT_ARGV_COUNT, ERROR_NOT_ARGV_STAR,
-        ERROR_NOT_PID, ERROR_NOT_STATUS, INVALID_BREAK_ERR_MSG, INVALID_CONTINUE_ERR_MSG,
-        INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseIssue,
-        ParseKeyword, ParseTokenType, ParseTreeFlags, PipelinePosition, SourceRange,
-        StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
+        ERROR_MISMATCHED_PARENTHESIS, ERROR_NO_VAR_NAME, ERROR_NOT_ARGV_AT, ERROR_NOT_ARGV_COUNT,
+        ERROR_NOT_ARGV_STAR, ERROR_NOT_PID, ERROR_NOT_STATUS, INVALID_BREAK_ERR_MSG,
+        INVALID_CONTINUE_ERR_MSG, INVALID_PIPELINE_CMD_ERR_MSG, ParseError, ParseErrorCode,
+        ParseErrorList, ParseIssue, ParseKeyword, ParseTokenType, ParseTreeFlags, PipelinePosition,
+        SourceRange, StatementDecoration, UNKNOWN_BUILTIN_ERR_MSG, parse_error_offset_source_start,
     },
     prelude::*,
-    tokenizer::{Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end},
+    tokenizer::{
+        Tok, TokFlags, TokenType, Tokenizer, TokenizerError, comment_end, is_token_delimiter,
+        quote_end, variable_assignment_equals_pos,
+    },
 };
 use fish_common::{UnescapeFlags, UnescapeStringStyle, help_section, unescape_string};
 use fish_feature_flags::{FeatureFlag, feature_test};
-use fish_wcstringutil::{count_newlines, truncate};
+use fish_wcstringutil::{count_newlines, count_preceding_backslashes, truncate};
 use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP,
     INTERNAL_SEPARATOR, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
@@ -30,6 +33,30 @@ use std::{
     iter,
     ops::{self, Range},
 };
+
+/// Tokenise one source span for a serialiser.
+///
+/// Every byte outside a token is source that the serialiser copies.  The span
+/// was parsed as fish source before this call, so a tokenizer error is a
+/// programmer error rather than input error.
+pub(crate) fn source_tokens(text: &wstr) -> Vec<Tok> {
+    let flags = TokFlags {
+        show_comments: true,
+        ..Default::default()
+    };
+    let mut tokens = vec![];
+    for token in Tokenizer::new(text, flags) {
+        debug_assert!(
+            token.error == TokenizerError::None && token.type_ != TokenType::Error,
+            "serialised source failed tokenization"
+        );
+        if token.type_ == TokenType::End {
+            continue;
+        }
+        tokens.push(token);
+    }
+    tokens
+}
 
 /// Handles slices: the square brackets in an expression like $foo[5..4]
 /// Return the length of the slice starting at `in`, or 0 if there is no slice, or None on error.
@@ -646,14 +673,7 @@ pub fn argument_is_help(s: &wstr) -> bool {
 
 /// Returns true if the specified command is a builtin that may not be used in a pipeline.
 fn parser_is_pipe_forbidden(word: &wstr) -> bool {
-    [
-        L!("exec"),
-        L!("case"),
-        L!("break"),
-        L!("return"),
-        L!("continue"),
-    ]
-    .contains(&word)
+    [L!("exec"), L!("case"), L!("break"), L!("continue")].contains(&word)
 }
 
 // Return a pointer to the first argument node of an argument_or_redirection_list_t, or nullptr if
@@ -1172,6 +1192,23 @@ pub fn detect_parse_errors_in_ast(
                     issue.incomplete |= e.incomplete;
                 }
             }
+            Kind::VariableAssignment(assignment) => {
+                let Some(range) = assignment.range() else {
+                    continue;
+                };
+                let assignment_src = &buff_src[range.start()..range.end()];
+                let Some(equals_pos) = variable_assignment_equals_pos(assignment_src) else {
+                    continue;
+                };
+                let value_start = range.start() + equals_pos + 1;
+                let value_src = &buff_src[value_start..range.end()];
+                if let Err(e) =
+                    detect_errors_in_argument_source(value_start, value_src, &mut out_errors)
+                {
+                    issue.error |= e.error;
+                    issue.incomplete |= e.incomplete;
+                }
+            }
             Kind::JobPipeline(job)
                 // Disallow background in the following cases:
                 //
@@ -1325,8 +1362,19 @@ pub fn detect_errors_in_argument(
     let Some(source_range) = arg.try_source_range() else {
         return Ok(());
     };
+    detect_errors_in_argument_source(source_range.start(), arg_src, out_errors)
+}
 
-    let source_start = source_range.start();
+/// Test if one argument-shaped source span contains any errors.
+///
+/// `source_start` is the span's absolute offset in the buffer whose source is
+/// `arg_src`, so a variable-assignment value is validated by the same scan as
+/// an argument.
+fn detect_errors_in_argument_source(
+    source_start: usize,
+    arg_src: &wstr,
+    out_errors: &mut Option<&mut ParseErrorList>,
+) -> Result<(), ParseIssue> {
     let mut issue = ParseIssue::default();
 
     // Check if a subtoken contains errors. Returns true if there is an error, and appends to out_errors if provided.
@@ -1404,31 +1452,30 @@ pub fn detect_errors_in_argument(
     let mut checked_quoted = false;
 
     let mut do_loop = true;
+    // The quote state carries across calls: after a command substitution that
+    // closes a double-quoted region, the scan resumes inside that quote.
     let mut is_quoted = false;
     while do_loop {
-        let mut has_dollar = false;
-        match locate_cmdsubst_range(
-            arg_src,
-            &mut cursor,
-            false,
-            Some(&mut is_quoted),
-            Some(&mut has_dollar),
-        ) {
+        match locate_cmdsubst_range(arg_src, &mut cursor, false, Some(&mut is_quoted), None) {
             Err(()) => {
                 issue.error = true;
-                append_syntax_error!(out_errors, source_start, 1, "Mismatched parenthesis");
+                append_syntax_error!(
+                    out_errors,
+                    source_start,
+                    1,
+                    "%s",
+                    wgettext!(ERROR_MISMATCHED_PARENTHESIS)
+                );
                 return Err(issue);
             }
             Ok(None) => {
                 do_loop = false;
             }
             Ok(Some(cmdsub)) => {
-                issue.error |= check_subtoken(
-                    checked,
-                    cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 },
-                    checked_quoted,
-                    out_errors,
-                );
+                let opening = cmdsub.opening_paren_offset();
+                let skip_dollars = cmdsub_dollar_run(arg_src, opening);
+                issue.error |=
+                    check_subtoken(checked, opening - skip_dollars, checked_quoted, out_errors);
                 let mut subst_errors = ParseErrorList::new();
                 if let Err(e) = detect_parse_errors(
                     &arg_src[cmdsub.command_range()],
@@ -1460,6 +1507,57 @@ pub fn detect_errors_in_argument(
     } else {
         Ok(())
     }
+}
+
+/// Whether a command substitution in `word` is forwarded.
+///
+/// A substitution is forwarded when executing it would execute a barrier block
+/// or another forwarded site.  The test is syntactic and follows nested
+/// substitutions through the words and redirection targets the site would
+/// expand; a barrier span is copied, so a dependency inside it does not
+/// propagate.
+pub(crate) fn word_has_forwarded_substitution(word: &wstr) -> bool {
+    let mut cursor = 0;
+    let mut is_quoted = false;
+    loop {
+        match locate_cmdsubst_range(word, &mut cursor, false, Some(&mut is_quoted), None) {
+            Ok(Some(site)) => {
+                if program_has_barrier_dependency(&word[site.command_range()]) {
+                    return true;
+                }
+            }
+            Ok(None) | Err(()) => return false,
+        }
+    }
+}
+
+/// Whether executing `src` as a program would execute a barrier block or a
+/// forwarded site.
+///
+/// A barrier block in the program's command structure forwards the program.  A
+/// forwarded site in a word or redirection target forwards it as well, because
+/// the site cannot supply a value to the expansion.  A barrier span is copied
+/// rather than expanded, so a dependency inside it does not propagate.
+pub(crate) fn program_has_barrier_dependency(src: &wstr) -> bool {
+    let ast = ast::parse(src, Default::default(), None);
+    let barrier_spans = ast.top().barrier_block_spans();
+    if !barrier_spans.is_empty() {
+        return true;
+    }
+    for token in source_tokens(src) {
+        if token.type_ != TokenType::String {
+            continue;
+        }
+        let offset = token.offset as usize;
+        let end = offset + token.length as usize;
+        let in_barrier_span = barrier_spans
+            .iter()
+            .any(|span| span.start() <= offset && end <= span.end());
+        if !in_barrier_span && word_has_forwarded_substitution(&src[offset..end]) {
+            return true;
+        }
+    }
+    false
 }
 
 fn detect_errors_in_job_conjunction(
@@ -1556,8 +1654,77 @@ fn detect_errors_in_backgrounded_job(
     errored
 }
 
-/// Given a source buffer `buff_src` and decorated statement `dst` within it, return true if there
-/// is an error and false if not.
+/// Whether `input` ends inside a variable reference whose name the following
+/// source would extend.
+///
+/// Unescaping supplies the same treatment of escapes and line continuations
+/// that the variable stage sees.
+pub(crate) fn ends_in_open_variable_reference(input: &wstr) -> bool {
+    let Some(unescaped) = unescape_string(
+        input,
+        UnescapeStringStyle::Script(UnescapeFlags {
+            special: true,
+            incomplete: true,
+            ..Default::default()
+        }),
+    ) else {
+        return false;
+    };
+    let chars = unescaped.as_char_slice();
+    let mut start = chars.len();
+    while start > 0 && valid_var_name_char(chars[start - 1]) {
+        start -= 1;
+    }
+    start > 0 && matches!(chars[start - 1], VARIABLE_EXPAND | VARIABLE_EXPAND_SINGLE)
+}
+
+/// Return the first effective source character, skipping line continuations.
+pub(crate) fn first_source_char(input: &wstr) -> Option<char> {
+    unescape_string(
+        input,
+        UnescapeStringStyle::Script(UnescapeFlags {
+            special: true,
+            incomplete: true,
+            ..Default::default()
+        }),
+    )?
+    .chars()
+    .next()
+}
+
+/// Return how many unescaped `$` characters run immediately before the command
+/// substitution opening parenthesis at `opening`.
+///
+/// Every argument here is raw source: this runs before the variable stage
+/// replaces dollar signs with expansion sentinels, so a `$` preceded by an odd
+/// number of backslashes is a literal dollar and ends the run.
+pub(crate) fn cmdsub_dollar_run(input: &wstr, opening: usize) -> usize {
+    let chars = input.as_char_slice();
+    let mut start = opening;
+    while start > 0 {
+        if chars[start - 1] != '$' || count_preceding_backslashes(input, start - 1) % 2 == 1 {
+            break;
+        }
+        start -= 1;
+    }
+    opening - start
+}
+
+enum CommandSource<'a> {
+    Static(&'a wstr),
+    Dynamic,
+}
+
+fn command_source(com: &wstr) -> CommandSource<'_> {
+    let mut cursor = 0;
+    while let Ok(Some(cmdsub)) = locate_cmdsubst_range(com, &mut cursor, false, None, None) {
+        if cmdsub_dollar_run(com, cmdsub.opening_paren_offset()) >= 2 {
+            return CommandSource::Dynamic;
+        }
+    }
+    CommandSource::Static(com)
+}
+
 fn detect_errors_in_decorated_statement(
     buff_src: &wstr,
     traversal: &ast::Traversal,
@@ -1660,8 +1827,8 @@ fn detect_errors_in_decorated_statement(
         );
     }
 
-    let unexp_command = com;
-    if !unexp_command.is_empty() {
+    let source = command_source(com);
+    if let CommandSource::Static(unexp_command) = source {
         // Check that we can expand the command.
         // Make a new error list so we can fix the offset for just those, then append later.
         let mut new_errors = ParseErrorList::new();

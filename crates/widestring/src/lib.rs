@@ -94,6 +94,10 @@ pub const BRACE_SEP: char = char_offset(EXPAND_RESERVED_BASE, 6);
 pub const BRACE_SPACE: char = char_offset(EXPAND_RESERVED_BASE, 7);
 /// Separate subtokens in a token with this character.
 pub const INTERNAL_SEPARATOR: char = char_offset(EXPAND_RESERVED_BASE, 8);
+/// A subtoken boundary that needs the source spelling `""` when rendered.
+pub const QUOTED_BOUNDARY: char = char_offset(EXPAND_RESERVED_BASE, 12);
+/// A subtoken boundary that needs the source spelling `''` when rendered.
+pub const UNQUOTED_BOUNDARY: char = char_offset(EXPAND_RESERVED_BASE, 13);
 /// Character representing an empty variable expansion. Only used transitively while expanding
 /// variables.
 pub const VARIABLE_EXPAND_EMPTY: char = char_offset(EXPAND_RESERVED_BASE, 9);

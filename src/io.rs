@@ -908,6 +908,42 @@ impl<'a> IoStreams<'a> {
     }
 }
 
+/// Return a newly allocated output stream for the given fd, which is typically stdout or stderr.
+/// This inspects the io_chain and decides what sort of output stream to return.
+/// If `piped_output_needs_buffering` is set, and if the output is going to a pipe, then the other
+/// end then synchronously writing to the pipe risks deadlock, so we must buffer it.
+pub(crate) fn create_output_stream_for_fd(
+    fd: RawFd,
+    io_chain: &IoChain,
+    piped_output_needs_buffering: bool,
+) -> OutputStream {
+    let Some(io) = io_chain.io_for_fd(fd) else {
+        // Common case of no redirections. Just write to the fd directly.
+        return OutputStream::Fd(FdOutputStream::new(fd));
+    };
+    match io.io_mode() {
+        IoMode::BufferFill => {
+            // Our IO redirection is to an internal buffer, e.g. a command substitution.
+            let buffer = io.as_bufferfill().unwrap().buffer();
+            OutputStream::Buffered(BufferedOutputStream::new(buffer.clone()))
+        }
+        IoMode::Close => {
+            // Like 'echo foo >&-'.
+            OutputStream::Null
+        }
+        IoMode::File => OutputStream::Fd(FdOutputStream::new(io.source_fd())),
+        IoMode::Pipe if piped_output_needs_buffering => {
+            OutputStream::String(StringOutputStream::new())
+        }
+        IoMode::Pipe => OutputStream::Fd(FdOutputStream::new(io.source_fd())),
+        IoMode::Fd => {
+            // This is a case like 'echo foo >&5'. It is uncommon and unclear
+            // what should happen.
+            OutputStream::String(StringOutputStream::new())
+        }
+    }
+}
+
 /// File redirection error message.
 const FILE_ERROR: &wstr = L!("An error occurred while redirecting file '%s'");
 const NOCLOB_ERROR: &wstr = L!("The file '%s' already exists");

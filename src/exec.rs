@@ -25,8 +25,8 @@ use crate::fork_exec::{
 };
 use crate::function::FunctionProperties;
 use crate::io::{
-    BufferedOutputStream, FdOutputStream, IoBufferfill, IoChain, IoClose, IoMode, IoPipe,
-    IoStreams, OutputStream, SeparatedBuffer, StringOutputStream,
+    IoBufferfill, IoChain, IoClose, IoMode, IoPipe, IoStreams, OutputStream, SeparatedBuffer,
+    create_output_stream_for_fd,
 };
 use crate::nix::isatty;
 use crate::null_terminated_array::OwningNullTerminatedArray;
@@ -782,51 +782,6 @@ fn fork_child_for_process(
     Ok(())
 }
 
-/// Return an newly allocated output stream for the given fd, which is typically stdout or stderr.
-/// This inspects the io_chain and decides what sort of output stream to return.
-/// If `piped_output_needs_buffering` is set, and if the output is going to a pipe, then the other
-/// end then synchronously writing to the pipe risks deadlock, so we must buffer it.
-fn create_output_stream_for_builtin(
-    fd: RawFd,
-    io_chain: &IoChain,
-    piped_output_needs_buffering: bool,
-) -> OutputStream {
-    let Some(io) = io_chain.io_for_fd(fd) else {
-        // Common case of no redirections.
-        // Just write to the fd directly.
-        return OutputStream::Fd(FdOutputStream::new(fd));
-    };
-    match io.io_mode() {
-        IoMode::BufferFill => {
-            // Our IO redirection is to an internal buffer, e.g. a command substitution.
-            // We will write directly to it.
-            let buffer = io.as_bufferfill().unwrap().buffer();
-            OutputStream::Buffered(BufferedOutputStream::new(buffer.clone()))
-        }
-        IoMode::Close => {
-            // Like 'echo foo >&-'
-            OutputStream::Null
-        }
-        IoMode::File => {
-            // Output is to a file which has been opened.
-            OutputStream::Fd(FdOutputStream::new(io.source_fd()))
-        }
-        IoMode::Pipe => {
-            // Output is to a pipe. We may need to buffer.
-            if piped_output_needs_buffering {
-                OutputStream::String(StringOutputStream::new())
-            } else {
-                OutputStream::Fd(FdOutputStream::new(io.source_fd()))
-            }
-        }
-        IoMode::Fd => {
-            // This is a case like 'echo foo >&5'
-            // It's uncommon and unclear what should happen.
-            OutputStream::String(StringOutputStream::new())
-        }
-    }
-}
-
 /// Handle output from a builtin, by printing the contents of builtin_io_streams to the redirections
 /// given in io_chain.
 fn handle_builtin_output(
@@ -1193,9 +1148,9 @@ fn exec_builtin_process(
 ) -> LaunchResult {
     assert!(p.is_builtin(), "Process is not a builtin");
     let mut out =
-        create_output_stream_for_builtin(STDOUT_FILENO, io_chain, piped_output_needs_buffering);
+        create_output_stream_for_fd(STDOUT_FILENO, io_chain, piped_output_needs_buffering);
     let mut err =
-        create_output_stream_for_builtin(STDERR_FILENO, io_chain, piped_output_needs_buffering);
+        create_output_stream_for_fd(STDERR_FILENO, io_chain, piped_output_needs_buffering);
 
     let performer = get_performer_for_builtin(p, j, io_chain);
     let status = performer(parser, Some(&mut out), Some(&mut err));
@@ -1328,6 +1283,24 @@ fn exec_process_in_job(
 
     // Execute the process.
     p.check_generations_before_launch();
+
+    // A `return` in an in-process pipeline stage ends the stage, not the
+    // enclosing function or script.  The stage's block-stack depth marks the
+    // boundary for boundaries entered inside it.
+    let is_pipeline_stage = j.processes().len() > 1;
+    let returning_at_entry = parser.libdata().returning;
+    let previous_stage_depth = parser.libdata().pipeline_stage_depth;
+    if is_pipeline_stage {
+        parser.libdata_mut().pipeline_stage_depth = Some(parser.blocks_size());
+    }
+    let mut stage_guard = ScopeGuard::new(parser, move |parser| {
+        if is_pipeline_stage && !returning_at_entry && parser.libdata().returning {
+            parser.libdata_mut().returning = false;
+        }
+        parser.libdata_mut().pipeline_stage_depth = previous_stage_depth;
+    });
+    let parser = &mut **stage_guard;
+
     match p.typ {
         ProcessType::Function { .. } | ProcessType::BlockNode(_) => exec_block_or_func_process(
             parser,
@@ -1502,10 +1475,18 @@ fn exec_subshell_internal(
         return Err(STATUS_CMD_ERROR);
     };
 
+    let returning_at_entry = parser.libdata().returning;
     let mut io_chain = IoChain::new();
     io_chain.push(bufferfill.clone());
     let eval_res = parser.eval_with(cmd, &io_chain, job_group, BlockType::Subst);
     let buffer = IoBufferfill::finish(bufferfill);
+
+    // A return inside the substitution ends the substitution, not the
+    // enclosing function or script.
+    if !returning_at_entry && parser.libdata().returning {
+        parser.libdata_mut().returning = false;
+    }
+
     if buffer.discarded() {
         *break_expand = true;
         return Err(STATUS_READ_TOO_MUCH);

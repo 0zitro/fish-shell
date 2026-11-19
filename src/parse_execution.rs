@@ -18,17 +18,22 @@ use crate::{
     exec::exec_job,
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
+        reified_word_source, serialized_source,
     },
     flog::flog,
     function,
-    io::{FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream},
+    io::{
+        FdOutputStream, IoChain, IoStreams, OutputStream, SeparationType, StringOutputStream,
+        create_output_stream_for_fd,
+    },
     job_group::JobGroup,
     operation_context::OperationContext,
     parse_constants::{
         CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_TIME_BACKGROUND,
         FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG, ILLEGAL_FD_ERR_MSG,
         INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
-        ParseTokenType, StatementDecoration, parse_error_offset_source_start,
+        ParseTokenType, SOURCE_LOCATION_UNKNOWN, SourceRange, StatementDecoration,
+        parse_error_offset_source_start,
     },
     parse_tree::{NodeRef, ParsedSourceRef},
     parse_util::{locate_cmdsubst_range, unescape_wildcards},
@@ -103,7 +108,7 @@ macro_rules! report_error_formatted {
         error.source_length = r.length();
         error.code = ParseErrorCode::Syntax; // hackish
         error.text = $text;
-        $self.report_errors($ctx, $status, &vec![error])
+        $self.report_errors($ctx, $status, std::slice::from_ref(&error))
     }};
 }
 
@@ -114,6 +119,28 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
         help_section!("language#shell-variable-and-function-names")
     )
     .cmd(command)
+}
+
+/// The captured source of a quoted `begin` body and its offset in the parsed
+/// source, so errors found in the body can be reported where they stand.
+///
+/// The text is the whole body span: the bytes between the header and the
+/// closing `end`, including comments, whitespace, and the breakers around the
+/// statements.  The emitted value is this span verbatim, so a capture
+/// re-embeds into the block unchanged.
+struct BeginBody {
+    text: WString,
+    source_start: usize,
+}
+
+fn finish_internal_process_status(ctx: &mut OperationContext<'_>, status: c_int) {
+    ctx.parser().libdata_mut().status_count += 1;
+    ctx.parser().set_last_statuses(Statuses::just(status));
+}
+
+struct BeginSerializationError {
+    status: i32,
+    errors: ParseErrorList,
 }
 
 impl ExecutionContext {
@@ -221,7 +248,7 @@ impl ExecutionContext {
         &self,
         ctx: &mut OperationContext<'_>,
         status: c_int,
-        error_list: &ParseErrorList,
+        error_list: &[ParseError],
     ) -> EndExecutionReason {
         if !ctx.check_cancel() {
             if error_list.is_empty() {
@@ -891,8 +918,137 @@ impl ExecutionContext {
                 self.run_while_statement(ctx, wh, contents, associated_block)
             }
             BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
-            BlockStatementHeader::Begin(_bh) => self.run_begin_statement(ctx, contents),
+            BlockStatementHeader::Begin(bh) => {
+                match bh.options.as_ref().and_then(|options| options.quote) {
+                    Some(ast::BeginQuoteMode::EagerSubstitutions) => {
+                        self.run_eager_begin_statement(ctx, statement)
+                    }
+                    Some(ast::BeginQuoteMode::RawSource) => {
+                        self.run_raw_begin_statement(ctx, statement)
+                    }
+                    None if bh.options.as_ref().is_some_and(|options| options.barrier) => {
+                        // A barrier block groups its body without introducing a
+                        // scope of its own.
+                        trace_if_enabled(ctx.parser(), L!("begin"));
+                        let ret = self.run_job_list(ctx, contents, associated_block);
+                        trace_if_enabled(ctx.parser(), L!("end begin"));
+                        ret
+                    }
+                    None => self.run_begin_statement(ctx, contents),
+                }
+            }
         }
+    }
+
+    fn begin_body_source(&self, statement: &ast::BlockStatement) -> Option<BeginBody> {
+        let range = statement.body_range()?;
+        Some(BeginBody {
+            text: self.pstree().src[range.start()..range.end()].to_owned(),
+            source_start: range.start(),
+        })
+    }
+
+    /// Serialise the body span with each command-substitution site replaced by
+    /// its rendered value.
+    ///
+    /// Every byte outside a substitution site - the breakers, comments,
+    /// whitespace, and continuations - is copied through verbatim, so `-q` and
+    /// `-qq` differ only in what happens at substitution sites.  A substitution
+    /// site inside a barrier block is not eager: the block's bytes are source
+    /// for the emitted program, so they are copied through with it.
+    fn serialize_eager_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        body: &BeginBody,
+        barrier_block_spans: &[SourceRange],
+    ) -> Result<WString, BeginSerializationError> {
+        let mut errors = ParseErrorList::new();
+        let result = serialized_source(
+            &body.text,
+            body.source_start,
+            barrier_block_spans,
+            |_, _, word, word_start| {
+                let prior_errors = errors.len();
+                match reified_word_source(word, ctx, &mut Some(&mut errors)) {
+                    Ok(variants) => Ok(variants),
+                    Err(result) => {
+                        for error in errors.iter_mut().skip(prior_errors) {
+                            if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                                error.source_start += word_start;
+                            }
+                        }
+                        Err(result)
+                    }
+                }
+            },
+        );
+        match result {
+            Ok(serialized) => Ok(serialized),
+            Err(result) => {
+                let status = if result.status != 0 {
+                    result.status
+                } else {
+                    STATUS_EXPAND_ERROR
+                };
+                debug_assert!(
+                    !errors.is_empty(),
+                    "a failed command-substitution expansion must record an error"
+                );
+                Err(BeginSerializationError { status, errors })
+            }
+        }
+    }
+
+    fn run_eager_begin_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        statement: &ast::BlockStatement,
+    ) -> EndExecutionReason {
+        let Some(body) = self.begin_body_source(statement) else {
+            return EndExecutionReason::Ok;
+        };
+        let barrier_block_spans = statement.jobs.barrier_block_spans();
+        match self.serialize_eager_body(ctx, &body, &barrier_block_spans) {
+            Ok(serialized) => self.emit_begin_body(ctx, &serialized),
+            Err(error) => self.report_errors(ctx, error.status, &error.errors),
+        }
+    }
+
+    fn run_raw_begin_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        statement: &ast::BlockStatement,
+    ) -> EndExecutionReason {
+        let Some(body) = self.begin_body_source(statement) else {
+            return EndExecutionReason::Ok;
+        };
+        self.emit_begin_body(ctx, &body.text)
+    }
+
+    /// Emit the body span as the construct's value.
+    ///
+    /// Nothing is trimmed and no terminator is appended: the span between the
+    /// header and `end` carries the author's own breakers, so the value
+    /// re-embeds into the block byte for byte and a splice is the text the
+    /// author wrote.
+    ///
+    /// The span is emitted as one explicitly separated element.  Source-text
+    /// consumers such as `eval` join their argument lists with spaces, so a
+    /// multi-element value would insert separators between the body's
+    /// statements; the arity is intrinsic to the value and only the producer
+    /// can state it.  A command substitution consumes the separation as one
+    /// element, while a redirection, a pipeline target, or a terminal receives
+    /// the span bytes unchanged.
+    fn emit_begin_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        body: &wstr,
+    ) -> EndExecutionReason {
+        let mut out = create_output_stream_for_fd(STDOUT_FILENO, &self.block_io, false);
+        out.append_with_separation(body.chars(), SeparationType::Explicitly, false);
+        let status = out.flush_and_check_error();
+        finish_internal_process_status(ctx, status);
+        EndExecutionReason::Ok
     }
 
     fn run_for_statement(
@@ -1329,8 +1485,7 @@ impl ExecutionContext {
         .err()
         .unwrap_or(STATUS_CMD_OK);
 
-        ctx.parser().libdata_mut().status_count += 1;
-        ctx.parser().set_last_statuses(Statuses::just(err_code));
+        finish_internal_process_status(ctx, err_code);
 
         let errtext = errs.contents();
         if !errtext.is_empty() {
