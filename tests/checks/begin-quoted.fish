@@ -351,3 +351,194 @@ $fish -c 'begin -b -q -q -q echo 1; end'
 # CHECKERR: fish: begin accepts at most two quoted options
 # CHECKERR: {{^}}begin -b -q -q -q echo 1; end
 # CHECKERR: {{^}}               ^^
+
+# A barrier block is source for the emitted program: an enclosing -q capture
+# copies its bytes verbatim and expands no substitution site inside it.
+echo (string escape -- (begin -q
+    begin -b
+        echo (printf inner)
+    end
+end))
+# CHECK: \n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n
+
+# Eager expansion outside the barrier is unchanged.
+echo (string escape -- (begin -q
+    echo (printf outer)
+    begin -b
+        echo (printf inner)
+    end
+end))
+# CHECK: \n\ \ \ \ echo\ outer\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n
+
+# The block is opaque at every depth in the body's block structure, including
+# inside a nested quoted block.
+echo (string escape -- (begin -q
+    begin -qq
+        begin -b
+            echo (printf inner)
+        end
+    end
+end))
+# CHECK: \n\ \ \ \ begin\ -qq\n\ \ \ \ \ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ \ \ \ \ end\n\ \ \ \ end\n
+
+# A barrier combined with a quoted mode is opaque as a whole: its quoted mode
+# runs when the emitted program reaches the block.
+echo (string escape -- (begin -q
+    begin -b -q
+        echo (printf inner)
+    end
+end))
+# CHECK: \n\ \ \ \ begin\ -b\ -q\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n
+
+echo (string escape -- (begin -q
+    begin -b -qq
+        echo (printf inner)
+    end
+end))
+# CHECK: \n\ \ \ \ begin\ -b\ -qq\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n
+
+# The flag stays in the emitted source, so a second capture pass applies the
+# same rule.
+set -l barrier_source (begin -q
+    begin -b
+        echo (printf inner)
+    end
+end)
+set -l rescanned (eval "begin -q
+$barrier_source
+end")
+echo (string escape -- $rescanned)
+# CHECK: \n\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\n\n
+
+# The flag covers the block's own bytes: a redirection after its `end` is
+# expanded by the enclosing pass, and deferring it takes another barrier around
+# the whole statement.
+set -l marker capture
+echo (string escape -- (begin -q
+    set -l marker program
+    begin -b
+        echo (printf inner)
+    end > (printf %s $marker)
+end))
+# CHECK: \n\ \ \ \ set\ -l\ marker\ program\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ end\ \>\ capture\n
+
+echo (string escape -- (begin -q
+    set -l marker program
+    begin -b
+        begin -b
+            echo (printf inner)
+        end > (printf %s $marker)
+    end
+end))
+# CHECK: \n\ \ \ \ set\ -l\ marker\ program\n\ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ begin\ -b\n\ \ \ \ \ \ \ \ \ \ \ \ echo\ \(printf\ inner\)\n\ \ \ \ \ \ \ \ end\ \>\ \(printf\ \%s\ \$marker\)\n\ \ \ \ end\n
+
+# Evaluating a captured barrier block runs its mode.
+set -l executed (begin -q
+    begin -b
+        echo bare
+    end
+end)
+eval $executed
+# CHECK: bare
+
+set -l staged (begin -q
+    set -l marker program
+    begin -b -q
+        echo $marker (printf inner)
+    end
+end)
+eval $staged
+# CHECK: echo $marker inner
+
+set -l raw_staged (begin -q
+    set -l marker program
+    begin -b -qq
+        echo $marker (printf inner)
+    end
+end)
+eval $raw_staged
+# CHECK: echo $marker (printf inner)
+
+# A bare barrier block is transparent at runtime: its body binds in the
+# enclosing scope, and an explicit nested begin supplies block-local scope.
+function barrier_scope
+    begin -b
+        set -l barrier_local inner
+    end
+    echo $barrier_local
+end
+barrier_scope
+# CHECK: inner
+
+function barrier_nested_scope
+    begin -b
+        begin
+            set -l nested_local inner
+        end
+    end
+    set -q nested_local; echo $status
+end
+barrier_nested_scope
+# CHECK: 1
+
+function plain_scope
+    begin
+        set -l plain_local inner
+    end
+    set -q plain_local; echo $status
+end
+plain_scope
+# CHECK: 1
+
+# The transparent grouping leaves loop control and return alone.
+for i in 1 2 3
+    begin -b
+        if test $i -eq 2
+            continue
+        end
+        echo $i
+    end
+end
+# CHECK: 1
+# CHECK: 3
+
+for i in 1 2 3
+    begin -b
+        if test $i -eq 2
+            break
+        end
+        echo $i
+    end
+end
+# CHECK: 1
+
+function barrier_return
+    begin -b
+        return 7
+    end
+    echo unreachable
+end
+barrier_return
+echo $status
+# CHECK: 7
+
+# The combined spelling is a shorthand for the nesting: the two programs run
+# the same inner block.
+set -l combined (begin -q
+    begin -b -q
+        echo (printf inner)
+    end
+end)
+set -l nested (begin -q
+    begin -b
+        begin -q
+            echo (printf inner)
+        end
+    end
+end)
+set -l combined_output (eval $combined)
+set -l nested_output (eval $nested)
+eval $combined_output
+eval $nested_output
+# CHECK: inner
+# CHECK: inner

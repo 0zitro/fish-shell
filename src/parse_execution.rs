@@ -32,7 +32,7 @@ use crate::{
         CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_TIME_BACKGROUND,
         FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG, ILLEGAL_FD_ERR_MSG,
         INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
-        ParseTokenType, StatementDecoration, parse_error_offset_source_start,
+        ParseTokenType, SourceRange, StatementDecoration, parse_error_offset_source_start,
     },
     parse_tree::{NodeRef, ParsedSourceRef},
     parse_util::{locate_cmdsubst_range, unescape_wildcards},
@@ -948,13 +948,21 @@ impl ExecutionContext {
             BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
             BlockStatementHeader::Begin(bh) => {
                 match bh.options.as_ref().and_then(|options| options.quote) {
-                    None => self.run_begin_statement(ctx, contents),
                     Some(ast::BeginQuoteMode::EagerSubstitutions) => {
                         self.run_eager_begin_statement(ctx, statement)
                     }
                     Some(ast::BeginQuoteMode::RawSource) => {
                         self.run_raw_begin_statement(ctx, statement)
                     }
+                    None if bh.options.as_ref().is_some_and(|options| options.barrier) => {
+                        // A barrier block groups its body without introducing a
+                        // scope of its own.
+                        trace_if_enabled(ctx.parser(), L!("begin"));
+                        let ret = self.run_job_list(ctx, contents, associated_block);
+                        trace_if_enabled(ctx.parser(), L!("end begin"));
+                        ret
+                    }
+                    None => self.run_begin_statement(ctx, contents),
                 }
             }
         }
@@ -1003,11 +1011,14 @@ impl ExecutionContext {
     ///
     /// Every byte outside a substitution site - the breakers, comments,
     /// whitespace, and continuations - is copied through verbatim, so `-q` and
-    /// `-qq` differ only in what happens at substitution sites.
+    /// `-qq` differ only in what happens at substitution sites.  A substitution
+    /// site inside a barrier block is not eager: the block's bytes are source
+    /// for the emitted program, so they are copied through with it.
     fn serialize_eager_body(
         &mut self,
         ctx: &mut OperationContext<'_>,
         body: &BeginBody,
+        barrier_block_spans: &[SourceRange],
     ) -> Result<WString, BeginSerializationError> {
         let tokens = begin_body_tokens(&body.text);
         let mut out = WString::new();
@@ -1015,9 +1026,12 @@ impl ExecutionContext {
         for token in &tokens {
             let offset = token.offset as usize;
             let length = token.length as usize;
+            let end = offset + length;
             out.push_utfstr(&body.text[cursor..offset]);
-            if token.type_ == TokenType::String {
-                let end = offset + length;
+            let in_barrier_block = barrier_block_spans.iter().any(|span| {
+                span.start() <= body.source_start + offset && body.source_start + end <= span.end()
+            });
+            if token.type_ == TokenType::String && !in_barrier_block {
                 let variants = self.serialize_eager_word(
                     ctx,
                     &body.text[offset..end],
@@ -1030,9 +1044,9 @@ impl ExecutionContext {
                     out.push_utfstr(variant);
                 }
             } else {
-                out.push_utfstr(&body.text[offset..offset + length]);
+                out.push_utfstr(&body.text[offset..end]);
             }
-            cursor = offset + length;
+            cursor = end;
         }
         out.push_utfstr(&body.text[cursor..]);
         Ok(out)
@@ -1046,7 +1060,8 @@ impl ExecutionContext {
         let Some(body) = self.begin_body_source(statement) else {
             return EndExecutionReason::Ok;
         };
-        match self.serialize_eager_body(ctx, &body) {
+        let barrier_block_spans = statement.jobs.barrier_block_spans();
+        match self.serialize_eager_body(ctx, &body, &barrier_block_spans) {
             Ok(serialized) => self.emit_begin_body(ctx, &serialized),
             Err(error) => self.report_errors(ctx, error.status, &error.errors),
         }

@@ -1099,6 +1099,46 @@ define_list_node!(ArgumentList, Argument);
 // For historical reasons, a job list is a list of job *conjunctions*. This should be fixed.
 define_list_node!(JobList, JobConjunction);
 
+impl JobList {
+    /// The source ranges of the barrier blocks in this job list.
+    ///
+    /// A barrier block's range is its bytes from the `begin` token through the
+    /// matching `end` keyword: the bytes an enclosing expansion pass emits
+    /// verbatim.  A barrier block nested in another one lies inside the outer
+    /// range, so the outer range is the only one recorded.
+    pub fn barrier_block_spans(&self) -> SourceRangeList {
+        let mut spans = SourceRangeList::new();
+        let mut traversal = Traversal::new(self);
+        while let Some(node) = traversal.next() {
+            let Kind::BlockStatement(block) = node.kind() else {
+                continue;
+            };
+            let BlockStatementHeader::Begin(header) = &block.header else {
+                continue;
+            };
+            if !header
+                .options
+                .as_ref()
+                .is_some_and(|options| options.barrier)
+            {
+                continue;
+            }
+            let (Some(header_range), Some(end_range)) = (
+                header.kw_begin.try_source_range(),
+                block.end.try_source_range(),
+            ) else {
+                continue;
+            };
+            spans.push(SourceRange::new(
+                header_range.start(),
+                end_range.end() - header_range.start(),
+            ));
+            traversal.skip_children(block);
+        }
+        spans
+    }
+}
+
 define_list_node!(CaseItemList, CaseItem);
 
 /// A variable_assignment contains a source range like FOO=bar.

@@ -9,6 +9,7 @@ Synopsis
     begin; [COMMANDS ...]; end
     begin -q; [COMMANDS ...]; end
     begin -qq; [COMMANDS ...]; end
+    begin -b; [COMMANDS ...]; end
     { [COMMANDS ...] }
 
 Description
@@ -94,6 +95,42 @@ A redirection or pipeline applied to the construct itself receives the span
 bytes: ``begin -q ... end > file`` writes the source text.  Redirections inside
 the body remain part of the spanned source.  More than two quoted options is an
 error.
+
+Barrier blocks
+--------------
+
+The **-b** or **--barrier** option marks a block as code for the program that a
+capture produces.  An enclosing capture emits the block's bytes - from its
+``begin`` through the matching ``end`` - verbatim, and does not evaluate the
+command substitutions inside it:
+
+::
+
+    begin -q
+        begin -b
+            echo (date)
+        end
+    end
+
+The captured source contains the ``begin -b`` block unchanged, so ``date`` runs
+when the emitted program reaches the block, not during the capture.  A quoted
+mode decides what a block does to its own body; the barrier decides what an
+enclosing pass may do to the block.
+
+A barrier combines with a quoted mode.  ``begin -b -q`` is a stage that expands
+its body when the emitted program reaches it, and ``begin -b -qq`` is a
+quotation that emits its body as raw data at that point.  The combined spelling
+is a shorthand for nesting the two blocks.
+
+At runtime a bare barrier block only groups its body: it introduces no variable
+scope, so ``set -l`` binds in the enclosing scope, and an explicit nested
+``begin`` asks for block-local scope.  ``break``, ``continue`` and ``return``
+pass through the grouping as they would through the body alone.
+
+The flag covers the block's own bytes.  A redirection written after its ``end``
+belongs to the enclosing capture, so wrapping the whole statement in another
+barrier block is how its target is kept for the program.  More than one barrier
+option is an error.
 
 Example
 -------
