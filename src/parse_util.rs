@@ -18,8 +18,8 @@ use crate::{
     },
     prelude::*,
     tokenizer::{
-        Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end,
-        variable_assignment_equals_pos,
+        Tok, TokFlags, TokenType, Tokenizer, TokenizerError, comment_end, is_token_delimiter,
+        quote_end, variable_assignment_equals_pos,
     },
 };
 use fish_common::{UnescapeFlags, UnescapeStringStyle, help_section, unescape_string};
@@ -33,6 +33,30 @@ use std::{
     iter,
     ops::{self, Range},
 };
+
+/// Tokenise one source span for a serialiser.
+///
+/// Every byte outside a token is source that the serialiser copies.  The span
+/// was parsed as fish source before this call, so a tokenizer error is a
+/// programmer error rather than input error.
+pub(crate) fn source_tokens(text: &wstr) -> Vec<Tok> {
+    let flags = TokFlags {
+        show_comments: true,
+        ..Default::default()
+    };
+    let mut tokens = vec![];
+    for token in Tokenizer::new(text, flags) {
+        debug_assert!(
+            token.error == TokenizerError::None && token.type_ != TokenType::Error,
+            "serialised source failed tokenization"
+        );
+        if token.type_ == TokenType::End {
+            continue;
+        }
+        tokens.push(token);
+    }
+    tokens
+}
 
 /// Handles slices: the square brackets in an expression like $foo[5..4]
 /// Return the length of the slice starting at `in`, or 0 if there is no slice, or None on error.
@@ -1478,20 +1502,20 @@ fn detect_errors_in_argument_source(
     }
 }
 
-/// Whether a command substitution in `word` has a program containing a barrier
-/// block.
+/// Whether a command substitution in `word` is forwarded.
 ///
-/// A barrier block is code for the program an enclosing capture produces, so a
-/// substitution whose program contains one is not expanded by that capture: the
-/// word is emitted as written.  The test is syntactic and follows nested
-/// substitutions, because executing the outer one executes the inner one.
-pub fn word_has_barrier_substitution(word: &wstr) -> bool {
+/// A substitution is forwarded when executing it would execute a barrier block
+/// or another forwarded site.  The test is syntactic and follows nested
+/// substitutions through the words and redirection targets the site would
+/// expand; a barrier span is copied, so a dependency inside it does not
+/// propagate.
+pub(crate) fn word_has_forwarded_substitution(word: &wstr) -> bool {
     let mut cursor = 0;
     let mut is_quoted = false;
     loop {
         match locate_cmdsubst_range(word, &mut cursor, false, Some(&mut is_quoted), None) {
             Ok(Some(site)) => {
-                if program_has_barrier_block(&word[site.command_range()]) {
+                if program_has_barrier_dependency(&word[site.command_range()]) {
                     return true;
                 }
             }
@@ -1500,18 +1524,33 @@ pub fn word_has_barrier_substitution(word: &wstr) -> bool {
     }
 }
 
-/// Whether `src`, parsed as a program, contains a barrier block, including in
-/// the program of a command substitution inside it.
-pub(crate) fn program_has_barrier_block(src: &wstr) -> bool {
+/// Whether executing `src` as a program would execute a barrier block or a
+/// forwarded site.
+///
+/// A barrier block in the program's command structure forwards the program.  A
+/// forwarded site in a word or redirection target forwards it as well, because
+/// the site cannot supply a value to the expansion.  A barrier span is copied
+/// rather than expanded, so a dependency inside it does not propagate.
+pub(crate) fn program_has_barrier_dependency(src: &wstr) -> bool {
     let ast = ast::parse(src, Default::default(), None);
-    if !ast.top().barrier_block_spans().is_empty() {
+    let barrier_spans = ast.top().barrier_block_spans();
+    if !barrier_spans.is_empty() {
         return true;
     }
-    ast.walk().any(|node| {
-        node.as_leaf()
-            .and_then(|leaf| leaf.range())
-            .is_some_and(|range| word_has_barrier_substitution(&src[range.start()..range.end()]))
-    })
+    for token in source_tokens(src) {
+        if token.type_ != TokenType::String {
+            continue;
+        }
+        let offset = token.offset as usize;
+        let end = offset + token.length as usize;
+        let in_barrier_span = barrier_spans
+            .iter()
+            .any(|span| span.start() <= offset && end <= span.end());
+        if !in_barrier_span && word_has_forwarded_substitution(&src[offset..end]) {
+            return true;
+        }
+    }
+    false
 }
 
 fn detect_errors_in_job_conjunction(

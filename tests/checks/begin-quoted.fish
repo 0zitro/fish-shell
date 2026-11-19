@@ -554,9 +554,9 @@ eval $nested_output
 # CHECK: inner
 # CHECK: inner
 
-# A command substitution whose program contains a barrier block is forwarded as
-# written, and its eager peers in the word are reified.  Evaluating the capture
-# runs every site at program time.
+# A command substitution whose program contains a barrier block is forwarded:
+# its barrier span is copied and the items outside it expand at capture.
+# Evaluating the capture runs every site at program time.
 set -l forwarded_site (begin -q echo (begin -b; echo x; end); end)
 eval $forwarded_site
 # CHECK: x
@@ -565,8 +565,8 @@ set -l forwarded_pair (begin -q echo (begin -b; echo x; end)(printf suffix); end
 eval $forwarded_pair
 # CHECK: xsuffix
 
-# The test is conservative: a barrier inside a quoted part of the site's
-# program forwards the site too.
+# A barrier inside a quoted part of the site's program is still a command of
+# that program, so the site is forwarded.
 echo (string escape -- (begin -q echo (begin -qq; begin -b; echo x; end; end); end))
 # CHECK: ' echo (begin -qq; begin -b; echo x; end; end); '
 
@@ -587,6 +587,57 @@ eval (begin -q echo (begin -b; printf 'X\nY'; end)(printf 'c\nd'); end)
 
 eval (begin -q echo (begin -b; printf 'X\nY'; end){a,b}; end)
 # CHECK: Xa Xb Ya Yb
+
+# A forwarded site serialises its environment-override list with the reified
+# loop, and evaluating the capture assigns that list.
+function fwd_hello; printf '%s' hello; end
+set -l forwarded_env (begin -q
+    v=(fwd_hello) set -S v
+end)
+eval $forwarded_env
+# CHECK: $v: set in local scope, exported, with 1 elements
+# CHECK: $v[1]: |hello|
+string match -q '*v=$(for __ in*' $forwarded_env
+echo $status
+# CHECK: 0
+
+# A direct command substitution in a forwarded program writes literal words;
+# the nested barrier block stays source and runs at program time.
+function fwd_producer; printf '%s' 'echo 1 2 3'; end
+set -l forwarded_words (begin -q
+    set -l x ($(fwd_producer) (begin -b; printf body; end))
+end)
+eval $forwarded_words
+printf '%s\n' $x
+# CHECK: 1 2 3 body
+string match -q '*echo 1 2 3*' $forwarded_words
+echo $status
+# CHECK: 0
+string match -q '*$(fwd_producer)*' $forwarded_words
+echo $status
+# CHECK: 1
+
+# A forwarded site in a word forwards the enclosing substitution; its direct
+# items expand and the nested site stays source.
+function fwd_arg0; printf '%s' 'echo --'; end
+function fwd_arg1; printf '%s' 'LOG ::'; end
+function fwd_data; printf '%s' inner; end
+set -l forwarded_outer (begin -q
+    set -l x ($(fwd_arg0) $(fwd_arg1) (begin -b; echo $(fwd_data); end))
+end)
+string match -q '*echo -- LOG :: (begin -b; echo $(fwd_data); end)*' $forwarded_outer
+echo $status
+# CHECK: 0
+
+# A command substitution in a redirection target expands to the redirection
+# operand; the forwarded program keeps the operand as source.
+function fwd_input; printf '%s' /dev/urandom; end
+set -l forwarded_target (begin -q
+    set -l x (echo <(fwd_input) (begin -b; printf body; end))
+end)
+string match -q '*</dev/urandom*' $forwarded_target
+echo $status
+# CHECK: 0
 
 # A barrier-free site stays eager and its capture evaluates to the same value.
 eval (begin -q echo (printf eager); end)

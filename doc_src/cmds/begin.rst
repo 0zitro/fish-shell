@@ -132,11 +132,15 @@ is expanded by the enclosing capture.  To defer that redirection to the program,
 wrap the whole statement in another barrier block.  More than one barrier option
 is an error.
 
-A command substitution whose program contains a barrier block is not evaluated
-by the enclosing capture: the site is emitted as written, and the other
-substitution sites in its word are evaluated eagerly.  The site expands when
-the emitted program runs.  The test is syntactic and conservative - a barrier
-anywhere in the substitution's parsed program forwards that site.
+A command substitution that would execute a barrier block is not evaluated by
+the enclosing capture.  It is forwarded instead: its barrier spans are copied
+with their bodies, and every other word and redirection target is expanded at
+capture.  A forwarded site in a word creates the same dependency for the
+enclosing substitution, because the forwarded site cannot supply a value.  An
+environment-override list is emitted as the loop that reproduces it, while an
+unquoted command substitution and a redirection target are emitted as literal
+source.  A barrier block inside a barrier span is copied with the span and
+creates no dependency.
 
 Example
 -------

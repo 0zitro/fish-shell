@@ -11,14 +11,14 @@ use crate::{
         builtin_exists,
     },
     common::{get_program_name, valid_func_name, valid_var_name},
-    complete::{CompletionList, CompletionReceiver},
+    complete::CompletionList,
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
     exec::exec_job,
     expand::{
-        self, CmdsubstRendering, ExpandFlags, ExpandResultCode, completion_to_source,
-        expand_cmdsubst, expand_one, expand_string, expand_to_command_and_args,
+        self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
+        reified_word_source, serialized_source,
     },
     flog::flog,
     function,
@@ -32,7 +32,8 @@ use crate::{
         CALL_STACK_LIMIT_EXCEEDED_ERR_MSG, ERROR_TIME_BACKGROUND,
         FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG, ILLEGAL_FD_ERR_MSG,
         INFINITE_FUNC_RECURSION_ERR_MSG, ParseError, ParseErrorCode, ParseErrorList, ParseKeyword,
-        ParseTokenType, SourceRange, StatementDecoration, parse_error_offset_source_start,
+        ParseTokenType, SOURCE_LOCATION_UNKNOWN, SourceRange, StatementDecoration,
+        parse_error_offset_source_start,
     },
     parse_tree::{NodeRef, ParsedSourceRef},
     parse_util::{locate_cmdsubst_range, unescape_wildcards},
@@ -50,10 +51,7 @@ use crate::{
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
     timer::push_timer,
-    tokenizer::{
-        PipeOrRedir, Tok, TokFlags, TokenType, Tokenizer, TokenizerError,
-        variable_assignment_equals_pos,
-    },
+    tokenizer::{PipeOrRedir, TokenType, variable_assignment_equals_pos},
     trace::{trace_if_enabled, trace_if_enabled_with_args},
     wildcard::wildcard_match,
 };
@@ -133,32 +131,6 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
 struct BeginBody {
     text: WString,
     source_start: usize,
-}
-
-/// Tokenize a captured `begin` body, keeping comments.
-///
-/// The eager serialiser uses the tokens only to locate command-substitution
-/// sites; every byte outside a substitution site is copied through verbatim.
-///
-/// The body was parsed as fish source before it reached the executor, so a
-/// tokenizer error here is a programmer error rather than input error.
-fn begin_body_tokens(text: &wstr) -> Vec<Tok> {
-    let flags = TokFlags {
-        show_comments: true,
-        ..Default::default()
-    };
-    let mut tokens = vec![];
-    for token in Tokenizer::new(text, flags) {
-        debug_assert!(
-            token.error == TokenizerError::None && token.type_ != TokenType::Error,
-            "captured begin body failed tokenization"
-        );
-        if token.type_ == TokenType::End {
-            continue;
-        }
-        tokens.push(token);
-    }
-    tokens
 }
 
 fn finish_internal_process_status(ctx: &mut OperationContext<'_>, status: c_int) {
@@ -976,46 +948,6 @@ impl ExecutionContext {
         })
     }
 
-    /// Serialise one word of the body span.
-    ///
-    /// Every eager substitution site is reified in place; a site whose program
-    /// contains a barrier block is forwarded as written.
-    fn serialize_eager_word(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        word: &wstr,
-        source_start: usize,
-    ) -> Result<Vec<WString>, BeginSerializationError> {
-        let mut errors = ParseErrorList::new();
-        let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
-        let result = expand_cmdsubst(
-            word.to_owned(),
-            ctx,
-            &mut receiver,
-            &mut Some(&mut errors),
-            CmdsubstRendering::Reification,
-        );
-        if result.failed() || !errors.is_empty() {
-            let status = if result.status != 0 {
-                result.status
-            } else {
-                STATUS_EXPAND_ERROR
-            };
-            debug_assert!(
-                !errors.is_empty(),
-                "a failed command-substitution expansion must record an error"
-            );
-            parse_error_offset_source_start(&mut errors, source_start);
-            return Err(BeginSerializationError { status, errors });
-        }
-
-        Ok(receiver
-            .take()
-            .into_iter()
-            .map(|completion| completion_to_source(&completion.completion))
-            .collect())
-    }
-
     /// Serialise the body span with each command-substitution site replaced by
     /// its rendered value.
     ///
@@ -1030,36 +962,41 @@ impl ExecutionContext {
         body: &BeginBody,
         barrier_block_spans: &[SourceRange],
     ) -> Result<WString, BeginSerializationError> {
-        let tokens = begin_body_tokens(&body.text);
-        let mut out = WString::new();
-        let mut cursor = 0;
-        for token in &tokens {
-            let offset = token.offset as usize;
-            let length = token.length as usize;
-            let end = offset + length;
-            out.push_utfstr(&body.text[cursor..offset]);
-            let in_barrier_block = barrier_block_spans.iter().any(|span| {
-                span.start() <= body.source_start + offset && body.source_start + end <= span.end()
-            });
-            if token.type_ == TokenType::String && !in_barrier_block {
-                let variants = self.serialize_eager_word(
-                    ctx,
-                    &body.text[offset..end],
-                    body.source_start + offset,
-                )?;
-                for (i, variant) in variants.iter().enumerate() {
-                    if i > 0 {
-                        out.push(' ');
+        let mut errors = ParseErrorList::new();
+        let result = serialized_source(
+            &body.text,
+            body.source_start,
+            barrier_block_spans,
+            |_, _, word, word_start| {
+                let prior_errors = errors.len();
+                match reified_word_source(word, ctx, &mut Some(&mut errors)) {
+                    Ok(variants) => Ok(variants),
+                    Err(result) => {
+                        for error in errors.iter_mut().skip(prior_errors) {
+                            if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                                error.source_start += word_start;
+                            }
+                        }
+                        Err(result)
                     }
-                    out.push_utfstr(variant);
                 }
-            } else {
-                out.push_utfstr(&body.text[offset..end]);
+            },
+        );
+        match result {
+            Ok(serialized) => Ok(serialized),
+            Err(result) => {
+                let status = if result.status != 0 {
+                    result.status
+                } else {
+                    STATUS_EXPAND_ERROR
+                };
+                debug_assert!(
+                    !errors.is_empty(),
+                    "a failed command-substitution expansion must record an error"
+                );
+                Err(BeginSerializationError { status, errors })
             }
-            cursor = end;
         }
-        out.push_utfstr(&body.text[cursor..]);
-        Ok(out)
     }
 
     fn run_eager_begin_statement(

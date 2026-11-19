@@ -3,9 +3,10 @@
 //! from using a more clever memory allocation scheme, perhaps an evil combination of talloc,
 //! string buffers and reference counting.
 
-use std::ops::DerefMut as _;
+use std::ops::{DerefMut as _, Range};
 
 use crate::{
+    ast::{self, Kind as AstKind, Leaf as _},
     builtins::{
         STATUS_CMD_ERROR, STATUS_CMD_UNKNOWN, STATUS_EXPAND_ERROR, STATUS_ILLEGAL_CMD,
         STATUS_INVALID_ARGS, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
@@ -20,14 +21,16 @@ use crate::{
     parse_constants::{
         ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_MISMATCHED_PARENTHESIS, ERROR_SLICE_INVALID_INDEX,
         ERROR_SLICE_ZERO_INDEX, ParseError, ParseErrorCode, ParseErrorList,
-        SOURCE_LOCATION_UNKNOWN,
+        SOURCE_LOCATION_UNKNOWN, SourceRange,
     },
     parse_util::{
         cmdsub_dollar_run, ends_in_open_variable_reference, expand_variable_error,
-        first_source_char, locate_cmdsubst_range, program_has_barrier_block,
+        first_source_char, locate_cmdsubst_range, program_has_barrier_dependency, source_tokens,
+        word_has_forwarded_substitution,
     },
     path::path_apply_working_directory,
     prelude::*,
+    tokenizer::{Tok, TokenType, variable_assignment_equals_pos},
     wildcard::{WildcardResult, wildcard_expand_string, wildcard_has_internal},
     wutil::{normalize_path, wcstoi, wcstoi_partial},
 };
@@ -1138,6 +1141,183 @@ fn dynamic_variable_reference(operand: &wstr) -> bool {
     }
 }
 
+/// Serialise one source span by copying bytes outside tokens and rendering
+/// every string token that is not inside a barrier span.
+pub(crate) fn serialized_source(
+    source: &wstr,
+    source_start: usize,
+    barrier_spans: &[SourceRange],
+    mut render_word: impl FnMut(&[Tok], usize, &wstr, usize) -> Result<Vec<WString>, ExpandResult>,
+) -> Result<WString, ExpandResult> {
+    let tokens = source_tokens(source);
+    let mut output = WString::new();
+    let mut cursor = 0;
+    for (index, token) in tokens.iter().enumerate() {
+        let offset = token.offset as usize;
+        let end = offset + token.length as usize;
+        output.push_utfstr(&source[cursor..offset]);
+        let in_barrier_span = barrier_spans
+            .iter()
+            .any(|span| span.start() <= source_start + offset && source_start + end <= span.end());
+        if token.type_ != TokenType::String || in_barrier_span {
+            output.push_utfstr(&source[offset..end]);
+            cursor = end;
+            continue;
+        }
+
+        let rendered = render_word(&tokens, index, &source[offset..end], source_start + offset)?;
+        for (variant_index, variant) in rendered.iter().enumerate() {
+            if variant_index > 0 {
+                output.push(' ');
+            }
+            output.push_utfstr(variant);
+        }
+        cursor = end;
+    }
+    output.push_utfstr(&source[cursor..]);
+    Ok(output)
+}
+
+/// Render one word with every command-substitution site reified.
+///
+/// The word is source around its sites: a site is replaced by the loop that
+/// reproduces its elements and status, and a forwarded site stays source.
+pub(crate) fn reified_word_source(
+    word: &wstr,
+    ctx: &mut OperationContext<'_>,
+    errors: &mut Option<&mut ParseErrorList>,
+) -> Result<Vec<WString>, ExpandResult> {
+    let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
+    let result = expand_cmdsubst(
+        word.to_owned(),
+        ctx,
+        &mut receiver,
+        errors,
+        CmdsubstRendering::Reification,
+    );
+    if result.failed() {
+        return Err(result);
+    }
+    Ok(receiver
+        .take()
+        .into_iter()
+        .map(|completion| completion_to_source(&completion.completion))
+        .collect())
+}
+
+/// Render one word by expanding it into its literal argv words.
+fn expanded_word_source(
+    word: &wstr,
+    ctx: &mut OperationContext<'_>,
+    errors: &mut Option<&mut ParseErrorList>,
+) -> Result<Vec<WString>, ExpandResult> {
+    let mut completions = CompletionList::new();
+    let result = expand_string(
+        word.to_owned(),
+        &mut completions,
+        ExpandFlags::default(),
+        ctx,
+        errors.as_deref_mut(),
+    );
+    if result.failed() {
+        return Err(result);
+    }
+    Ok(completions
+        .into_iter()
+        .map(|completion| completion_to_source(&completion.completion))
+        .collect())
+}
+
+/// Serialise the program of a forwarded command substitution.
+///
+/// A barrier span is copied with its body.  Every other token is expanded:
+/// an assignment value becomes a reified list, a redirection target expands to
+/// one operand, and a word containing a forwarded site keeps that site while
+/// its other command substitutions are reified.  A word without a forwarded
+/// site expands into literal argv words.
+fn serialize_forwarded_program(
+    program: &wstr,
+    ctx: &mut OperationContext<'_>,
+    errors: &mut Option<&mut ParseErrorList>,
+) -> Result<WString, ExpandResult> {
+    let ast = ast::parse(program, Default::default(), None);
+    let barrier_spans = ast.top().barrier_block_spans();
+    let assignment_ranges: Vec<Range<usize>> = ast
+        .walk()
+        .filter_map(|node| match node.kind() {
+            AstKind::VariableAssignment(assignment) => {
+                assignment.range().map(|range| range.start()..range.end())
+            }
+            _ => None,
+        })
+        .collect();
+    serialized_source(
+        program,
+        0,
+        &barrier_spans,
+        |tokens, index, token_source, source_offset| {
+            let token_end = source_offset + token_source.len();
+            let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+            let rendered = if word_has_forwarded_substitution(token_source) {
+                reified_word_source(token_source, ctx, errors)?
+            } else if assignment_ranges
+                .iter()
+                .any(|range| range.start == source_offset && range.end == token_end)
+            {
+                let equals = variable_assignment_equals_pos(token_source)
+                    .expect("a parsed assignment word contains an equals sign");
+                let mut completions = CompletionList::new();
+                let result = expand_string(
+                    token_source[equals + 1..].to_owned(),
+                    &mut completions,
+                    ExpandFlags::default(),
+                    ctx,
+                    errors.as_deref_mut(),
+                );
+                if result.failed() {
+                    return Err(result);
+                }
+                let elements: Vec<WString> = completions
+                    .into_iter()
+                    .map(|completion| completion.completion)
+                    .collect();
+                let mut source = WString::new();
+                source.push_utfstr(&token_source[..equals + 1]);
+                source.push_utfstr(&reified_element_substitution(&elements, &Statuses::just(0)));
+                vec![source]
+            } else if index > 0 && tokens[index - 1].type_ == TokenType::Redirect {
+                let mut target = token_source.to_owned();
+                if !expand_one(
+                    &mut target,
+                    ExpandFlags::default(),
+                    ctx,
+                    errors.as_deref_mut(),
+                ) || target.is_empty()
+                {
+                    append_syntax_error!(
+                        errors,
+                        source_offset,
+                        "Invalid redirection target: %s",
+                        token_source
+                    );
+                    return Err(ExpandResult::make_error(STATUS_EXPAND_ERROR));
+                }
+                vec![completion_to_source(&target)]
+            } else {
+                expanded_word_source(token_source, ctx, errors)?
+            };
+            if let Some(errors) = errors.as_mut() {
+                for error in errors.iter_mut().skip(prior_errors) {
+                    if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                        error.source_start += source_offset;
+                    }
+                }
+            }
+            Ok(rendered)
+        },
+    )
+}
+
 /// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
 /// `out`, or any errors into `errors`. Return an expand result.
 pub fn expand_cmdsubst(
@@ -1176,7 +1356,7 @@ pub fn expand_cmdsubst(
     };
 
     if rendering == CmdsubstRendering::Reification
-        && program_has_barrier_block(&input[cmdsub.command_range()])
+        && program_has_barrier_dependency(&input[cmdsub.command_range()])
     {
         let opening = cmdsub.opening_paren_offset();
         let site_start = opening - cmdsub_dollar_run(&input, opening);
@@ -1186,6 +1366,25 @@ pub fn expand_cmdsubst(
                 site_end += slice_length;
             }
         }
+
+        let program_range = cmdsub.command_range();
+        let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+        let serialized_program =
+            match serialize_forwarded_program(&input[program_range.clone()], ctx, errors) {
+                Ok(serialized) => serialized,
+                Err(result) => return result,
+            };
+        if let Some(errors) = errors.as_mut() {
+            for error in errors.iter_mut().skip(prior_errors) {
+                if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                    error.source_start += program_range.start;
+                }
+            }
+        }
+        let mut site_source = WString::new();
+        site_source.push_utfstr(&input[site_start..opening + 1]);
+        site_source.push_utfstr(&serialized_program);
+        site_source.push_utfstr(&input[cmdsub.closing_paren_range().start..site_end]);
 
         let mut tail_input = input[site_end..].to_owned();
         if is_quoted {
@@ -1210,7 +1409,7 @@ pub fn expand_cmdsubst(
         for tail_item in tail_recv.take() {
             let mut whole_item = WString::new();
             whole_item.push_utfstr(&input[..site_start]);
-            whole_item.push_utfstr(&input[site_start..site_end]);
+            whole_item.push_utfstr(&site_source);
             if is_quoted {
                 whole_item.push(INTERNAL_SEPARATOR);
                 whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
