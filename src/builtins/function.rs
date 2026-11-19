@@ -5,6 +5,9 @@ use crate::complete::complete_add_wrapper;
 use crate::env::Environment as _;
 use crate::env::is_read_only;
 use crate::event::{self, EventDescription, EventHandler};
+use crate::function_header::{
+    EventKind, FUNCTION_HEADER_FLAGS, FunctionHeaderEffect, header_options, header_short_options,
+};
 use crate::global_safety::RelaxedAtomicBool;
 use crate::parse_execution::varname_error;
 use crate::parse_tree::NodeRef;
@@ -39,24 +42,6 @@ impl Default for Options {
     }
 }
 
-// This command is atypical in using the "-" (RETURN_IN_ORDER) option for flag parsing.
-// This is needed due to the semantics of the -a/--argument-names flag.
-const SHORT_OPTIONS: &wstr = L!("-a:d:e:hj:p:s:v:w:SV:");
-#[rustfmt::skip]
-const LONG_OPTIONS: &[WOption] = &[
-    wopt(L!("description"), ArgType::RequiredArgument, 'd'),
-    wopt(L!("on-signal"), ArgType::RequiredArgument, 's'),
-    wopt(L!("on-job-exit"), ArgType::RequiredArgument, 'j'),
-    wopt(L!("on-process-exit"), ArgType::RequiredArgument, 'p'),
-    wopt(L!("on-variable"), ArgType::RequiredArgument, 'v'),
-    wopt(L!("on-event"), ArgType::RequiredArgument, 'e'),
-    wopt(L!("wraps"), ArgType::RequiredArgument, 'w'),
-    wopt(L!("help"), ArgType::NoArgument, 'h'),
-    wopt(L!("argument-names"), ArgType::RequiredArgument, 'a'),
-    wopt(L!("no-scope-shadowing"), ArgType::NoArgument, 'S'),
-    wopt(L!("inherit-variable"), ArgType::RequiredArgument, 'V'),
-];
-
 /// Return the internal_job_id for a pid, or None if none.
 /// This looks through both active and finished jobs.
 fn job_id_for_pid(pid: Pid, parser: &Parser) -> Option<InternalJobId> {
@@ -70,6 +55,8 @@ fn job_id_for_pid(pid: Pid, parser: &Parser) -> Option<InternalJobId> {
     }
 }
 
+// This command is atypical in using the "-" (RETURN_IN_ORDER) option for flag parsing.
+// This is needed due to the semantics of the -a/--argument-names flag.
 /// Parses options to builtin function, populating opts.
 /// Returns an exit status.
 fn parse_cmd_opts(
@@ -81,7 +68,9 @@ fn parse_cmd_opts(
     let cmd = L!("function");
     let print_hints = false;
     let mut handling_named_arguments = false;
-    let mut w = WGetopter::new(SHORT_OPTIONS, LONG_OPTIONS, argv);
+    let short_options = header_short_options();
+    let options = header_options();
+    let mut w = WGetopter::new(&short_options, &options, argv);
 
     let mut validate_variable_name =
         |streams: &mut IoStreams, varname: &wstr, read_only_ok: bool| {
@@ -109,27 +98,73 @@ fn parse_cmd_opts(
     }
 
     while let Some(opt) = w.next_opt() {
-        // NON_OPTION_CHAR is returned when we reach a non-permuted non-option.
-        if opt != 'a' && opt != NON_OPTION_CHAR {
-            handling_named_arguments = false;
+        // A non-permuted non-option is a positional argument we got because we use
+        // RETURN_IN_ORDER.
+        if opt == NON_OPTION_CHAR {
+            let woptarg = w.woptarg.unwrap();
+            if handling_named_arguments {
+                add_named_argument(&mut validate_variable_name, streams, opts, woptarg)?;
+            } else {
+                err_fmt!("%s: unexpected positional argument", woptarg)
+                    .cmd(cmd)
+                    .finish(streams);
+                return Err(STATUS_INVALID_ARGS);
+            }
+            continue;
         }
-        match opt {
-            NON_OPTION_CHAR => {
-                // A positional argument we got because we use RETURN_IN_ORDER.
-                let woptarg = w.woptarg.unwrap();
-                if handling_named_arguments {
-                    add_named_argument(&mut validate_variable_name, streams, opts, woptarg)?;
-                } else {
-                    err_fmt!("%s: unexpected positional argument", woptarg)
-                        .cmd(cmd)
-                        .finish(streams);
-                    return Err(STATUS_INVALID_ARGS);
+
+        // Every other value is an option the declaration holds, or one of `wgetopt`'s own
+        // reports: the effect the option declares is what the loop reads, so a spelling
+        // cannot disagree with the classifier that reads the same declaration.
+        let Some(effect) = FUNCTION_HEADER_FLAGS
+            .iter()
+            .find(|flag| flag.short == opt)
+            .map(|flag| flag.effect)
+        else {
+            match opt {
+                ':' => {
+                    builtin_missing_argument(
+                        parser,
+                        streams,
+                        cmd,
+                        None,
+                        argv[w.wopt_index - 1],
+                        print_hints,
+                    );
+                }
+                ';' => {
+                    builtin_unexpected_argument(
+                        parser,
+                        streams,
+                        cmd,
+                        argv[w.wopt_index - 1],
+                        print_hints,
+                    );
+                }
+                '?' => {
+                    builtin_unknown_option(
+                        parser,
+                        streams,
+                        cmd,
+                        argv[w.wopt_index - 1],
+                        print_hints,
+                    );
+                }
+                other => {
+                    panic!("Unexpected retval from WGetopter: {}", other);
                 }
             }
-            'd' => {
+            return Err(STATUS_INVALID_ARGS);
+        };
+
+        if effect != FunctionHeaderEffect::ArgumentNames {
+            handling_named_arguments = false;
+        }
+        match effect {
+            FunctionHeaderEffect::Description => {
                 opts.description = w.woptarg.unwrap().to_owned();
             }
-            's' => {
+            FunctionHeaderEffect::Event(EventKind::Signal) => {
                 let Some(signal) = RawSignal::parse(w.woptarg.unwrap()) else {
                     err_fmt!("Unknown signal '%s'", w.woptarg.unwrap())
                         .cmd(cmd)
@@ -138,19 +173,19 @@ fn parse_cmd_opts(
                 };
                 opts.events.push(EventDescription::Signal { signal });
             }
-            'v' => {
+            FunctionHeaderEffect::Event(EventKind::Variable) => {
                 let name = w.woptarg.unwrap().to_owned();
                 validate_variable_name(streams, &name, /*read_only_ok=*/ true)?;
                 opts.events.push(EventDescription::Variable { name });
             }
-            'e' => {
+            FunctionHeaderEffect::Event(EventKind::Generic) => {
                 let param = w.woptarg.unwrap().to_owned();
                 opts.events.push(EventDescription::Generic { param });
             }
-            'j' | 'p' => {
+            FunctionHeaderEffect::Event(kind @ (EventKind::Job | EventKind::Process)) => {
                 let woptarg = w.woptarg.unwrap();
                 let e: EventDescription;
-                if opt == 'j' && woptarg == "caller" {
+                if kind == EventKind::Job && woptarg == "caller" {
                     let caller_id = if parser.scope().is_subshell {
                         parser.scope().caller_id
                     } else {
@@ -163,12 +198,12 @@ fn parse_cmd_opts(
                         return Err(STATUS_INVALID_ARGS);
                     }
                     e = EventDescription::CallerExit { caller_id };
-                } else if opt == 'p' && woptarg == "%self" {
+                } else if kind == EventKind::Process && woptarg == "%self" {
                     let pid = Pid::from_nullable_pid_unchecked(getpid());
                     e = EventDescription::ProcessExit { pid: Some(pid) };
                 } else {
                     let pid = parse_pid_may_be_zero(streams, cmd, woptarg)?;
-                    if opt == 'p' {
+                    if kind == EventKind::Process {
                         e = EventDescription::ProcessExit { pid };
                     } else {
                         // TODO: rationalize why a default of 0 is sensible.
@@ -183,7 +218,7 @@ fn parse_cmd_opts(
                 }
                 opts.events.push(e);
             }
-            'a' => {
+            FunctionHeaderEffect::ArgumentNames => {
                 handling_named_arguments = true;
                 add_named_argument(
                     &mut validate_variable_name,
@@ -192,47 +227,19 @@ fn parse_cmd_opts(
                     w.woptarg.unwrap(),
                 )?;
             }
-            'S' => {
+            FunctionHeaderEffect::NoScopeShadowing => {
                 opts.shadow_scope = false;
             }
-            'w' => {
+            FunctionHeaderEffect::Wraps => {
                 opts.wrap_targets.push(w.woptarg.unwrap().to_owned());
             }
-            'V' => {
+            FunctionHeaderEffect::InheritVariable => {
                 let woptarg = w.woptarg.unwrap();
                 validate_variable_name(streams, woptarg, /*read_only_ok=*/ false)?;
                 opts.inherit_vars.push(woptarg.to_owned());
             }
-            'h' => {
+            FunctionHeaderEffect::Help => {
                 opts.print_help = true;
-            }
-            ':' => {
-                builtin_missing_argument(
-                    parser,
-                    streams,
-                    cmd,
-                    None,
-                    argv[w.wopt_index - 1],
-                    print_hints,
-                );
-                return Err(STATUS_INVALID_ARGS);
-            }
-            ';' => {
-                builtin_unexpected_argument(
-                    parser,
-                    streams,
-                    cmd,
-                    argv[w.wopt_index - 1],
-                    print_hints,
-                );
-                return Err(STATUS_INVALID_ARGS);
-            }
-            '?' => {
-                builtin_unknown_option(parser, streams, cmd, argv[w.wopt_index - 1], print_hints);
-                return Err(STATUS_INVALID_ARGS);
-            }
-            other => {
-                panic!("Unexpected retval from WGetopter: {}", other);
             }
         }
     }

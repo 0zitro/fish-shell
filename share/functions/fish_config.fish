@@ -44,7 +44,16 @@ function fish_config --description "Launch fish's web based configuration"
                 set -lx __fish_terminal_color_theme $fish_terminal_color_theme
                 $python $web_config/webconfig.py
             end
-            __fish_data_with_directory tools/web_config '.*' __fish_config_webconfig
+            # The tool is a directory of files the server states: the data directory states them
+            # where it has them, and the assets embedded in the binary state them where it does
+            # not, as functions and completions are read from the first of those that has them.
+            # Serving the files where they stand is what makes loading the page again take up a
+            # change to one of them.
+            if test -f $__fish_data_dir/tools/web_config/webconfig.py
+                __fish_config_webconfig $__fish_data_dir/tools/web_config
+            else
+                __fish_data_with_directory tools/web_config '.*' __fish_config_webconfig
+            end
             __fish_with_status functions --erase __fish_config_webconfig
 
             # If the execution of 'webconfig.py' fails, display python location and return.

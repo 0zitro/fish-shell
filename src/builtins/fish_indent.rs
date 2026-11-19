@@ -8,7 +8,7 @@ use crate::{
     env::{EnvStack, Environment as _, env_init},
     err_fmt, err_str,
     global_safety::RelaxedAtomicBool,
-    highlight::{HighlightRole, HighlightSpec, colorize, highlight_shell},
+    highlight::{HighlightClassification, colorize_text, highlight_shell},
     locale::set_libc_locales,
     operation_context::OperationContext,
     panic::panic_handler,
@@ -23,6 +23,7 @@ use crate::{
 };
 use assert_matches::assert_matches;
 use fish_common::{ReadExt as _, UnescapeFlags, UnescapeStringStyle, unescape_string};
+use fish_token_scope::HighlightAttribute;
 use fish_wcstringutil::count_preceding_backslashes;
 use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
 use fish_widestring::{INTERNAL_SEPARATOR, bytes2wcstring, osstr2wcstring, wcs2bytes};
@@ -1019,6 +1020,8 @@ fn do_indent(
     let mut do_indent = true;
     let mut only_indent = false;
     let mut only_unindent = false;
+    // Whether the classification may resolve commands and paths, as the command line does.
+    let mut classify_with_io = false;
 
     let short_opts: &wstr = L!("+hvwic");
     let long_opts: &[WOption] = &[
@@ -1032,6 +1035,7 @@ fn do_indent(
         wopt(L!("html"), ArgType::NoArgument, '\x01'),
         wopt(L!("ansi"), ArgType::NoArgument, '\x02'),
         wopt(L!("pygments"), ArgType::NoArgument, '\x03'),
+        wopt(L!("io"), ArgType::NoArgument, '\x06'),
         wopt(L!("check"), ArgType::NoArgument, 'c'),
     ];
 
@@ -1062,6 +1066,7 @@ fn do_indent(
             '\x01' => output_type = OutputType::Html,
             '\x02' => output_type = OutputType::Ansi,
             '\x03' => output_type = OutputType::PygmentsCsv,
+            '\x06' => classify_with_io = true,
             'c' => output_type = OutputType::Check,
             ';' => {
                 err_fmt!(Error::UNEXP_OPT_ARG, w.argv[w.wopt_index - 1])
@@ -1128,7 +1133,7 @@ fn do_indent(
         }
 
         if output_type == OutputType::PygmentsCsv {
-            let output = make_pygments_csv(&src);
+            let output = make_pygments_csv(&src, classify_with_io);
             streams.out.append(&bytes2wcstring(&output));
             i += 1;
             continue;
@@ -1175,21 +1180,15 @@ fn do_indent(
         };
 
         // Maybe colorize.
-        let mut colors = vec![];
+        let mut classifications = vec![];
         if output_type != OutputType::PlainText {
-            highlight_shell(
-                &output_wtext,
-                &mut colors,
-                &mut OperationContext::globals(),
-                false,
-                None,
-            );
+            classifications = classify(&output_wtext, classify_with_io);
         }
 
         let mut colored_output = vec![];
         match output_type {
             OutputType::PlainText => {
-                colored_output = no_colorize(&output_wtext);
+                colored_output = wcs2bytes(&output_wtext);
             }
             OutputType::File => {
                 if output_wtext != src {
@@ -1210,10 +1209,11 @@ fn do_indent(
                 }
             }
             OutputType::Ansi => {
-                colored_output = colorize(&output_wtext, &colors, EnvStack::globals());
+                colored_output =
+                    colorize_text(&output_wtext, &classifications, EnvStack::globals());
             }
             OutputType::Html => {
-                colored_output = html_colorize(&output_wtext, &colors);
+                colored_output = colorize_html(&output_wtext, &classifications);
             }
             OutputType::PygmentsCsv => {
                 unreachable!()
@@ -1249,37 +1249,31 @@ fn read_file(mut f: impl Read) -> Result<WString, ()> {
 
 // Entry point for Pygments CSV output.
 // Our output is a newline-separated string.
-// Each line is of the form `start,end,role`
-// start and end is the half-open token range, value is a string from highlight_role_t.
+// Each line is of the form `start,end,path,enclosing,attributes`
+// start and end is the half-open token range, the path is the scope's dotted path,
+// `enclosing` is the enclosing scopes' paths most general first joined by `+`, and
+// `attributes` is the variables that the character's attributes carry joined by `+`.
 // Example:
-// 3,7,command
-fn make_pygments_csv(src: &wstr) -> Vec<u8> {
-    let mut colors = vec![];
-    highlight_shell(
-        src,
-        &mut colors,
-        &mut OperationContext::globals(),
-        false,
-        None,
-    );
+// 3,7,command.external,meta.function+meta.block,fish_color_valid_path
+fn make_pygments_csv(src: &wstr, io_ok: bool) -> Vec<u8> {
+    let classifications = classify(src, io_ok);
     assert_eq!(
-        colors.len(),
+        classifications.len(),
         src.len(),
-        "Colors and src should have same size"
+        "Classifications and src should have same size"
     );
 
     struct TokenRange {
         start: usize,
         end: usize,
-        role: HighlightRole,
+        classification: HighlightClassification,
     }
 
     let mut token_ranges: Vec<TokenRange> = vec![];
-    for (i, color) in colors.iter().copied().enumerate() {
-        let role = color.foreground;
+    for (i, classification) in classifications.iter().copied().enumerate() {
         // See if we can extend the last range.
         if let Some(last) = token_ranges.last_mut() {
-            if last.role == role && last.end == i {
+            if last.classification == classification && last.end == i {
                 last.end = i + 1;
                 continue;
             }
@@ -1288,16 +1282,75 @@ fn make_pygments_csv(src: &wstr) -> Vec<u8> {
         token_ranges.push(TokenRange {
             start: i,
             end: i + 1,
-            role,
+            classification,
         });
     }
 
     // Now render these to a string.
     let mut result = String::with_capacity(token_ranges.len() * 32);
     for range in token_ranges {
-        writeln!(result, "{},{},{}", range.start, range.end, range.role).unwrap();
+        let classification = range.classification;
+        let enclosing: Vec<&str> = classification
+            .enclosing()
+            .scopes()
+            .map(|scope| scope.entry().path)
+            .collect();
+        let attributes: Vec<String> = HighlightAttribute::entries()
+            .iter()
+            .filter(|entry| classification.attributes().has_attribute(entry.attribute))
+            .map(|entry| entry.variable_name.as_ref().to_string())
+            .collect();
+        writeln!(
+            result,
+            "{},{},{},{},{}",
+            range.start,
+            range.end,
+            classification.foreground(),
+            enclosing.join("+"),
+            attributes.join("+")
+        )
+        .unwrap();
     }
     result.into_bytes()
+}
+
+/// The classification of `text`, in the pass `io_ok` names.
+///
+/// The classifier insists on a background thread when it may do I/O, because the
+/// shell's reader must stay responsive; this process has no reader, but it runs the
+/// pass on a thread of its own all the same, so that the rule holds here too.
+fn classify(text: &wstr, io_ok: bool) -> Vec<HighlightClassification> {
+    if !io_ok {
+        let mut classifications = vec![];
+        highlight_shell(
+            text,
+            &mut classifications,
+            &mut OperationContext::globals(),
+            false,
+            None,
+        );
+        return classifications;
+    }
+
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let mut classifications = vec![];
+                highlight_shell(
+                    text,
+                    &mut classifications,
+                    &mut OperationContext::background(
+                        EnvStack::globals(),
+                        crate::operation_context::EXPANSION_LIMIT_BACKGROUND,
+                    ),
+                    true, /* io_ok */
+                    None,
+                );
+                classifications
+            })
+            .join()
+            .expect("the classification thread panics only on a bug")
+    })
 }
 
 // Entry point for prettification.
@@ -1323,47 +1376,32 @@ fn prettify(streams: &mut IoStreams, src: &wstr, do_indent: bool) -> WString {
     printer.prettify()
 }
 
-/// Given a string and list of colors of the same size, return the string with HTML span elements
-/// for the various colors.
-fn html_class_name_for_color(spec: HighlightSpec) -> &'static wstr {
-    match spec.foreground {
-        HighlightRole::Normal => L!("fish_color_normal"),
-        HighlightRole::Error => L!("fish_color_error"),
-        HighlightRole::Command => L!("fish_color_command"),
-        HighlightRole::Builtin => L!("fish_color_builtin"),
-        HighlightRole::Function => L!("fish_color_function"),
-        HighlightRole::StatementTerminator => L!("fish_color_statement_terminator"),
-        HighlightRole::Param => L!("fish_color_param"),
-        HighlightRole::Option => L!("fish_color_option"),
-        HighlightRole::Comment => L!("fish_color_comment"),
-        HighlightRole::SearchMatch => L!("fish_color_search_match"),
-        HighlightRole::Operat => L!("fish_color_operator"),
-        HighlightRole::Escape => L!("fish_color_escape"),
-        HighlightRole::Quote => L!("fish_color_quote"),
-        HighlightRole::Redirection => L!("fish_color_redirection"),
-        HighlightRole::Autosuggestion => L!("fish_color_autosuggestion"),
-        HighlightRole::Selection => L!("fish_color_selection"),
-        _ => L!("fish_color_other"),
-    }
+/// The HTML class name of one classification: the name of its foreground scope's variable.
+fn html_class_name(classification: HighlightClassification) -> &'static wstr {
+    classification.foreground().entry().variable_name.as_ref()
 }
 
-fn html_colorize(text: &wstr, colors: &[HighlightSpec]) -> Vec<u8> {
+fn colorize_html(text: &wstr, classifications: &[HighlightClassification]) -> Vec<u8> {
     if text.is_empty() {
         return vec![];
     }
 
-    assert_eq!(colors.len(), text.len());
+    assert_eq!(classifications.len(), text.len());
     let mut html = L!("<pre><code>").to_owned();
-    let mut last_color = HighlightSpec::new();
-    for (i, (wc, &color)) in text.chars().zip(colors).enumerate() {
-        // Handle colors.
-        if i > 0 && color != last_color {
+    let mut last_classification = HighlightClassification::default();
+    for (i, (wc, &classification)) in text.chars().zip(classifications).enumerate() {
+        // Handle the classification.
+        if i > 0 && classification != last_classification {
             html.push_str("</span>");
         }
-        if i == 0 || color != last_color {
-            sprintf!(=> &mut html, "<span class=\"%s\">", html_class_name_for_color(color));
+        if i == 0 || classification != last_classification {
+            sprintf!(
+                => &mut html,
+                "<span class=\"%s\">",
+                html_class_name(classification)
+            );
         }
-        last_color = color;
+        last_classification = classification;
 
         // Handle text.
         match wc {
@@ -1377,8 +1415,4 @@ fn html_colorize(text: &wstr, colors: &[HighlightSpec]) -> Vec<u8> {
     }
     html.push_str("</span></code></pre>");
     wcs2bytes(&html)
-}
-
-fn no_colorize(text: &wstr) -> Vec<u8> {
-    wcs2bytes(text)
 }

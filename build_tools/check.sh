@@ -110,6 +110,7 @@ if $lint; then
     fi
 
     PATH="$build_dir:$PATH" cargo xtask format --all --check
+    cargo xtask token-scopes --check
     for features in "" --no-default-features --all-features; do
         cargo clippy --workspace --all-targets $features
     done

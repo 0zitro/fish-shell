@@ -3,19 +3,62 @@
 use crate::{
     complete::Completion,
     editable_line::EditableLine,
-    highlight::{HighlightRole, HighlightSpec, highlight_shell},
+    highlight::{HighlightClassification, highlight_shell},
     operation_context::OperationContext,
     prelude::*,
-    screen::{CharOffset, Line, ScreenData, wcswidth_rendered, wcwidth_rendered},
+    screen::{
+        CharOffset, HighlightLine, HighlightScreenContent, wcswidth_rendered, wcwidth_rendered,
+    },
     termsize::Termsize,
 };
 use fish_common::{EscapeFlags, EscapeStringStyle, escape_string};
+use fish_token_scope::{HighlightAttribute, TokenScopeId};
 use fish_wcstringutil::string_fuzzy_match_string;
 use fish_widestring::{ELLIPSIS_CHAR, decoded_width};
 use std::{
     borrow::Cow,
     collections::{HashMap, hash_map::Entry},
 };
+
+/// Which part of a row a segment shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PagerRowPart {
+    Background,
+    Prefix,
+    Completion,
+    Description,
+}
+
+/// Which row of the pager a segment belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PagerRowState {
+    Plain,
+    Secondary,
+    Selected,
+}
+
+impl PagerRowPart {
+    /// The declared scope that colors this part in this row state.
+    pub fn scope_for_state(self, state: PagerRowState) -> TokenScopeId {
+        use PagerRowPart::{Background, Completion, Description, Prefix};
+        use PagerRowState::{Plain, Secondary, Selected};
+
+        match (self, state) {
+            (Background, Plain) => TokenScopeId::BACKGROUND,
+            (Background, Secondary) => TokenScopeId::SECONDARY_BACKGROUND,
+            (Background, Selected) => TokenScopeId::SELECTED_BACKGROUND,
+            (Prefix, Plain) => TokenScopeId::PREFIX,
+            (Prefix, Secondary) => TokenScopeId::SECONDARY_PREFIX,
+            (Prefix, Selected) => TokenScopeId::SELECTED_PREFIX,
+            (Completion, Plain) => TokenScopeId::COMPLETION,
+            (Completion, Secondary) => TokenScopeId::SECONDARY_COMPLETION,
+            (Completion, Selected) => TokenScopeId::SELECTED_COMPLETION,
+            (Description, Plain) => TokenScopeId::DESCRIPTION,
+            (Description, Secondary) => TokenScopeId::SECONDARY_DESCRIPTION,
+            (Description, Selected) => TokenScopeId::SELECTED_DESCRIPTION,
+        }
+    }
+}
 
 /// Represents rendering from the pager.
 #[derive(Default)]
@@ -27,7 +70,7 @@ pub struct PageRendering {
     pub row_start: usize,
     pub row_end: usize,
     pub selected_completion_idx: Option<usize>,
-    pub screen_data: ScreenData,
+    pub screen_data: HighlightScreenContent,
 
     pub remaining_to_disclose: usize,
 
@@ -293,11 +336,12 @@ impl Pager {
 
         if !progress_text.is_empty() {
             let line = rendering.screen_data.add_line();
-            let spec = HighlightSpec::with_both(HighlightRole::PagerProgress);
+            let progress =
+                HighlightClassification::of_scopes(TokenScopeId::PROGRESS, TokenScopeId::PROGRESS);
             print_max(
                 CharOffset::None,
                 progress_text.chars(),
-                spec,
+                progress,
                 term_width,
                 /*has_more=*/ true,
                 line,
@@ -320,14 +364,14 @@ impl Pager {
         let search_field = rendering.screen_data.insert_line_at_index(0);
 
         // We limit the width to term_width - 1.
-        let mut underline = HighlightSpec::new();
-        underline.force_underline = true;
+        let underline =
+            HighlightClassification::default().with_attribute(HighlightAttribute::ForcedUnderline);
 
         let mut search_field_remaining = term_width - 1;
         search_field_remaining -= print_max(
             CharOffset::None,
             wgettext!(SEARCH_FIELD_PROMPT).chars().chain(" ".chars()),
-            HighlightSpec::new(),
+            HighlightClassification::default(),
             search_field_remaining,
             false,
             search_field,
@@ -449,7 +493,11 @@ impl Pager {
 
                 // If there's more to come, append two spaces.
                 if col_idx + 1 < col_count {
-                    line.append_str(PAGER_SPACER_STRING, HighlightSpec::new(), CharOffset::None);
+                    line.append_str(
+                        PAGER_SPACER_STRING,
+                        HighlightClassification::default(),
+                        CharOffset::None,
+                    );
                 }
 
                 // Append this to the real line.
@@ -470,9 +518,9 @@ impl Pager {
         col: Column,
         secondary: bool,
         selected: bool,
-    ) -> Line {
+    ) -> HighlightLine {
         let mut comp_width;
-        let mut line_data = Line::new();
+        let mut line_data = HighlightLine::new();
 
         if c.preferred_width() <= col.width {
             // The entry fits, we give it as much space as it wants.
@@ -496,32 +544,27 @@ impl Pager {
             assert!(comp_width <= col.width);
         }
 
-        let modify_role = |role: HighlightRole| {
-            let mut base = role as u8;
-            if selected {
-                base += HighlightRole::PagerSelectedBackground as u8
-                    - HighlightRole::PagerBackground as u8;
-            } else if secondary {
-                base += HighlightRole::PagerSecondaryBackground as u8
-                    - HighlightRole::PagerBackground as u8;
-            }
-            unsafe { std::mem::transmute(base) }
+        let state = if selected {
+            PagerRowState::Selected
+        } else if secondary {
+            PagerRowState::Secondary
+        } else {
+            PagerRowState::Plain
         };
 
-        let bg_role = modify_role(HighlightRole::PagerBackground);
-        let bg = HighlightSpec::with_bg(bg_role);
-        let prefix_col = HighlightSpec::with_fg_bg(
-            modify_role(if self.highlight_prefix {
-                HighlightRole::PagerPrefix
-            } else {
-                HighlightRole::PagerCompletion
-            }),
-            bg_role,
-        );
-        let comp_col =
-            HighlightSpec::with_fg_bg(modify_role(HighlightRole::PagerCompletion), bg_role);
-        let desc_col =
-            HighlightSpec::with_fg_bg(modify_role(HighlightRole::PagerDescription), bg_role);
+        let background = PagerRowPart::Background.scope_for_state(state);
+        let bg = HighlightClassification::from(background);
+        let part = |part: PagerRowPart| {
+            HighlightClassification::of_scopes(part.scope_for_state(state), background)
+        };
+
+        let prefix_col = part(if self.highlight_prefix {
+            PagerRowPart::Prefix
+        } else {
+            PagerRowPart::Completion
+        });
+        let comp_col = part(PagerRowPart::Completion);
+        let desc_col = part(PagerRowPart::Description);
 
         // Print the completion part
         let mut comp_remaining = comp_width;
@@ -551,14 +594,16 @@ impl Pager {
                 offset_in_cmdline,
                 comp.chars(),
                 |i| {
-                    if c.colors.is_empty() {
+                    if c.classifications.is_empty() {
                         return comp_col; // Not a shell command.
                     }
                     if selected {
                         // Rendered in reverse video, so avoid highlighting.
                         return comp_col;
                     }
-                    *c.colors.get(i).unwrap_or(c.colors.last().unwrap())
+                    *c.classifications
+                        .get(i)
+                        .unwrap_or(c.classifications.last().unwrap())
                 },
                 comp_remaining,
                 i + 1 < c.comp.len(),
@@ -597,18 +642,10 @@ impl Pager {
             );
 
             assert!(desc_remaining >= 2);
-            let paren_col = HighlightSpec::with_fg_bg(
-                if selected {
-                    HighlightRole::PagerSelectedCompletion
-                } else {
-                    HighlightRole::PagerCompletion
-                },
-                bg_role,
-            );
             desc_remaining -= print_max(
                 offset_in_cmdline,
                 "(".chars(),
-                paren_col,
+                comp_col,
                 1,
                 false,
                 &mut line_data,
@@ -624,7 +661,7 @@ impl Pager {
             desc_remaining -= print_max(
                 offset_in_cmdline,
                 ")".chars(),
-                paren_col,
+                comp_col,
                 1,
                 false,
                 &mut line_data,
@@ -1082,8 +1119,8 @@ pub struct PagerComp {
     pub desc: WString,
     /// The representative completion.
     pub representative: Completion,
-    /// The per-character highlighting, used when this is a full shell command.
-    pub colors: Vec<HighlightSpec>,
+    /// The per-character classification, used when this is a full shell command.
+    pub classifications: Vec<HighlightClassification>,
     /// On-screen width of the completion string.
     pub comp_width: usize,
     /// On-screen width of the description information.
@@ -1132,17 +1169,17 @@ fn divide_round_up(numer: usize, denom: usize) -> usize {
 /// string can't be fitted, ellipsize it.
 ///
 /// \param chars characters to print
-/// \param color the color to apply to every printed character
+/// \param classification_of_character the classification to apply to every printed character
 /// \param max the maximum space that may be used for printing
 /// \param has_more if this flag is true, this is not the entire string, and the string should be
 /// ellipsized even if the string fits but takes up the whole space.
 fn print_max_impl(
     offset_in_cmdline: CharOffset,
     chars: impl IntoIterator<Item = char>,
-    color: impl Fn(usize) -> HighlightSpec,
+    classification_of_character: impl Fn(usize) -> HighlightClassification,
     max: usize,
     has_more: bool,
-    line: &mut Line,
+    line: &mut HighlightLine,
 ) -> usize {
     let mut chars = chars.into_iter().peekable();
     let mut remaining = max;
@@ -1159,12 +1196,12 @@ fn print_max_impl(
 
         let ellipsis = ELLIPSIS_CHAR;
         if (width_c == remaining) && (has_more || chars.peek().is_some()) {
-            line.append(ellipsis, color(i), offset_in_cmdline);
+            line.append(ellipsis, classification_of_character(i), offset_in_cmdline);
             remaining = remaining.saturating_sub(wcwidth_rendered(ellipsis).unwrap());
             break;
         }
 
-        line.append(c, color(i), offset_in_cmdline);
+        line.append(c, classification_of_character(i), offset_in_cmdline);
         remaining = remaining.checked_sub(width_c).unwrap();
 
         i += 1;
@@ -1177,12 +1214,19 @@ fn print_max_impl(
 fn print_max(
     offset_in_cmdline: CharOffset,
     chars: impl IntoIterator<Item = char>,
-    color: HighlightSpec,
+    classification: HighlightClassification,
     max: usize,
     has_more: bool,
-    line: &mut Line,
+    line: &mut HighlightLine,
 ) -> usize {
-    print_max_impl(offset_in_cmdline, chars, |_| color, max, has_more, line)
+    print_max_impl(
+        offset_in_cmdline,
+        chars,
+        |_| classification,
+        max,
+        has_more,
+        line,
+    )
 }
 
 /// Trim leading and trailing whitespace, and compress other whitespace runs into a single space.
@@ -1277,22 +1321,22 @@ fn process_completions_into_infos(lst: &[Completion]) -> Vec<PagerComp> {
         ));
         // HACK We want to render a full shell command, with syntax highlighting.  Above we
         // escape nonprintables, which might make the rendered command longer than the original
-        // completion. In that case we get wrong colors.  However this should only happen in
-        // contrived cases, since our symbolic escaping uses a single character to represent
-        // newline and tab characters; other nonprintables are extremely rare in a command
-        // line.
+        // completion. In that case the classifications no longer line up.  However this should only
+        // happen in contrived cases, since our symbolic escaping uses a single character to
+        // represent newline and tab characters; other nonprintables are extremely rare in a
+        // command line.
         // We should probably fix this by first highlighting the original completion, and
         // then writing a variant of escape_string() that adjusts highlighting according
         // so it matches the escaped string.
         if comp.replaces_line() {
             highlight_shell(
                 &comp.completion,
-                &mut comp_info.colors,
+                &mut comp_info.classifications,
                 &mut OperationContext::empty(),
                 false,
                 None,
             );
-            assert!(comp_info.comp.last().unwrap().len() >= comp_info.colors.len());
+            assert!(comp_info.comp.last().unwrap().len() >= comp_info.classifications.len());
         }
 
         // Append the mangled description.
