@@ -1126,6 +1126,9 @@ msgstr ""
 msgid "Refcell dynamic borrowing"
 msgstr ""
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr ""
@@ -1257,6 +1260,13 @@ msgid "Stop the currently evaluated function"
 msgstr "Zatrzymaj obecnie używaną funkcję"
 
 msgid "Stop the innermost loop"
+msgstr ""
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
 msgstr ""
 
 msgid "Synchronized file access"
@@ -1496,6 +1506,9 @@ msgid "Urgent socket condition"
 msgstr ""
 
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
+msgstr ""
+
+msgid "Use --force to override. This might hang your terminal."
 msgstr ""
 
 msgid "User defined signal 1"
@@ -3411,9 +3424,6 @@ msgid "Strings are not identical"
 msgstr ""
 
 msgid "Suppress function and builtin lookup"
-msgstr ""
-
-msgid "Suspend the current shell."
 msgstr ""
 
 msgid "TRAP handler: debug prompt"

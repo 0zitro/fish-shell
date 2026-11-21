@@ -1151,6 +1151,9 @@ msgstr "回收内部 (非 fork) 进程"
 msgid "Refcell dynamic borrowing"
 msgstr "RefCell 动态借用"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "正则表达式编译错误：%s"
@@ -1283,6 +1286,13 @@ msgstr "停止当前求值的函数"
 
 msgid "Stop the innermost loop"
 msgstr "停止最内层循环"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "同步文件访问"
@@ -1522,6 +1532,9 @@ msgstr "紧急套接字情况"
 
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "使用 'disown PID' 从列表中删除作业而不终止它们。"
+
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
 
 msgid "User defined signal 1"
 msgstr "用户定义的信号1"
@@ -3437,9 +3450,6 @@ msgstr "字符串不相同"
 
 msgid "Suppress function and builtin lookup"
 msgstr "禁止函数和内建命令查询"
-
-msgid "Suspend the current shell."
-msgstr "挂起当前 shell。"
 
 msgid "TRAP handler: debug prompt"
 msgstr "TRAP 处理函数：调试提示符"

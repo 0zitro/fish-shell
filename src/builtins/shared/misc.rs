@@ -334,6 +334,10 @@ const BUILTIN_DATAS: &[BuiltinData] = &[
         func: string::string,
     },
     BuiltinData {
+        name: L!("suspend"),
+        func: suspend::suspend,
+    },
+    BuiltinData {
         name: L!("switch"),
         func: builtin_generic,
     },
@@ -532,6 +536,7 @@ pub fn builtin_get_desc(name: &wstr) -> Option<&'static wstr> {
         _ if name == "source" => wgettext!("Evaluate contents of file"),
         _ if name == "status" => wgettext!("Return status information about fish"),
         _ if name == "string" => wgettext!("Manipulate strings"),
+        _ if name == "suspend" => wgettext!("Suspend the current shell"),
         _ if name == "switch" => wgettext!("Conditionally run blocks of code"),
         _ if name == "test" => wgettext!("Test a condition"),
         _ if name == "time" => wgettext!("Measure how long a command or block takes"),

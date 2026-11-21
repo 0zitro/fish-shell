@@ -1129,6 +1129,9 @@ msgstr "内部(フォークされていない)プロセスの回収"
 msgid "Refcell dynamic borrowing"
 msgstr "RefCell の動的借用"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "正規表現のコンパイルエラー: %s"
@@ -1261,6 +1264,13 @@ msgstr "現在評価中の関数を停止"
 
 msgid "Stop the innermost loop"
 msgstr "最も内側のループを停止"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "同期されたファイルアクセス"
@@ -1500,6 +1510,9 @@ msgstr "緊急のソケット状態(SIGURG)"
 
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "ジョブを終了させずにリストから削除するには 'disown PID' を使用してください"
+
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
 
 msgid "User defined signal 1"
 msgstr "ユーザー定義シグナル 1(SIGUSR1)"
@@ -3419,9 +3432,6 @@ msgstr "文字列が一致しない"
 
 msgid "Suppress function and builtin lookup"
 msgstr "関数および組み込みコマンドの検索を抑制"
-
-msgid "Suspend the current shell."
-msgstr "現在のシェルを中断(suspend)"
 
 msgid "TRAP handler: debug prompt"
 msgstr "トラップハンドラ: デバッグプロンプト"

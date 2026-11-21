@@ -1130,6 +1130,9 @@ msgstr "Recolectando procesos internos (sin fork)"
 msgid "Refcell dynamic borrowing"
 msgstr "Préstamo dinámico de refcell"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "Error al compilar la expresión regular: %s"
@@ -1262,6 +1265,13 @@ msgstr "Detener la función actualmente evaluada"
 
 msgid "Stop the innermost loop"
 msgstr "Detener el bucle más interno"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "Acceso sincronizado a archivos"
@@ -1501,6 +1511,9 @@ msgstr "Condición urgente de socket"
 
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "Usa ‘disown PID’ para remover trabajos de la lista sin terminarlos."
+
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
 
 msgid "User defined signal 1"
 msgstr "Señal definida por el usuario 1"
@@ -3415,9 +3428,6 @@ msgid "Strings are not identical"
 msgstr ""
 
 msgid "Suppress function and builtin lookup"
-msgstr ""
-
-msgid "Suspend the current shell."
 msgstr ""
 
 msgid "TRAP handler: debug prompt"

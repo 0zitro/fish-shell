@@ -1259,6 +1259,9 @@ msgstr ""
 msgid "Refcell dynamic borrowing"
 msgstr ""
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "Erreur de compilation de l’expression régulière: %s"
@@ -1391,6 +1394,13 @@ msgstr "Arrêter la fonction actuellement en évaluation"
 
 msgid "Stop the innermost loop"
 msgstr "Arrêter la boucle interne"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr ""
@@ -1630,6 +1640,9 @@ msgstr "Condition urgente de socket"
 
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "Utilisez « disown PID » pour retirer des tâches de la liste sans les abréger"
+
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
 
 msgid "User defined signal 1"
 msgstr "Signal défini par l’utilisateur 1"
@@ -3545,9 +3558,6 @@ msgstr ""
 
 msgid "Suppress function and builtin lookup"
 msgstr ""
-
-msgid "Suspend the current shell."
-msgstr "Suspendre le shell actuel"
 
 msgid "TRAP handler: debug prompt"
 msgstr ""

@@ -1125,6 +1125,9 @@ msgstr "收割內部（非分叉的）行程"
 msgid "Refcell dynamic borrowing"
 msgstr "Refcell 動態借用"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "正則表示式編譯錯誤：%s"
@@ -1257,6 +1260,13 @@ msgstr "停止目前執行的函式"
 
 msgid "Stop the innermost loop"
 msgstr "停止最內層的迴圈"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "同步檔案存取"
@@ -1496,6 +1506,9 @@ msgstr "緊急插口狀況"
 
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "使用「disown PID」從列表中移除作業而不將其終止。"
+
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
 
 msgid "User defined signal 1"
 msgstr "使用者定義訊號 1"
@@ -3412,9 +3425,6 @@ msgstr "字串不一致"
 
 msgid "Suppress function and builtin lookup"
 msgstr "抑制尋找函式和內建命令"
-
-msgid "Suspend the current shell."
-msgstr "暫停此 shell。"
 
 msgid "TRAP handler: debug prompt"
 msgstr "TRAP 處理器：除錯提示"

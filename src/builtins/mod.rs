@@ -42,6 +42,7 @@ pub mod set_color;
 pub mod source;
 pub mod status;
 pub mod string;
+pub mod suspend;
 pub mod test;
 pub mod r#true;
 pub mod r#type;
