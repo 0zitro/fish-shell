@@ -1,4 +1,4 @@
-# RUN: %fish %s
+# RUN: fish=%fish %fish %s
 
 # The command is a builtin: the shell records the stream itself.
 builtin -q suspend
@@ -39,3 +39,73 @@ set -l large_handle (seq 20000 | suspend)
 string match -qr '^\^[0-9]+$' -- $large_handle
 echo large_handle=$status
 # CHECK: large_handle=0
+
+# resume writes the suspended stream to its own output.
+set -l first_handle (echo 1 | cat --show-all | suspend)
+resume $first_handle
+# CHECK: 1$
+
+# A stage after resume reads the stream directly.
+set -l second_handle (echo 1 | cat --show-all | suspend | command cat)
+resume $second_handle | command cat --show-all
+# CHECK: 1$$
+
+# The stream reaches a command substitution.
+set -l capture_handle (printf 'one\ntwo\n' | suspend)
+set -l captured (resume $capture_handle)
+echo captured=(string join , -- $captured)
+# CHECK: captured=one,two
+
+# resume waits for a stream larger than the pipe buffer.
+set -l large_resume_handle (seq 20000 | suspend)
+set -l line_count (resume $large_resume_handle | command wc -l)
+echo lines=(string trim -- $line_count)
+# CHECK: lines=20000
+
+# Nested fd-pipe stages suspend two descriptors of one pipeline.
+# The `1>| suspend` must be the inner stage: a suspend writes its handle to the
+# fd 1 of its enclosing context, so an outer `1>| suspend` would record the
+# inner handle instead of the stream. Each suspend writes its own handle to its
+# own redirection, so the two streams are recovered independently.
+set -l stdout_handle_file (mktemp)
+set -l stderr_handle_file (mktemp)
+begin
+    begin
+        echo stdout >&1
+        echo stderr >&2
+    end 1>| suspend >$stdout_handle_file
+end 2>| suspend >$stderr_handle_file
+set -l stdout_handle (cat $stdout_handle_file)
+set -l stderr_handle (cat $stderr_handle_file)
+rm -f $stdout_handle_file $stderr_handle_file
+string match -qr '^\^[0-9]+$' -- $stdout_handle $stderr_handle
+echo split_handles=$status
+# CHECK: split_handles=0
+resume $stdout_handle
+# CHECK: stdout
+resume $stderr_handle
+# CHECK: stderr
+
+# A handle denotes one suspension.
+$fish -c 'set -l h (printf x | suspend); resume $h >/dev/null; resume $h' 2>/dev/null
+echo consumed=$status
+# CHECK: consumed=1
+
+# A failed resume leaves the handle usable.
+set -l retry_handle (printf 'retry\n' | suspend)
+resume $retry_handle extra 2>/dev/null
+echo usage_status=$status
+# CHECK: usage_status=2
+resume $retry_handle
+# CHECK: retry
+
+# A malformed or unknown handle is rejected.
+$fish -c 'resume ^999' 2>/dev/null
+echo unknown=$status
+# CHECK: unknown=1
+$fish -c 'resume not-a-handle' 2>/dev/null
+echo malformed=$status
+# CHECK: malformed=2
+$fish -c 'resume' 2>/dev/null
+echo missing_handle=$status
+# CHECK: missing_handle=2

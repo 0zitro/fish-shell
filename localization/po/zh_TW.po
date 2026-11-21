@@ -474,6 +474,9 @@ msgstr "命令名稱無效"
 msgid "Conditionally run blocks of code"
 msgstr "有條件地執行程式碼區塊"
 
+msgid "Consume a suspended stream"
+msgstr ""
+
 msgid "Continue previously stopped process"
 msgstr "繼續先前停止的行程"
 
@@ -1735,6 +1738,21 @@ msgstr "只支援 f1 至 f%d，不包括「f%s」"
 #, c-format
 msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr "或者連續按下 ctrl-%c 或 ctrl-%c 兩次。"
+
+#, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+#, c-format
+msgid "resume: %s records no standard input stream"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
 
 #, c-format
 msgid "rows %u to %u of %u"

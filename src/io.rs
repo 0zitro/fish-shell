@@ -664,6 +664,14 @@ pub enum OutputStream {
 }
 
 impl OutputStream {
+    /// Return the file descriptor this stream writes to, if it writes to one.
+    pub fn fd(&self) -> Option<RawFd> {
+        match self {
+            OutputStream::Fd(stream) => Some(stream.fd()),
+            OutputStream::Null | OutputStream::String(_) | OutputStream::Buffered(_) => None,
+        }
+    }
+
     /// Return any internally buffered contents.
     /// This is only implemented for a string_output_stream; others flush data to their underlying
     /// receiver (fd, or separated buffer) immediately and so will return an empty string here.
@@ -761,6 +769,11 @@ impl FdOutputStream {
     pub fn new(fd: RawFd) -> Self {
         assert!(fd >= 0, "Invalid fd");
         FdOutputStream { fd, errored: false }
+    }
+
+    /// Return the file descriptor this stream writes to.
+    pub fn fd(&self) -> RawFd {
+        self.fd
     }
 
     fn append(&mut self, s: impl IntoCharIter) -> bool {

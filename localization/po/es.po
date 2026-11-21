@@ -480,6 +480,9 @@ msgstr "El nombre del comando era inválido"
 msgid "Conditionally run blocks of code"
 msgstr "Ejecutar bloques de código condicionalmente"
 
+msgid "Consume a suspended stream"
+msgstr ""
+
 msgid "Continue previously stopped process"
 msgstr "Continuar el proceso detenido previamente"
 
@@ -1740,6 +1743,21 @@ msgstr "solo se soportan f1 hasta f%d, no ‘f%s’"
 #, c-format
 msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr "o presiona ctrl-%c o ctrl-%c dos veces seguidas."
+
+#, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+#, c-format
+msgid "resume: %s records no standard input stream"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
 
 #, c-format
 msgid "rows %u to %u of %u"

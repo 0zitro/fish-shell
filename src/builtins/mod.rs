@@ -36,6 +36,7 @@ pub mod pwd;
 pub mod random;
 pub mod read;
 pub mod realpath;
+pub mod resume;
 pub mod r#return;
 pub mod set;
 pub mod set_color;

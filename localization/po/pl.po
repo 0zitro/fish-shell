@@ -476,6 +476,9 @@ msgstr ""
 msgid "Conditionally run blocks of code"
 msgstr ""
 
+msgid "Consume a suspended stream"
+msgstr ""
+
 msgid "Continue previously stopped process"
 msgstr "Kontynuuj wcześniej zatrzymany proces"
 
@@ -1735,6 +1738,21 @@ msgstr ""
 
 #, c-format
 msgid "or press ctrl-%c or ctrl-%c twice in a row."
+msgstr ""
+
+#, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+#, c-format
+msgid "resume: %s records no standard input stream"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
 msgstr ""
 
 #, c-format

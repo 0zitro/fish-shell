@@ -479,6 +479,9 @@ msgstr "コマンド名が無効でした"
 msgid "Conditionally run blocks of code"
 msgstr "条件に応じてコードブロックを実行"
 
+msgid "Consume a suspended stream"
+msgstr ""
+
 msgid "Continue previously stopped process"
 msgstr "以前に停止されたプロセスを再開します"
 
@@ -1739,6 +1742,21 @@ msgstr "f1からf%dまでのみサポートされています。'f%s'はサポ�
 #, c-format
 msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr "または ctrl-%c か ctrl-%c を連続して2回押してください"
+
+#, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+#, c-format
+msgid "resume: %s records no standard input stream"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
 
 #, c-format
 msgid "rows %u to %u of %u"
