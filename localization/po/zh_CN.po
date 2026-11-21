@@ -456,6 +456,9 @@ msgstr "无法指定多种正则匹配规则"
 msgid "Cannot specify multiple set-cursor options"
 msgstr "无法指定多个 set-cursor 选项"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr "分配切片时无法使用 --append 或 --prepend"
 

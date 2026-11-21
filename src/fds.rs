@@ -285,6 +285,13 @@ impl AsRawFd for BorrowedFdFile {
     }
 }
 
+impl AsFd for BorrowedFdFile {
+    #[inline]
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
 impl IntoRawFd for BorrowedFdFile {
     #[inline]
     fn into_raw_fd(self) -> RawFd {

@@ -435,6 +435,9 @@ msgstr "No se pueden especificar múltiples patrones de regex"
 msgid "Cannot specify multiple set-cursor options"
 msgstr "No se pueden especificar múltiples opciones de set-cursor"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr "No se puede usar --append o --prepend al asignar a una porción (*slice*)"
 

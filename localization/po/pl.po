@@ -431,6 +431,9 @@ msgstr ""
 msgid "Cannot specify multiple set-cursor options"
 msgstr ""
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr ""
 

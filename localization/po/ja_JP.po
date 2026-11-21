@@ -434,6 +434,9 @@ msgstr "複数の正規表現パターンを指定することはできません
 msgid "Cannot specify multiple set-cursor options"
 msgstr "複数の set-cursor オプションを指定することはできません"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr "スライスへの代入時に --append または --prepend を使用することはできません"
 

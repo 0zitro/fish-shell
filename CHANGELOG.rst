@@ -23,6 +23,7 @@ Scripting improvements
 ----------------------
 - ``command``, ``builtin``, ``exec`` and ``time`` now accept a ``--`` separator between the keyword and the command name, so for example ``command -- -q`` runs a command literally called ``-q`` (:issue:`9941`).
 - Command substitutions are now allowed in command position, for example ``$(echo echo) hello world`` (:issue:`12829`).`
+- ``suspend`` now records the stream on its standard input when that input is redirected, writes a suspension handle, and leaves the pipeline running in the background.
 
 Regression fixes:
 -----------------

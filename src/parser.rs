@@ -23,7 +23,9 @@ use crate::{
     parse_execution::{EndExecutionReason, ExecutionContext},
     parse_tree::{NodeRef, ParsedSourceRef, SourceLineCache, parse_source},
     prelude::*,
-    proc::{InternalJobId, Job, JobGroupRef, Pid, ProcStatus, job_reap},
+    proc::{
+        InternalJobId, Job, JobGroupRef, Pid, ProcStatus, Suspension, SuspensionHandle, job_reap,
+    },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
@@ -403,6 +405,9 @@ pub struct Parser {
     /// and have been reaped, but may still be wait'ed on.
     wait_handles: WaitHandleStore,
 
+    /// The suspensions whose shell ends are open, for a later `resume`.
+    suspensions: Vec<Suspension>,
+
     /// The list of blocks.
     /// This is a stack; the topmost block is at the end. This is to avoid invalidating block
     /// indexes during recursive evaluation.
@@ -462,6 +467,7 @@ impl Parser {
             current_filename: ScopedRefCell::new(None),
             job_list: Default::default(),
             wait_handles: Default::default(),
+            suspensions: Default::default(),
             block_list: Default::default(),
             variables,
             scoped_data: ScopedCell::new(ScopedData::default()),
@@ -891,6 +897,25 @@ impl Parser {
 
     pub fn jobs_mut(&mut self) -> &mut Vec<Rc<Job>> {
         &mut self.job_list
+    }
+
+    /// Record a suspension for a later `resume`.
+    pub fn add_suspension(&mut self, suspension: Suspension) {
+        self.suspensions.push(suspension);
+    }
+
+    /// Take the suspension that `handle` denotes, if this shell records it.
+    pub fn take_suspension(&mut self, handle: SuspensionHandle) -> Option<Suspension> {
+        let index = self
+            .suspensions
+            .iter()
+            .position(|suspension| suspension.handle == handle)?;
+        Some(self.suspensions.remove(index))
+    }
+
+    /// Return how many suspensions this shell records.
+    pub fn suspension_count(&self) -> usize {
+        self.suspensions.len()
     }
 
     /// Get the variables.

@@ -435,6 +435,9 @@ msgstr "Maximal ein regulärer Ausdruck erlaubt"
 msgid "Cannot specify multiple set-cursor options"
 msgstr "Maximal eine set-cursor-Option erlaubt"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr ""
 

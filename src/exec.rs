@@ -35,6 +35,7 @@ use crate::prelude::*;
 use crate::proc::{
     InternalProc, Job, JobGroupRef, Pid, ProcStatus, Process, ProcessType, hup_jobs,
     is_interactive_session, jobs_requiring_warning_on_exit, no_exec, print_exit_warning_for_jobs,
+    process_mark_finished_children,
 };
 use crate::reader::{reader_run_count, restore_term_mode};
 use crate::redirection::{Dup2List, dup2_list_resolve_chain};
@@ -124,6 +125,8 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
     // Get the deferred process, if any. We will have to remember its pipes.
     let mut deferred_pipes = PartialPipes::default();
     let deferred_process = get_deferred_process(job);
+    let suspension_count = parser.suspension_count();
+    let mut suspended_at = None;
 
     // We may want to transfer tty ownership to the pgroup leader.
     let mut handoff = TtyHandoff::new(|| {});
@@ -188,6 +191,9 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
             break;
         }
         procs_launched += 1;
+        if suspended_at.is_none() && parser.suspension_count() != suspension_count {
+            suspended_at = Some(i);
+        }
 
         // Transfer tty?
         if p.leads_pgrp && job.group().wants_terminal() {
@@ -224,6 +230,9 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
         {
             job.processes()[dp].mark_aborted_before_launch();
         }
+        if suspended_at.is_none() && parser.suspension_count() != suspension_count {
+            suspended_at = Some(dp);
+        }
     }
 
     flogf!(
@@ -250,7 +259,26 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
     }
 
     if !job.is_initially_background() {
-        job.continue_job(parser, Some(&block_io));
+        if let Some(suspend_index) = suspended_at {
+            // The stages after the suspending stage are its consumers and run to completion; the
+            // stages before it produce the suspended stream and keep running, and a later `resume`
+            // waits for that stream.
+            while job.processes()[suspend_index + 1..]
+                .iter()
+                .any(|p| !p.is_completed() && !p.is_stopped())
+            {
+                process_mark_finished_children(parser, true, Some(&block_io));
+            }
+            if let Some(statuses) = job.statuses() {
+                parser.set_last_statuses(statuses);
+                parser.libdata_mut().status_count += 1;
+            }
+            if !job.is_completed() {
+                job.group().set_is_foreground(false);
+            }
+        } else {
+            job.continue_job(parser, Some(&block_io));
+        }
     }
 
     if job.is_stopped() {

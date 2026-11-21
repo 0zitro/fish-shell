@@ -1,16 +1,22 @@
 //! Implementation of the `suspend` builtin.
 
 use super::prelude::*;
-use crate::proc::{get_login, is_interactive_session};
+use crate::proc::{Suspension, get_login, is_interactive_session};
 use crate::wutil::perror_nix;
+use libc::STDIN_FILENO;
 use nix::sys::signal::{Signal, kill};
-use nix::unistd::getpid;
+use nix::unistd::{dup, getpid};
+use std::os::fd::AsFd as _;
 
-/// Suspend the current shell.
+/// Suspend the current shell, or record the stream its input carries.
 ///
 /// The shell stops itself with `SIGSTOP` rather than `SIGTSTP`: an interactive shell ignores
 /// `SIGTSTP`, and the stop is what returns control to the controlling process. `SIGCONT` resumes
 /// the shell.
+///
+/// When standard input is directly redirected, the command records the shell's own copy of the
+/// input descriptor as a suspension and writes the handle that denotes it. The input is the stream
+/// a pipe delivers, whatever stage follows.
 pub fn suspend(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) -> BuiltinResult {
     let cmd = argv[0];
 
@@ -51,6 +57,28 @@ pub fn suspend(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr])
 
     if print_help {
         builtin_print_help(parser, streams, cmd);
+        return Ok(SUCCESS);
+    }
+
+    if streams.stdin_is_directly_redirected {
+        let Some(stdin_file) = streams.stdin_file.as_ref() else {
+            streams
+                .err
+                .appendln(wgettext!("Cannot suspend a closed standard input"));
+            return Err(STATUS_CMD_ERROR);
+        };
+        let shell_end = match dup(stdin_file.as_fd()) {
+            Ok(shell_end) => shell_end,
+            Err(err) => {
+                perror_nix("dup", err);
+                return Err(STATUS_CMD_ERROR);
+            }
+        };
+        let mut suspension = Suspension::new();
+        suspension.record_descriptor(STDIN_FILENO, shell_end);
+        let handle = suspension.handle;
+        parser.add_suspension(suspension);
+        streams.out.appendln(&handle.to_wstring());
         return Ok(SUCCESS);
     }
 
