@@ -1773,11 +1773,10 @@ msgstr ""
 msgid "resume: %s is not a suspension handle"
 msgstr ""
 
-#, c-format
-msgid "resume: %s records no standard input stream"
+msgid "resume: expected one suspension handle"
 msgstr ""
 
-msgid "resume: expected one suspension handle"
+msgid "resume: the suspension records no stream"
 msgstr ""
 
 #, c-format
@@ -1808,6 +1807,27 @@ msgstr "子命令不接受选项"
 #, c-format
 msgid "successfully set universal '%s'; but a global by that name shadows it"
 msgstr "成功设置通用变量 '%s' ；但是同名全局变量遮蔽它"
+
+#, c-format
+msgid "suspend: %s: descriptor bound twice"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: expected FD, FD:in or FD:out"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: standard descriptors are suspended already"
+msgstr ""
+
+msgid "suspend: --fd requires a source pipeline"
+msgstr ""
+
+msgid "suspend: the command form is not a pipeline stage"
+msgstr ""
+
+msgid "suspend: the joined source is not one foreground pipeline"
+msgstr ""
 
 #, c-format
 msgid "switch: Expected at most one argument, got %u"

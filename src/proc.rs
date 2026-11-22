@@ -638,32 +638,69 @@ impl ToWString for SuspensionHandle {
     }
 }
 
+/// The descriptors a suspension records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuspensionForm {
+    /// One pipeline stage's input stream, recorded as descriptor 0.
+    Stream,
+    /// A command pipeline's descriptors 0, 1 and 2.
+    Command,
+}
+
+/// Which side of a recorded pipe the suspended pipeline uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuspensionDirection {
+    /// The suspended command reads the descriptor; the shell holds the write end.
+    In,
+    /// The suspended command writes the descriptor; the shell holds the read end.
+    Out,
+}
+
 /// The shell's ends of the pipes whose other ends a suspended command has, for each descriptor the
 /// command had there.
 pub struct Suspension {
     /// The handle a later `resume` consumes.
     pub handle: SuspensionHandle,
-    /// The shell's end of the pipe for each suspended descriptor.
-    descriptors: BTreeMap<RawFd, OwnedFd>,
+    /// The descriptors the suspension records.
+    pub form: SuspensionForm,
+    /// The shell's end of the pipe and the side the suspended command uses, for each suspended
+    /// descriptor.
+    descriptors: BTreeMap<RawFd, (SuspensionDirection, OwnedFd)>,
 }
 
 impl Suspension {
-    /// Record a new suspension, with no descriptor yet.
-    pub fn new() -> Self {
+    /// Record a new suspension of `form`, with no descriptor yet.
+    pub fn new(form: SuspensionForm) -> Self {
         Suspension {
             handle: SuspensionHandle::allocate(),
+            form,
             descriptors: BTreeMap::new(),
         }
     }
 
     /// Record the shell's end of the pipe for `descriptor_fd`.
-    pub fn record_descriptor(&mut self, descriptor_fd: RawFd, shell_end: OwnedFd) {
-        self.descriptors.insert(descriptor_fd, shell_end);
+    pub fn record_descriptor(
+        &mut self,
+        descriptor_fd: RawFd,
+        direction: SuspensionDirection,
+        shell_end: OwnedFd,
+    ) {
+        self.descriptors
+            .insert(descriptor_fd, (direction, shell_end));
     }
 
-    /// Take the shell's end of the pipe for `descriptor_fd`.
-    pub fn take_descriptor(&mut self, descriptor_fd: RawFd) -> Option<OwnedFd> {
+    /// Take the shell's end of the pipe for `descriptor_fd` and the side the suspended command
+    /// uses.
+    pub fn take_descriptor(
+        &mut self,
+        descriptor_fd: RawFd,
+    ) -> Option<(SuspensionDirection, OwnedFd)> {
         self.descriptors.remove(&descriptor_fd)
+    }
+
+    /// Take every recorded descriptor of this suspension.
+    pub fn take_all_descriptors(&mut self) -> BTreeMap<RawFd, (SuspensionDirection, OwnedFd)> {
+        std::mem::take(&mut self.descriptors)
     }
 }
 

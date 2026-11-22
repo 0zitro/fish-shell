@@ -25,6 +25,7 @@ Scripting improvements
 - Command substitutions are now allowed in command position, for example ``$(echo echo) hello world`` (:issue:`12829`).`
 - ``suspend`` now records the stream on its standard input when that input is redirected, writes a suspension handle, and leaves the pipeline running in the background.
 - The new ``resume`` builtin consumes a suspension handle and links the suspended stream to its own output.
+- ``suspend`` now starts a command pipeline as one job with its standard descriptors suspended, with ``--fd FD[:in|out]`` binding further descriptors, and ``resume`` connects each recorded descriptor to its own descriptor of the same number.
 
 Regression fixes:
 -----------------

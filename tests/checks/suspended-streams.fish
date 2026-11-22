@@ -109,3 +109,47 @@ echo malformed=$status
 $fish -c 'resume' 2>/dev/null
 echo missing_handle=$status
 # CHECK: missing_handle=2
+
+# The command form starts its source as one pipeline with the standard descriptors suspended.
+set -l command_handle (suspend echo command)
+resume $command_handle
+# CHECK: command
+
+# Its standard error is suspended as one stream.
+set -l error_file (mktemp)
+set -l error_handle (suspend command ls /definitely-not-here)
+resume $error_handle >/dev/null 2>$error_file
+test -s $error_file
+echo command_stderr=$status
+# CHECK: command_stderr=0
+rm -f $error_file
+
+# Its standard input comes from the resuming command's standard input.
+set -l feed_handle (suspend cat)
+echo fed | resume $feed_handle
+# CHECK: fed
+
+# A bound output descriptor is one spliced stream across the stages of the source.
+set -l output_handle (suspend --fd 5 'echo one >&5 | echo two >&5')
+resume $output_handle 5>| command sort
+# CHECK: one
+# CHECK: two
+
+# A bound input descriptor reads from the descriptor the resuming command opens.
+set -l input_file (mktemp)
+echo hello >$input_file
+set -l input_handle (suspend --fd 5:in 'cat <&5')
+resume $input_handle 5<$input_file
+# CHECK: hello
+rm -f $input_file
+
+# A binding defaults to output; the standard descriptors and unknown directions are rejected.
+$fish -c 'suspend --fd 1 echo x' 2>/dev/null
+echo bind_standard=$status
+# CHECK: bind_standard=2
+$fish -c 'suspend --fd 5:x echo x' 2>/dev/null
+echo bind_direction=$status
+# CHECK: bind_direction=2
+$fish -c 'suspend --fd 5 --fd 5 echo x' 2>/dev/null
+echo bind_duplicate=$status
+# CHECK: bind_duplicate=2

@@ -575,7 +575,23 @@ impl Parser {
         let job_list = ps.top_job_list();
         if !job_list.is_empty() {
             // Execute the top job list.
-            self.eval_node(&job_list, io, job_group, block_type)
+            self.eval_node(&job_list, io, job_group, block_type, false)
+        } else {
+            let status = ProcStatus::from_exit_code(self.last_status());
+            EvalRes {
+                status,
+                break_expand: false,
+                was_empty: true,
+                no_status: true,
+            }
+        }
+    }
+
+    /// Evaluate the parsed source with its top-level job started in the background.
+    pub fn eval_parsed_source_background(&mut self, ps: &ParsedSourceRef, io: &IoChain) -> EvalRes {
+        let job_list = ps.top_job_list();
+        if !job_list.is_empty() {
+            self.eval_node(&job_list, io, None, BlockType::Top, true)
         } else {
             let status = ProcStatus::from_exit_code(self.last_status());
             EvalRes {
@@ -639,6 +655,7 @@ impl Parser {
         block_io: &IoChain,
         job_group: Option<&JobGroupRef>,
         block_type: BlockType,
+        background_job: bool,
     ) -> EvalRes {
         // Only certain blocks are allowed.
         assert_matches!(
@@ -695,7 +712,11 @@ impl Parser {
         op_ctx.cancel_checker = cancel_checker;
 
         // Create a new execution context.
-        let mut execution_ctx = ExecutionContext::new(node.parsed_source_ref(), block_io.clone());
+        let mut execution_ctx = if background_job {
+            ExecutionContext::new_with_background_job(node.parsed_source_ref(), block_io.clone())
+        } else {
+            ExecutionContext::new(node.parsed_source_ref(), block_io.clone())
+        };
 
         // Check the exec count so we know if anything got executed.
         let exec_counts = |ctx: &mut OperationContext<'_>| {

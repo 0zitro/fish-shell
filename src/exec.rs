@@ -1046,7 +1046,7 @@ fn get_performer_for_block_node(p: &Process, job: &Job, io_chain: &IoChain) -> B
     let node = node.clone();
     Box::new(move |parser: &mut Parser, _out, _err| {
         parser
-            .eval_node(&node, &io_chain, job_group.as_ref(), BlockType::Top)
+            .eval_node(&node, &io_chain, job_group.as_ref(), BlockType::Top, false)
             .status
     })
 }
@@ -1066,7 +1066,13 @@ fn get_performer_for_function(p: &Process, job: &Job, io_chain: &IoChain) -> Box
         // Pull out the job list from the function.
         let fb = function_prepare_environment(parser, argv, &props);
         let body_node = props.func_node.child_ref(|n| &n.jobs);
-        let mut res = parser.eval_node(&body_node, &io_chain, job_group.as_ref(), BlockType::Top);
+        let mut res = parser.eval_node(
+            &body_node,
+            &io_chain,
+            job_group.as_ref(),
+            BlockType::Top,
+            false,
+        );
         function_restore_environment(parser, fb);
 
         // If the function did not execute anything, treat it as success.

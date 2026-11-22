@@ -538,6 +538,25 @@ impl IoChain {
         self.0.iter().rev().find(|data| data.fd() == fd).cloned()
     }
 
+    /// Follow this chain's redirections for `fd` down to a descriptor of the shell.
+    ///
+    /// Returns `None` when the chain closes the descriptor or redirects it to an in-process
+    /// buffer, and the descriptor itself when the chain does not mention it.
+    pub fn resolve_fd(&self, fd: RawFd) -> Option<RawFd> {
+        let mut current = fd;
+        for _ in 0..64 {
+            let Some(io) = self.io_for_fd(current) else {
+                return Some(current);
+            };
+            match io.io_mode() {
+                IoMode::Close | IoMode::BufferFill => return None,
+                IoMode::Fd => current = io.source_fd(),
+                IoMode::Pipe | IoMode::File => return Some(io.source_fd()),
+            }
+        }
+        None
+    }
+
     /// Attempt to resolve a list of redirection specs to IOs, appending to 'this'.
     /// Return true on success, false on error, in which case an error will have been printed.
     #[allow(clippy::collapsible_else_if)]
