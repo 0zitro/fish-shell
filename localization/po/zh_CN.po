@@ -328,6 +328,9 @@ msgstr "--entire 和 --index 互斥"
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr "--invert 和 --groups-only 互斥"
 
+msgid "--pid and --signal are mutually exclusive"
+msgstr ""
+
 msgid "--query and --names are mutually exclusive"
 msgstr "--query 和 --names 互斥"
 
@@ -407,6 +410,9 @@ msgstr "错误的系统调用"
 msgid "Block of code to run conditionally"
 msgstr "有条件运行的代码块"
 
+msgid "Blocked"
+msgstr ""
+
 msgid "Broken pipe"
 msgstr "断开的管道"
 
@@ -461,6 +467,9 @@ msgstr "分配切片时无法使用 --append 或 --prepend"
 
 msgid "Cannot use stdin (fd 0) as pipe output"
 msgstr "无法使用 stdin (fd 0) 作为管道输出"
+
+msgid "Caught"
+msgstr ""
 
 msgid "Change working directory"
 msgstr "改变工作目录"
@@ -749,6 +758,9 @@ msgstr "%s 的主目录"
 
 msgid "I/O on asynchronous file descriptor is possible"
 msgstr "在异步文件描述符上的 I/O 是可行的"
+
+msgid "Ignored"
+msgstr ""
 
 #, c-format
 msgid "Illegal file descriptor in redirection '%s'"
@@ -1069,6 +1081,12 @@ msgstr "解析 fish 文脚本中的选项"
 
 msgid "Parsing fish AST"
 msgstr "解析 fish AST"
+
+msgid "Pending (process)"
+msgstr ""
+
+msgid "Pending (thread)"
+msgstr ""
 
 msgid "Perform a command multiple times"
 msgstr "多次执行一条命令"
@@ -1619,6 +1637,10 @@ msgid "cannot find process \"%s\""
 msgstr ""
 
 #, c-format
+msgid "cannot open %s"
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr "无法解析键 '%s'"
 
@@ -1694,6 +1716,9 @@ msgstr "在事件处理程序：%s"
 msgid "in function '%s'"
 msgstr "在函数 '%s' 中"
 
+msgid "invalid PID argument"
+msgstr ""
+
 #, c-format
 msgid "invalid field width: %s"
 msgstr "无效的字段宽度：%s"
@@ -1728,6 +1753,10 @@ msgstr "无效的下划线样式：%s"
 msgid "job %d ('%s') was stopped and has been signalled to continue."
 msgstr "作业 %d ('%s') 已停止并收到继续信号。"
 
+#, c-format
+msgid "kill from fish %s"
+msgstr ""
+
 msgid "line/column index starts at 1"
 msgstr "行/列索引从1开始"
 
@@ -1753,6 +1782,10 @@ msgstr "缺少子命令"
 msgid "not enough arguments"
 msgstr ""
 
+#, c-format
+msgid "not signalling pid %d, it has no userspace handler for signal %d"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr "没有可选项"
 
@@ -1776,6 +1809,10 @@ msgstr "范围只能是：universal（通用）function（函数）global（全�
 
 msgid "search:"
 msgstr "搜索:"
+
+#, c-format
+msgid "sending signal %d to pid %d"
+msgstr ""
 
 #, c-format
 msgid "sending signal to %s failed: %s"
@@ -1814,8 +1851,15 @@ msgstr ""
 msgid "there is no line %s"
 msgstr "不存在行 %s"
 
+msgid "too few arguments"
+msgstr ""
+
 msgid "too many arguments"
 msgstr "参数太多"
+
+#, c-format
+msgid "unexpected sigmask format: %s"
+msgstr ""
 
 msgid "unexported"
 msgstr "未导出"
@@ -3224,7 +3268,7 @@ msgstr "需要参数"
 msgid "Require parameter and don't use file completion"
 msgstr "需要参数而不使用文件补全"
 
-msgid "Resolve PIDs from other users' too"
+msgid "Resolve names from other users too"
 msgstr ""
 
 msgid "Resolve symbolic links before changing directory"
@@ -3398,6 +3442,9 @@ msgstr ""
 msgid "Show seconds since the modification time"
 msgstr "显示自修改时间以来的秒数"
 
+msgid "Show signal state for a PID"
+msgstr ""
+
 msgid "Show the process ID of each process in the job"
 msgstr "显示作业中每个进程的进程 ID"
 
@@ -3406,6 +3453,9 @@ msgstr "显示不可用的键位绑定/清除所有绑定"
 
 msgid "Show variable"
 msgstr "显示变量"
+
+msgid "Signal only processes with a handler"
+msgstr ""
 
 msgid "Signal to send"
 msgstr ""
@@ -3574,9 +3624,6 @@ msgstr "使用正则表达式而不是通配符"
 
 msgid "Use shell tokenization rules when splitting"
 msgstr "拆分时使用 shell 标记规则"
-
-msgid "Use sigqueue(2) rather than kill(2)"
-msgstr ""
 
 msgid "Use the portable output format"
 msgstr "使用可移植输出格式"

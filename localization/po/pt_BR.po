@@ -308,6 +308,9 @@ msgstr ""
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr ""
 
+msgid "--pid and --signal are mutually exclusive"
+msgstr ""
+
 msgid "--query and --names are mutually exclusive"
 msgstr ""
 
@@ -387,6 +390,9 @@ msgstr "Chamada de sistema ruim"
 msgid "Block of code to run conditionally"
 msgstr ""
 
+msgid "Blocked"
+msgstr ""
+
 msgid "Broken pipe"
 msgstr "Pipe sem saída"
 
@@ -441,6 +447,9 @@ msgstr ""
 
 msgid "Cannot use stdin (fd 0) as pipe output"
 msgstr "Não pode usar entrada padrão (fd 0) como saída de pipe"
+
+msgid "Caught"
+msgstr ""
 
 msgid "Change working directory"
 msgstr "Muda diretório de trabalho"
@@ -729,6 +738,9 @@ msgstr "Diretório de usuário para %s"
 
 msgid "I/O on asynchronous file descriptor is possible"
 msgstr "E/S em descritor de arquivo assíncrono possível"
+
+msgid "Ignored"
+msgstr ""
 
 #, c-format
 msgid "Illegal file descriptor in redirection '%s'"
@@ -1048,6 +1060,12 @@ msgid "Parse options in fish script"
 msgstr "Parsear opções em um script fish"
 
 msgid "Parsing fish AST"
+msgstr ""
+
+msgid "Pending (process)"
+msgstr ""
+
+msgid "Pending (thread)"
 msgstr ""
 
 msgid "Perform a command multiple times"
@@ -1599,6 +1617,10 @@ msgid "cannot find process \"%s\""
 msgstr ""
 
 #, c-format
+msgid "cannot open %s"
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr ""
 
@@ -1674,6 +1696,9 @@ msgstr ""
 msgid "in function '%s'"
 msgstr ""
 
+msgid "invalid PID argument"
+msgstr ""
+
 #, c-format
 msgid "invalid field width: %s"
 msgstr "tamanho de campo inválido: %s"
@@ -1708,6 +1733,10 @@ msgstr ""
 msgid "job %d ('%s') was stopped and has been signalled to continue."
 msgstr ""
 
+#, c-format
+msgid "kill from fish %s"
+msgstr ""
+
 msgid "line/column index starts at 1"
 msgstr ""
 
@@ -1733,6 +1762,10 @@ msgstr ""
 msgid "not enough arguments"
 msgstr ""
 
+#, c-format
+msgid "not signalling pid %d, it has no userspace handler for signal %d"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr ""
 
@@ -1756,6 +1789,10 @@ msgstr ""
 
 msgid "search:"
 msgstr "procurar:"
+
+#, c-format
+msgid "sending signal %d to pid %d"
+msgstr ""
 
 #, c-format
 msgid "sending signal to %s failed: %s"
@@ -1794,7 +1831,14 @@ msgstr ""
 msgid "there is no line %s"
 msgstr ""
 
+msgid "too few arguments"
+msgstr ""
+
 msgid "too many arguments"
+msgstr ""
+
+#, c-format
+msgid "unexpected sigmask format: %s"
 msgstr ""
 
 msgid "unexported"
@@ -3204,7 +3248,7 @@ msgstr "Require parameter"
 msgid "Require parameter and don't use file completion"
 msgstr ""
 
-msgid "Resolve PIDs from other users' too"
+msgid "Resolve names from other users too"
 msgstr ""
 
 msgid "Resolve symbolic links before changing directory"
@@ -3378,6 +3422,9 @@ msgstr ""
 msgid "Show seconds since the modification time"
 msgstr ""
 
+msgid "Show signal state for a PID"
+msgstr ""
+
 msgid "Show the process ID of each process in the job"
 msgstr ""
 
@@ -3385,6 +3432,9 @@ msgid "Show unavailable key bindings/erase all bindings"
 msgstr ""
 
 msgid "Show variable"
+msgstr ""
+
+msgid "Signal only processes with a handler"
 msgstr ""
 
 msgid "Signal to send"
@@ -3553,9 +3603,6 @@ msgid "Use regex instead of globs"
 msgstr ""
 
 msgid "Use shell tokenization rules when splitting"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use the portable output format"

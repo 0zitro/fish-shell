@@ -307,6 +307,9 @@ msgstr "--entire und --index können nicht gleichzeitig verwendet werden"
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr "--invert und --groups-only können nicht gleichzeitig verwendet werden"
 
+msgid "--pid and --signal are mutually exclusive"
+msgstr ""
+
 msgid "--query and --names are mutually exclusive"
 msgstr ""
 
@@ -386,6 +389,9 @@ msgstr "Fehlerhafter Systemaufruf"
 msgid "Block of code to run conditionally"
 msgstr "Einen Block Befehle zur bedingten Ausführung"
 
+msgid "Blocked"
+msgstr ""
+
 msgid "Broken pipe"
 msgstr "zerstörte Pipe"
 
@@ -440,6 +446,9 @@ msgstr ""
 
 msgid "Cannot use stdin (fd 0) as pipe output"
 msgstr "Kann stdin (fd 0) nicht zur Ausgabe einer Pipe verwenden"
+
+msgid "Caught"
+msgstr ""
 
 msgid "Change working directory"
 msgstr "Arbeitsverzeichnis wechseln"
@@ -728,6 +737,9 @@ msgstr "Heimordner für %s"
 
 msgid "I/O on asynchronous file descriptor is possible"
 msgstr "E/A auf asynchronem Dateideskriptor ist möglich"
+
+msgid "Ignored"
+msgstr ""
 
 #, c-format
 msgid "Illegal file descriptor in redirection '%s'"
@@ -1047,6 +1059,12 @@ msgid "Parse options in fish script"
 msgstr "Optionen in einem Fishskript parsen"
 
 msgid "Parsing fish AST"
+msgstr ""
+
+msgid "Pending (process)"
+msgstr ""
+
+msgid "Pending (thread)"
 msgstr ""
 
 msgid "Perform a command multiple times"
@@ -1598,6 +1616,10 @@ msgid "cannot find process \"%s\""
 msgstr ""
 
 #, c-format
+msgid "cannot open %s"
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr ""
 
@@ -1673,6 +1695,9 @@ msgstr "im Ereignis-Handler: %s"
 msgid "in function '%s'"
 msgstr "in der Funktion '%s'"
 
+msgid "invalid PID argument"
+msgstr ""
+
 #, c-format
 msgid "invalid field width: %s"
 msgstr "Ungültige Feldlänge: %s"
@@ -1707,6 +1732,10 @@ msgstr ""
 msgid "job %d ('%s') was stopped and has been signalled to continue."
 msgstr ""
 
+#, c-format
+msgid "kill from fish %s"
+msgstr ""
+
 msgid "line/column index starts at 1"
 msgstr ""
 
@@ -1732,6 +1761,10 @@ msgstr "fehlender Unterbefehl"
 msgid "not enough arguments"
 msgstr ""
 
+#, c-format
+msgid "not signalling pid %d, it has no userspace handler for signal %d"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr ""
 
@@ -1755,6 +1788,10 @@ msgstr ""
 
 msgid "search:"
 msgstr "Suche:"
+
+#, c-format
+msgid "sending signal %d to pid %d"
+msgstr ""
 
 #, c-format
 msgid "sending signal to %s failed: %s"
@@ -1793,8 +1830,15 @@ msgstr ""
 msgid "there is no line %s"
 msgstr ""
 
+msgid "too few arguments"
+msgstr ""
+
 msgid "too many arguments"
 msgstr "zu viele Argumente"
+
+#, c-format
+msgid "unexpected sigmask format: %s"
+msgstr ""
 
 msgid "unexported"
 msgstr "nicht exportiert"
@@ -3203,7 +3247,7 @@ msgstr "Parameter anfordern"
 msgid "Require parameter and don't use file completion"
 msgstr ""
 
-msgid "Resolve PIDs from other users' too"
+msgid "Resolve names from other users too"
 msgstr ""
 
 msgid "Resolve symbolic links before changing directory"
@@ -3377,6 +3421,9 @@ msgstr ""
 msgid "Show seconds since the modification time"
 msgstr ""
 
+msgid "Show signal state for a PID"
+msgstr ""
+
 msgid "Show the process ID of each process in the job"
 msgstr ""
 
@@ -3384,6 +3431,9 @@ msgid "Show unavailable key bindings/erase all bindings"
 msgstr ""
 
 msgid "Show variable"
+msgstr ""
+
+msgid "Signal only processes with a handler"
 msgstr ""
 
 msgid "Signal to send"
@@ -3552,9 +3602,6 @@ msgid "Use regex instead of globs"
 msgstr ""
 
 msgid "Use shell tokenization rules when splitting"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use the portable output format"

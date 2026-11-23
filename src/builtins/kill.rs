@@ -7,10 +7,19 @@
 
 use super::prelude::*;
 use crate::err_fmt;
-use fish_widestring::str2wcstring;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt as _;
 
 /// The status util-linux returns when some targets were signalled and some failed.
 const KILL_EXIT_SOMEOK: c_int = 64;
+
+localizable_consts!(
+    KILL_PENDING_THREAD "Pending (thread)"
+    KILL_PENDING_PROCESS "Pending (process)"
+    KILL_BLOCKED "Blocked"
+    KILL_IGNORED "Ignored"
+    KILL_CAUGHT "Caught"
+);
 
 /// One entry of the signal namespace printed by `-l` and `-L`.
 struct SignalName {
@@ -205,11 +214,128 @@ fn print_signal_name(streams: &mut IoStreams, signal: SignalNumber, newline: boo
     }
 }
 
-fn print_signal_mask(streams: &mut IoStreams, mask: u64) {
+fn print_signal_mask(streams: &mut IoStreams, mask: u64, separator: char) {
+    for bit in 0..u64::BITS {
+        if mask & (1 << bit) != 0 {
+            streams.out.append(&signal_name_for((bit + 1) as i32));
+            streams.out.append(&separator.to_string());
+        }
+    }
+}
+
+fn print_signal_mask_lines(streams: &mut IoStreams, mask: u64) {
     for bit in 0..u64::BITS {
         if mask & (1 << bit) != 0 {
             print_signal_name(streams, SignalNumber::new((bit + 1) as i32), true);
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_name(pid: i32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let start = stat.find('(')? + 1;
+    let end = stat[start..].find(')')? + start;
+    Some(stat[start..end].to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn process_sigcatch(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let end = stat.rfind(')')? + 1;
+    let fields: Vec<&str> = stat[end..].split_whitespace().collect();
+    u64::from_str_radix(fields.get(31)?, 16).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn matching_process_ids(name: &wstr, all_users: bool) -> Vec<i32> {
+    let name = name.to_string();
+    let uid = unsafe { libc::getuid() };
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        if !all_users {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.uid() != uid {
+                continue;
+            }
+        }
+        if process_name(pid).is_some_and(|candidate| candidate == name) {
+            result.push(pid);
+        }
+    }
+    result
+}
+
+#[cfg(not(target_os = "linux"))]
+fn matching_process_ids(_name: &wstr, _all_users: bool) -> Vec<i32> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn signal_has_handler(pid: i32, signal: SignalNumber) -> bool {
+    if signal.code() == 0 {
+        return true;
+    }
+    let Some(sigcatch) = process_sigcatch(pid) else {
+        return false;
+    };
+    let bit = u32::try_from(signal.code() - 1).ok();
+    bit.is_some_and(|bit| sigcatch & (1u64 << bit) != 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn signal_has_handler(_pid: i32, _signal: SignalNumber) -> bool {
+    true
+}
+
+fn print_process_signal_state(streams: &mut IoStreams, pid: i32) -> BuiltinResult {
+    #[cfg(target_os = "linux")]
+    {
+        let path = format!("/proc/{pid}/status");
+        let Ok(status) = std::fs::read_to_string(&path) else {
+            err_fmt!("cannot open %s", path).finish(streams);
+            return Err(STATUS_CMD_ERROR);
+        };
+
+        let fields = [
+            ("SigPnd:", KILL_PENDING_THREAD),
+            ("ShdPnd:", KILL_PENDING_PROCESS),
+            ("SigBlk:", KILL_BLOCKED),
+            ("SigIgn:", KILL_IGNORED),
+            ("SigCgt:", KILL_CAUGHT),
+        ];
+        for line in status.lines() {
+            for (key, label) in &fields {
+                if let Some(value) = line.strip_prefix(key) {
+                    let value = value.trim();
+                    let Ok(mask) = u64::from_str_radix(value, 16) else {
+                        err_fmt!("unexpected sigmask format: %s", value).finish(streams);
+                        continue;
+                    };
+                    if mask != 0 {
+                        streams.out.append(wgettext!(label));
+                        streams.out.append(L!(": "));
+                        print_signal_mask(streams, mask, ' ');
+                        streams.out.append(L!("\n"));
+                    }
+                }
+            }
+        }
+        Ok(SUCCESS)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (streams, pid);
+        Err(STATUS_CMD_ERROR)
     }
 }
 
@@ -309,7 +435,7 @@ fn print_signal_list(streams: &mut IoStreams, argument: Option<&wstr>) -> Builti
             err_fmt!("invalid sigmask format: %s", argument).finish(streams);
             return Err(STATUS_CMD_ERROR);
         };
-        print_signal_mask(streams, mask);
+        print_signal_mask_lines(streams, mask);
         return Ok(SUCCESS);
     }
 
@@ -327,9 +453,9 @@ fn print_signal_table(streams: &mut IoStreams) -> BuiltinResult {
 }
 
 fn print_kill_version(streams: &mut IoStreams) -> BuiltinResult {
-    streams.out.append(L!("kill from fish "));
-    streams.out.append(&str2wcstring(crate::BUILD_VERSION));
-    streams.out.appendln(L!(""));
+    streams
+        .out
+        .appendln(&wgettext_fmt!("kill from fish %s", crate::BUILD_VERSION));
     Ok(SUCCESS)
 }
 
@@ -364,6 +490,10 @@ fn signal_argument_and_targets(
     let command = argv[0];
     let mut signal = SignalNumber::new(libc::SIGTERM);
     let mut do_kill = false;
+    let mut do_pid = false;
+    let mut all_users = false;
+    let mut require_handler = false;
+    let mut verbose = false;
     let mut index = 1;
 
     while index < argv.len() {
@@ -396,7 +526,60 @@ fn signal_argument_and_targets(
         if argument == "-L" || argument == "--table" {
             return print_signal_table(streams);
         }
+        if argument == "-a" || argument == "--all" {
+            all_users = true;
+            index += 1;
+            continue;
+        }
+        if argument == "-r" || argument == "--require-handler" {
+            require_handler = true;
+            index += 1;
+            continue;
+        }
+        if argument == "--verbose" {
+            verbose = true;
+            index += 1;
+            continue;
+        }
+        if argument == "-p" || argument == "--pid" {
+            if do_kill {
+                err_fmt!("--pid and --signal are mutually exclusive").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            }
+            do_pid = true;
+            index += 1;
+            continue;
+        }
+        if argument == "-d" || argument == "--show-process-state" {
+            if index + 1 >= argv.len() {
+                err_fmt!("too few arguments").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            }
+            if index + 2 < argv.len() {
+                err_fmt!("too many arguments").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            }
+            let Some(pid) = parse_positive_pid(argv[index + 1]) else {
+                err_fmt!("invalid PID argument").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            return print_process_signal_state(streams, pid);
+        }
+        if let Some(pid) = argument
+            .strip_prefix(L!("--show-process-state="))
+            .or_else(|| argument.strip_prefix(L!("-d=")))
+        {
+            let Some(pid) = parse_positive_pid(pid) else {
+                err_fmt!("invalid PID argument").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            return print_process_signal_state(streams, pid);
+        }
         if argument == "-s" || argument == "--signal" {
+            if do_pid {
+                err_fmt!("--pid and --signal are mutually exclusive").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            }
             let Some(value) = argv.get(index + 1) else {
                 err_fmt!("not enough arguments").finish(streams);
                 return Err(STATUS_CMD_ERROR);
@@ -413,6 +596,10 @@ fn signal_argument_and_targets(
         if argument.char_at(0) == '-' {
             if do_kill {
                 break;
+            }
+            if do_pid {
+                err_fmt!("--pid and --signal are mutually exclusive").finish(streams);
+                return Err(STATUS_CMD_ERROR);
             }
             let candidate = argument.slice_from(1);
             let Some(parsed) = parse_signal_argument(candidate, false) else {
@@ -437,28 +624,64 @@ fn signal_argument_and_targets(
 
     let mut run = KillRun::default();
     for argument in &argv[index..] {
-        let Some(pid) = parse_target(argument) else {
+        let targets = match parse_target(argument) {
+            Some(pid) => vec![pid],
+            None => matching_process_ids(argument, all_users),
+        };
+        if targets.is_empty() {
             err_fmt!("cannot find process \"%s\"", argument).finish(streams);
             run.attempted += 1;
             run.failed += 1;
             continue;
-        };
+        }
 
-        run.attempted += 1;
-        // SAFETY: `kill(2)` only reads the two scalar arguments and the process
-        // table; it holds no Rust value and assumes no pointer or lifetime.
-        let result = unsafe { libc::kill(pid, signal.code()) };
-        if result < 0 {
-            run.failed += 1;
-            err_fmt!(
-                "sending signal to %s failed: %s",
-                argument,
-                std::io::Error::last_os_error().to_string()
-            )
-            .finish(streams);
+        for pid in targets {
+            let handler_present = !require_handler || signal_has_handler(pid, signal);
+            if !handler_present {
+                if verbose {
+                    streams.out.appendln(&wgettext_fmt!(
+                        "not signalling pid %d, it has no userspace handler for signal %d",
+                        pid,
+                        signal.code()
+                    ));
+                }
+                continue;
+            }
+
+            run.attempted += 1;
+            if verbose {
+                streams.out.appendln(&wgettext_fmt!(
+                    "sending signal %d to pid %d",
+                    signal.code(),
+                    pid
+                ));
+            }
+
+            if do_pid {
+                streams.out.appendln(&sprintf!("%d", pid));
+                continue;
+            }
+
+            // SAFETY: `kill(2)` only reads the two scalar arguments and the process
+            // table; it holds no Rust value and assumes no pointer or lifetime.
+            let result = unsafe { libc::kill(pid, signal.code()) };
+            if result < 0 {
+                run.failed += 1;
+                err_fmt!(
+                    "sending signal to %s failed: %s",
+                    argument,
+                    std::io::Error::last_os_error().to_string()
+                )
+                .finish(streams);
+            }
         }
     }
     run.status()
+}
+
+fn parse_positive_pid(argument: &wstr) -> Option<i32> {
+    let pid = parse_target(argument)?;
+    (pid > 0).then_some(pid)
 }
 
 /// The `kill` builtin.

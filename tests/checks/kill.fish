@@ -37,3 +37,24 @@ $fish -c 'builtin kill -s BOGUS 1 2>/dev/null; echo bad=$status'
 # The userland function expands a job specification before invoking the builtin.
 $fish -c 'sleep 10 & kill %1; echo job=$status'
 # CHECK: job=0
+
+# A process name resolves to the matching process identifier without signalling.
+$fish -c 'set -l dir (mktemp -d); ln -s /usr/bin/sleep $dir/kill_test_slp; $dir/kill_test_slp 10 & set -l p $last_pid; set -l q (builtin kill -p kill_test_slp); test "$q" = "$p"; echo name_pid=$status; builtin kill -TERM $p; command rm -rf $dir'
+# CHECK: name_pid=0
+
+# A process name is a signal target.
+$fish -c 'set -l dir (mktemp -d); ln -s /usr/bin/sleep $dir/kill_test_slp; $dir/kill_test_slp 10 & set -l p $last_pid; builtin kill -TERM kill_test_slp; echo name_signal=$status; builtin kill -KILL $p 2>/dev/null; command rm -rf $dir'
+# CHECK: name_signal=0
+
+# The verbose form prints the resolved target on standard output.
+$fish -c 'set -l dir (mktemp -d); ln -s /usr/bin/sleep $dir/kill_test_slp; $dir/kill_test_slp 10 & set -l p $last_pid; builtin kill --verbose -0 kill_test_slp | string match -q "sending signal 0 to pid *"; echo verbose=$status; builtin kill -TERM $p; command rm -rf $dir'
+# CHECK: verbose=0
+
+# A process without a userspace handler is skipped by -r.
+$fish -c 'set -l dir (mktemp -d); ln -s /usr/bin/sleep $dir/kill_test_slp; $dir/kill_test_slp 10 & set -l p $last_pid; builtin kill -r -TERM kill_test_slp; echo handler=$status; builtin kill -KILL $p; command rm -rf $dir'
+# CHECK: handler=1
+
+# -d decodes signal-related /proc status fields.
+$fish -c 'builtin kill -d $fish_pid | string match -q "*Caught:*"'
+echo decode=$status
+# CHECK: decode=0

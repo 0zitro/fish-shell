@@ -6,10 +6,11 @@ Synopsis
 
 .. synopsis::
 
-    kill [-s SIGNAL | -SIGNAL] PID ...
+    kill [-s SIGNAL | -SIGNAL] [-a] [-p] [-r] [--verbose] PID | NAME ...
     kill [-s SIGNAL | -SIGNAL] JOB ...
     kill -l [SIGNAL | 0xMASK]
     kill -L
+    kill -d PID
 
 Description
 -----------
@@ -18,9 +19,10 @@ Description
 ``SIGNAL`` is a signal name with or without the ``SIG`` prefix, or a signal number; the default is ``TERM``.
 Signal 0 performs the permission and existence checks without sending a signal.
 
-A target is a process identifier or a fish job specification such as ``%1``.
+A target is a process identifier or a process name.
 A positive identifier names one process, ``0`` names the caller's process group, and a negative identifier names the process group with that absolute identifier.
-The ``kill`` function expands a fish job specification to the identifiers of the job's external processes before the builtin runs.
+A process name matches the process name in ``/proc/PID/stat``; only processes owned by the caller are matched unless ``--all`` is given.
+A fish job specification such as ``%1`` is expanded by the ``kill`` function to the identifiers of the job's external processes before the builtin runs.
 
 ``-l`` prints the signal names, converts one signal number or name to a name, or decodes a hexadecimal signal mask.
 ``-L`` prints the signal names with their numbers.
@@ -34,6 +36,24 @@ Options
 
 **-SIGNAL**
     Shorthand for ``-s SIGNAL``, for example ``-TERM`` or ``-9``.
+
+**-a**, **--all**
+    Match process names owned by every user, not only the caller.
+
+**-p**, **--pid**
+    Print the resolved process identifiers without sending a signal.
+    This is mutually exclusive with a signal option.
+
+**-r**, **--require-handler**
+    Do not signal a process that has no userspace handler for the signal.
+    This uses the ``SigCgt`` field of ``/proc/PID/stat`` and is available on Linux.
+
+**-d** PID, **--show-process-state** PID
+    Print the signal-related fields of ``/proc/PID/status``.
+    This is available on Linux.
+
+**--verbose**
+    Print each signal and process identifier before acting.
 
 **-l** [SIGNAL], **--list** [SIGNAL]
     List the signal names, or convert ``SIGNAL`` to a name.
@@ -54,11 +74,11 @@ Examples
 ::
 
     > sleep 30 &
-    > kill %1
-    > wait %1
-    echo $status
+    > kill -p sleep
+    123
+    > kill sleep
 
-The job receives the default ``TERM`` signal, and ``wait`` reports the status of its termination.
+The first command prints the process identifier of each matching ``sleep`` process without signalling it; the second sends the default ``TERM`` signal to those processes.
 
 ::
 
