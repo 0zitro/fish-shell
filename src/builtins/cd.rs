@@ -22,8 +22,7 @@ fn is_relative_cd_path(path: &wstr) -> bool {
 // If deref_symlink is set, also resolve symlinks in the new PWD before setting the variable.
 // If successful, update the parser's variables and return a builtin status code of SUCCESS.
 // On failure, return an error.
-// The fd is stashed in the parser for eventual support for thread-backed subshells
-// with distinct CWDs.
+// The fd is recorded as the task's current-directory descriptor.
 fn try_chdir(parser: &mut Parser, dir: &wstr, deref_symlink: bool) -> Result<(), Errno> {
     let norm_dir = normalize_path(dir, true);
     // Try opening the directory and invoking fchdir().
@@ -31,9 +30,8 @@ fn try_chdir(parser: &mut Parser, dir: &wstr, deref_symlink: bool) -> Result<(),
     fchdir(&fd)?;
 
     // We successfully changed directories.
-    // Stash the fd for the cwd in the parser so it stays open.
-    // Eventually fish will support distinct CWDs for different parsers in different threads.
-    parser.libdata_mut().cwd_fd = Some(Arc::new(fd));
+    // Record the descriptor of the task's current directory.
+    parser.local_mut().set_cwd_fd(Arc::new(fd));
 
     let mut new_pwd = norm_dir;
     if deref_symlink {

@@ -6533,7 +6533,7 @@ impl<'a> Reader<'a> {
             PersistenceMode::Disk
         };
         self.history
-            .add_pending_with_file_detection(&text, &self.parser.variables, mode);
+            .add_pending_with_file_detection(&text, self.parser.vars(), mode);
     }
 
     /// Check if we have background jobs that we have not warned about.
@@ -6616,7 +6616,7 @@ fn try_expand_wildcard(
     const TAB_COMPLETE_WILDCARD_MAX_EXPANSION: usize = 256;
 
     let ctx = &mut OperationContext::background_with_cancel_checker(
-        &parser.variables,
+        parser.vars(),
         Box::new(|| signal_check_cancel() != 0),
         TAB_COMPLETE_WILDCARD_MAX_EXPANSION,
     );

@@ -28,6 +28,7 @@ use crate::{
         SuspensionRecord, SuspensionResolution, job_reap,
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
+    task::{Task, TaskId, TaskLocalData, TaskTable},
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
 };
@@ -44,7 +45,6 @@ use std::fs::File;
 use std::io::Write as _;
 use std::num::NonZeroU32;
 use std::ops::DerefMut;
-use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -278,16 +278,6 @@ pub struct LibraryData {
     /// the command line.
     pub transient_commandline: ScopedRefCell<Option<WString>>,
 
-    /// A file descriptor holding the current working directory.
-    /// Note that the long-term design of fish will implement subshells using threads;
-    /// these subshells necessarily may have distinct CWDs. The process-wide CWD is only
-    /// used for transitory checks, such as surrounding fork().
-    /// fish code should generally NOT assume that the process-wide CWD matches this.
-    /// Either resolve full paths, or use the _at() family of syscalls with this fd.
-    /// This is never null and never invalid except in crazy error conditions
-    /// (e.g. starting fish in a chmod 000 directory) which have yet to be rationalized.
-    pub cwd_fd: Option<Arc<OwnedFd>>,
-
     /// Variables supporting the "status" builtin.
     pub status_vars: StatusVars,
 
@@ -415,11 +405,11 @@ pub struct Parser {
     /// indexes during recursive evaluation.
     block_list: Vec<Block>,
 
-    /// Set of variables for the parser.
-    pub variables: EnvStack,
+    /// The tasks this shell holds.
+    tasks: TaskTable,
 
-    /// The function namespace this parser evaluates against.
-    functions: function::FunctionStore,
+    /// The task the evaluator runs.
+    current_task: TaskId,
 
     /// Data managed in a scoped fashion.
     scoped_data: ScopedCell<ScopedData>,
@@ -466,6 +456,7 @@ impl ParserEnvSetMode {
 impl Parser {
     /// Create a parser.
     pub fn new(variables: EnvStack, cancel_behavior: CancelBehavior) -> Parser {
+        let (tasks, current_task) = TaskTable::new(Task::session(variables, None));
         let mut result = Self {
             interactive_initialized: false,
             current_node: ScopedRefCell::new(None),
@@ -474,8 +465,8 @@ impl Parser {
             wait_handles: Default::default(),
             suspensions: Default::default(),
             block_list: Default::default(),
-            variables,
-            functions: function::FunctionStore::default(),
+            tasks,
+            current_task,
             scoped_data: ScopedCell::new(ScopedData::default()),
             library_data: LibraryData::new(),
             syncs_uvars: false,
@@ -489,7 +480,7 @@ impl Parser {
 
         match open_dir(c".", BEST_O_SEARCH) {
             Ok(fd) => {
-                result.libdata_mut().cwd_fd = Some(Arc::new(fd));
+                result.local_mut().set_cwd_fd(Arc::new(fd));
             }
             Err(err) => {
                 perror_nix("Unable to open the current working directory", err);
@@ -965,19 +956,57 @@ impl Parser {
         self.suspensions.len()
     }
 
+    /// Return the task the evaluator runs.
+    fn current_task(&self) -> &Task {
+        self.tasks
+            .get(self.current_task)
+            .expect("the session task is present")
+    }
+
+    /// Return the task the evaluator runs for modification.
+    fn current_task_mut(&mut self) -> &mut Task {
+        self.tasks
+            .get_mut(self.current_task)
+            .expect("the session task is present")
+    }
+
     /// Get the variables.
     pub fn vars(&self) -> &EnvStack {
-        &self.variables
+        self.current_task().store().variables()
     }
 
     /// Get the function namespace.
     pub(crate) fn functions(&self) -> &function::FunctionStore {
-        &self.functions
+        self.current_task().store().functions()
     }
 
     /// Get the function namespace for modification.
     pub(crate) fn functions_mut(&mut self) -> &mut function::FunctionStore {
-        &mut self.functions
+        self.current_task_mut().store_mut().functions_mut()
+    }
+
+    /// Get the current task's task-local data.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn local(&self) -> &TaskLocalData {
+        self.current_task().local()
+    }
+
+    /// Get the current task's task-local data for modification.
+    pub(crate) fn local_mut(&mut self) -> &mut TaskLocalData {
+        self.current_task_mut().local_mut()
+    }
+
+    /// Return the task `id` denotes, or `None` when the identity is stale.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn task(&self, id: TaskId) -> Option<&Task> {
+        self.tasks.get(id)
+    }
+
+    /// Start a task from the current task's store and return its identity.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn create_task(&mut self) -> TaskId {
+        let task = self.current_task().start_from();
+        self.tasks.insert(task)
     }
 
     /// Get a copy of the scoped data.
