@@ -155,6 +155,11 @@ impl Autoload {
         assert!(removed, "cmd was not being autoloaded");
     }
 
+    /// Forget that `cmd` has been autoloaded, so a later resolve returns its file again.
+    pub fn forget_autoloaded(&mut self, cmd: &wstr) {
+        self.autoloaded_files.remove(cmd);
+    }
+
     /// Return whether a command is currently being autoloaded.
     pub fn autoload_in_progress(&self, cmd: &wstr) -> bool {
         self.current_autoloading.contains(cmd)

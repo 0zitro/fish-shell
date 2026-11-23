@@ -347,7 +347,9 @@ pub fn function(
     };
 
     // Add the function itself.
-    function::add(function_name.clone(), Arc::new(props));
+    parser
+        .functions_mut()
+        .add(function_name.clone(), Arc::new(props));
 
     // Handle wrap targets by creating the appropriate completions.
     for wt in opts.wrap_targets {

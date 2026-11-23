@@ -170,7 +170,7 @@ pub fn functions(
 
     if opts.erase {
         for arg in args {
-            function::remove(arg);
+            parser.functions_mut().remove(arg);
         }
         // Historical - this never failed?
         return Ok(SUCCESS);
@@ -299,7 +299,9 @@ pub fn functions(
     }
 
     if opts.list || args.is_empty() {
-        let mut names = function::get_names(opts.show_hidden, parser.vars());
+        let mut names = parser
+            .functions()
+            .get_names(opts.show_hidden, parser.vars());
         names.sort();
         if opts.color.enabled(streams) {
             let mut buff = WString::new();

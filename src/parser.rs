@@ -418,6 +418,9 @@ pub struct Parser {
     /// Set of variables for the parser.
     pub variables: EnvStack,
 
+    /// The function namespace this parser evaluates against.
+    functions: function::FunctionStore,
+
     /// Data managed in a scoped fashion.
     scoped_data: ScopedCell<ScopedData>,
 
@@ -472,6 +475,7 @@ impl Parser {
             suspensions: Default::default(),
             block_list: Default::default(),
             variables,
+            functions: function::FunctionStore::default(),
             scoped_data: ScopedCell::new(ScopedData::default()),
             library_data: LibraryData::new(),
             syncs_uvars: false,
@@ -966,6 +970,16 @@ impl Parser {
         &self.variables
     }
 
+    /// Get the function namespace.
+    pub(crate) fn functions(&self) -> &function::FunctionStore {
+        &self.functions
+    }
+
+    /// Get the function namespace for modification.
+    pub(crate) fn functions_mut(&mut self) -> &mut function::FunctionStore {
+        &mut self.functions
+    }
+
     /// Get a copy of the scoped data.
     #[inline(always)]
     pub fn scope(&self) -> ScopedData {
@@ -1263,9 +1277,10 @@ impl Parser {
     pub fn current_filename(&self) -> Option<FilenameRef> {
         self.blocks_iter_rev()
             .find_map(|b| match b.data() {
-                Some(BlockData::Function { name, .. }) => {
-                    function::get_props(name).and_then(|props| props.definition_file.clone())
-                }
+                Some(BlockData::Function { name, .. }) => self
+                    .functions()
+                    .get_props(name)
+                    .and_then(|props| props.definition_file.clone()),
                 Some(BlockData::Source { file, .. }) => Some(file.clone()),
                 _ => None,
             })

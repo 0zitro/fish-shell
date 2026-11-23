@@ -1315,7 +1315,12 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
         if str_cmd.is_empty() || (!str_cmd.contains('/') && str_cmd.as_char_slice()[0] != '~') {
             let include_hidden = str_cmd.as_char_slice().first() == Some(&'_');
             // Append all known matching functions
-            let possible_comp: Vec<_> = function::get_names(include_hidden, self.ctx.vars())
+            let function_names = if let Some(parser) = self.ctx.maybe_parser() {
+                parser.functions().get_names(include_hidden, parser.vars())
+            } else {
+                function::FunctionStore::shell().get_names(include_hidden, self.ctx.vars())
+            };
+            let possible_comp: Vec<_> = function_names
                 .into_iter()
                 .map(Completion::from_completion)
                 .collect();
@@ -2370,7 +2375,7 @@ impl CmdString {
 
 /// Returns a description for the specified function, or an empty string if none.
 fn complete_function_desc(f: &wstr) -> WString {
-    if let Some(props) = function::get_props(f) {
+    if let Some(props) = function::FunctionStore::shell().get_props(f) {
         props.description.localize().to_owned()
     } else {
         WString::new()
