@@ -141,8 +141,8 @@ impl Query {
 
 // Struct representing one level in the function variable stack.
 struct EnvNode {
-    // Variable table.
-    env: VarTable,
+    // Variable table. A copied scope shares this table until either side writes it.
+    env: Arc<VarTable>,
 
     /// Does this node imply a new variable scope? If yes, all non-global variables below this one
     /// in the stack are invisible. If new_scope is set for the global variable node, the universe
@@ -203,7 +203,7 @@ impl EnvNodeRef {
         #[allow(unknown_lints)]
         #[allow(clippy::arc_with_non_send_sync)]
         EnvNodeRef(Arc::new(EnvNodeSyncCell::new(EnvNode {
-            env: VarTable::new(),
+            env: Arc::new(VarTable::new()),
             new_scope: is_new_scope,
             export_gen: 0,
             next,
@@ -233,12 +233,13 @@ impl EnvNodeRef {
 
 static GLOBAL_NODE: LazyLock<EnvNodeRef> = LazyLock::new(|| EnvNodeRef::new(false, None));
 
-/// Recursive helper to snapshot a series of nodes.
+/// Recursive helper to copy a series of nodes, sharing each node's variable table so that a write
+/// to either chain copies that table and leaves the other chain unchanged.
 fn copy_node_chain(node: &EnvNodeRef) -> EnvNodeRef {
     let next = node.next().as_ref().map(copy_node_chain);
     let node = node.borrow();
     let new_node = EnvNode {
-        env: node.env.clone(),
+        env: Arc::clone(&node.env),
         export_gen: node.export_gen,
         new_scope: node.new_scope,
         next,
@@ -419,7 +420,8 @@ impl EnvScopedImpl {
         pwd
     }
 
-    /// Return a copy of self, with copied locals but shared globals.
+    /// Return a copy of self, with copied local scopes that share their tables until a write, and
+    /// shared globals.
     pub fn snapshot(&self) -> EnvMutex<Self> {
         EnvMutex::new(EnvScopedImpl {
             locals: copy_node_chain(&self.locals),
@@ -428,6 +430,19 @@ impl EnvScopedImpl {
             export_array: None,
             export_array_generations: Vec::new(),
         })
+    }
+
+    /// Return a copy for a task. Every scope's table is shared until the task or the starting
+    /// store writes it, so a `set` on either side is invisible to the other; universal variables
+    /// remain shared.
+    pub fn copy_for_task(&self) -> EnvScopedImpl {
+        EnvScopedImpl {
+            locals: copy_node_chain(&self.locals),
+            globals: copy_node_chain(&self.globals),
+            perproc_data: self.perproc_data.clone(),
+            export_array: None,
+            export_array_generations: Vec::new(),
+        }
     }
 }
 
@@ -593,6 +608,15 @@ impl EnvStackImpl {
         })
     }
 
+    /// Return a copy for a task. The copy shares each scope's table until either side writes it;
+    /// universal variables remain shared.
+    pub fn copy_for_task(&self) -> EnvStackImpl {
+        EnvStackImpl {
+            base: self.base.copy_for_task(),
+            shadowed_locals: self.shadowed_locals.iter().map(copy_node_chain).collect(),
+        }
+    }
+
     /// Set a variable under the name `key`, using the given `mode`, setting its value to `val`.
     pub fn set(&mut self, key: &wstr, mode: EnvSetMode, mut val: Vec<WString>) -> ModResult {
         let query = Query::from(mode);
@@ -740,9 +764,10 @@ impl EnvStackImpl {
             for (key, val) in cursor.borrow().env.iter() {
                 if val.exports() {
                     let mut node_ref = node.borrow_mut();
+                    let env = Arc::make_mut(&mut node_ref.env);
                     // Do NOT overwrite existing values, since we go from inner scopes outwards.
-                    if !node_ref.env.contains_key(key) {
-                        node_ref.env.insert(key.clone(), val.clone());
+                    if !env.contains_key(key) {
+                        env.insert(key.clone(), val.clone());
                     }
                     node_ref.changed_exported();
                 }
@@ -794,7 +819,8 @@ impl EnvStackImpl {
     fn remove_from_chain(node: &mut EnvNodeRef, key: &wstr) -> bool {
         for cur in node.iter() {
             let mut cur_ref = cur.borrow_mut();
-            if let Some(var) = cur_ref.env.remove(key) {
+            let removed = Arc::make_mut(&mut cur_ref.env).remove(key);
+            if let Some(var) = removed {
                 if var.exports() {
                     cur_ref.changed_exported();
                 }
@@ -895,7 +921,8 @@ impl EnvStackImpl {
     fn set_in_node(node: &mut EnvNodeRef, key: &wstr, mut val: Vec<WString>, flags: VarFlags) {
         // Read the var from the node. In C++ this was node->env[key] which establishes a default.
         let mut node_ref = node.borrow_mut();
-        let var = node_ref.env.entry(key.to_owned()).or_default();
+        let env = Arc::make_mut(&mut node_ref.env);
+        let var = env.entry(key.to_owned()).or_default();
 
         // Use an explicit exports, or inherit from the existing variable.
         let res_exports = match flags.exports {
@@ -1015,8 +1042,10 @@ unsafe impl<T: Send> Sync for EnvMutex<T> {}
 
 #[cfg(test)]
 mod tests {
-    use super::colon_split;
+    use super::{EnvStackImpl, colon_split};
+    use crate::env::EnvSetMode;
     use crate::prelude::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_colon_split() {
@@ -1037,5 +1066,23 @@ mod tests {
             colon_split(&[L!("1:"), L!("2:"), L!(":3:")]),
             &[L!("1"), L!(""), L!("2"), L!(""), L!(""), L!("3"), L!("")]
         );
+    }
+
+    #[test]
+    fn test_task_copy_shares_scope_tables() {
+        let stack = EnvStackImpl::new();
+        {
+            let mut stack_guard = stack.lock();
+            stack_guard.set(
+                L!("scope_probe"),
+                EnvSetMode::default(),
+                vec![L!("value").to_owned()],
+            );
+        }
+        let copy = stack.lock().copy_for_task();
+
+        let original_env = stack.lock().base.locals.borrow().env.clone();
+        let copy_env = copy.base.locals.borrow().env.clone();
+        assert!(Arc::ptr_eq(&original_env, &copy_env));
     }
 }

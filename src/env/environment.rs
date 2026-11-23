@@ -237,6 +237,18 @@ impl EnvStack {
         }
     }
 
+    /// Return a copy for a task. The copy shares each scope's table until either side writes it, so
+    /// a write in the task is invisible to the starting store and a later write there is invisible
+    /// to the task; universal variables remain shared.
+    pub fn copy_for_task(&self, dispatches_var_changes: bool) -> EnvStack {
+        let inner = EnvMutex::new(self.lock().copy_for_task());
+        EnvStack {
+            inner,
+            can_push_pop: true,
+            dispatches_var_changes,
+        }
+    }
+
     fn lock(&self) -> EnvMutexGuard<'_, EnvStackImpl> {
         self.inner.lock()
     }
@@ -826,7 +838,7 @@ pub fn env_init(paths: Option<&ConfigPaths>, no_config: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvMode, EnvStack, Environment as _};
+    use super::{EnvMode, EnvStack, Environment as _, Statuses};
     use crate::env::EnvSetMode;
     use crate::prelude::*;
     use crate::tests::prelude::*;
@@ -904,6 +916,92 @@ mod tests {
 
         vars.pop(false);
         parser.popd(pushed_dirs);
+    }
+
+    #[test]
+    #[serial]
+    fn test_task_store_isolates_variables() {
+        test_init();
+        let TestParser { ref mut parser, .. } = TestParser::new();
+        let vars = parser.vars();
+        vars.push(true);
+        vars.set_pwd_from_getcwd();
+        vars.set_one(
+            L!("task_local_probe"),
+            EnvSetMode::default(),
+            L!("parent").to_owned(),
+        );
+        vars.set_one(
+            L!("task_global_probe"),
+            EnvSetMode::new(EnvMode::GLOBAL, false),
+            L!("parent").to_owned(),
+        );
+        vars.set_last_statuses(Statuses::just(7));
+
+        let task_vars = vars.copy_for_task(false);
+
+        // The task starts with the starting store's values.
+        assert_eq!(
+            task_vars.get(L!("task_local_probe")).unwrap().as_string(),
+            L!("parent")
+        );
+        assert_eq!(
+            task_vars.get(L!("task_global_probe")).unwrap().as_string(),
+            L!("parent")
+        );
+        assert_eq!(task_vars.last_status(), 7);
+
+        // A write in the task is invisible to the starting store.
+        task_vars.set_one(
+            L!("task_local_probe"),
+            EnvSetMode::default(),
+            L!("task").to_owned(),
+        );
+        task_vars.set_one(
+            L!("task_global_probe"),
+            EnvSetMode::new(EnvMode::GLOBAL, false),
+            L!("task").to_owned(),
+        );
+        task_vars.set_last_statuses(Statuses::just(3));
+        assert_eq!(
+            vars.get(L!("task_local_probe")).unwrap().as_string(),
+            L!("parent")
+        );
+        assert_eq!(
+            vars.get(L!("task_global_probe")).unwrap().as_string(),
+            L!("parent")
+        );
+        assert_eq!(vars.last_status(), 7);
+
+        // A later write in the starting store is invisible to the task.
+        vars.set_one(
+            L!("task_global_probe"),
+            EnvSetMode::new(EnvMode::GLOBAL, false),
+            L!("later").to_owned(),
+        );
+        vars.set_last_statuses(Statuses::just(9));
+        assert_eq!(
+            task_vars.get(L!("task_global_probe")).unwrap().as_string(),
+            L!("task")
+        );
+        assert_eq!(task_vars.last_status(), 3);
+
+        // The current directory is part of the copied per-process data.
+        task_vars.set_one(
+            L!("PWD"),
+            EnvSetMode::default(),
+            L!("/task-directory").to_owned(),
+        );
+        assert_ne!(
+            vars.get(L!("PWD")).unwrap().as_string(),
+            L!("/task-directory")
+        );
+
+        vars.remove(
+            L!("task_global_probe"),
+            EnvSetMode::new(EnvMode::GLOBAL, false),
+        );
+        vars.pop(false);
     }
 
     // Can't push/pop from globals.
