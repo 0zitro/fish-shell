@@ -10,6 +10,7 @@ use crate::env::{EnvMode, EnvSetMode, EnvStack};
 use crate::function::FunctionStore;
 use crate::io::{IoChain, IoFd};
 use crate::prelude::*;
+use crate::task_frame::FrameStack;
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::sync::Arc;
 
@@ -214,6 +215,7 @@ impl TaskDescriptors {
 pub(crate) struct Task {
     store: TaskStore,
     descriptors: TaskDescriptors,
+    frames: FrameStack,
     lifecycle: TaskLifecycle,
 }
 
@@ -229,6 +231,7 @@ impl Task {
                 cwd_fd,
                 descriptor_table: DescriptorTable::default(),
             },
+            frames: FrameStack::new(),
             lifecycle: TaskLifecycle::Runnable,
         }
     }
@@ -239,6 +242,7 @@ impl Task {
         Task {
             store: self.store.copy_for_task(),
             descriptors: self.descriptors.copy_for_task(),
+            frames: FrameStack::new(),
             lifecycle: TaskLifecycle::Runnable,
         }
     }
@@ -262,6 +266,11 @@ impl Task {
     /// Return the descriptors recorded for this task for modification.
     pub fn descriptors_mut(&mut self) -> &mut TaskDescriptors {
         &mut self.descriptors
+    }
+
+    /// Return this task's stack of evaluation frames.
+    pub fn frames_mut(&mut self) -> &mut FrameStack {
+        &mut self.frames
     }
 
     /// Return this task's lifecycle stage.

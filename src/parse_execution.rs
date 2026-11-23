@@ -34,6 +34,7 @@ use crate::{
     parse_util::{locate_cmdsubst_range, unescape_wildcards},
     parser::{
         Block, BlockData, BlockId, BlockType, LoopStatus, Parser, ParserEnvSetMode, ProfileItem,
+        ScopedData, node_ref_of,
     },
     parser_keywords::parser_keywords_is_subcommand,
     path::{path_as_implicit_cd, path_try_get_path},
@@ -45,6 +46,11 @@ use crate::{
     reader::fish_is_unwinding_for_exit,
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
+    task_frame::{
+        AndorJobListFrame, BeginFrame, ConjunctionFrame, ForFrame, Frame, FrameStack, IfFrame,
+        IfStage, JobListFrame, ProfileItemFinish, SimpleBlockJobFrame, StatementFrame, SwitchFrame,
+        WhileFrame, WhileStage,
+    },
     timer::push_timer,
     tokenizer::{PipeOrRedir, TokenType, variable_assignment_equals_pos},
     trace::{trace_if_enabled, trace_if_enabled_with_args},
@@ -59,7 +65,7 @@ use std::{io::ErrorKind, rc::Rc, sync::Arc};
 /// An eval_result represents evaluation errors including wildcards which failed to match, syntax
 /// errors, or other expansion errors. It also tracks when evaluation was skipped due to signal
 /// cancellation. Note it does not track the exit status of commands.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EndExecutionReason {
     /// Evaluation was successful.
     Ok,
@@ -119,6 +125,29 @@ pub fn varname_error<'a>(command: &'a wstr, bad_name: &'a wstr) -> Error<'a> {
     .cmd(command)
 }
 
+/// The action one frame step takes.
+enum FrameAction {
+    /// Push a child frame; the frame waits for the child's outcome.
+    Push(Box<Frame>),
+
+    /// The frame is complete with this reason.
+    Done(EndExecutionReason),
+}
+
+/// Return a push action for `frame`.
+fn push_frame(frame: Frame) -> FrameAction {
+    FrameAction::Push(Box::new(frame))
+}
+
+/// The outcome of running one job.
+enum JobStep {
+    /// The job completed with this reason.
+    Completed(EndExecutionReason),
+
+    /// The job is a simple block; this frame evaluates it.
+    Frame(Box<Frame>),
+}
+
 impl ExecutionContext {
     /// Construct a context in preparation for evaluating a node in a tree, with the given block_io.
     /// The execution context may access the parser and parent job group (if any) through ctx.
@@ -147,63 +176,942 @@ impl ExecutionContext {
         self.cancel_signal
     }
 
-    /// Start executing at the given node. Returns 0 if there was no error, 1 if there was an
-    /// error.
-    pub(crate) fn eval_statement(
+    /// Evaluate frames until the stack empties, returning the last frame's outcome.
+    pub(crate) fn evaluate_frames(
         &mut self,
         ctx: &mut OperationContext<'_>,
-        statement: &ast::Statement,
-        associated_block: Option<BlockId>,
+        frames: &mut FrameStack,
+        initial: Frame,
     ) -> EndExecutionReason {
-        // Note we only expect block-style statements here. No not statements.
-        match &statement {
-            Statement::Block(block) => self.run_block_statement(ctx, block, associated_block),
-            Statement::Brace(brace_statement) => {
-                self.run_begin_statement(ctx, &brace_statement.jobs)
+        let mut frame = initial;
+        let mut child_result = None;
+        loop {
+            let source = frame.parsed_source();
+            self.pstree = source;
+            match self.step_frame(ctx, &mut frame, child_result.take()) {
+                FrameAction::Push(child) => {
+                    frames.push(frame);
+                    frame = *child;
+                }
+                FrameAction::Done(reason) => match frames.pop() {
+                    Some(parent) => {
+                        child_result = Some(reason);
+                        frame = parent;
+                    }
+                    None => return reason,
+                },
             }
-            Statement::If(ifstat) => self.run_if_statement(ctx, ifstat, associated_block),
-            Statement::Switch(switchstat) => self.run_switch_statement(ctx, switchstat),
+        }
+    }
+
+    /// Advance one frame by one step.
+    fn step_frame(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut Frame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        match frame {
+            Frame::JobList(frame) => self.step_job_list(ctx, frame, child_result),
+            Frame::AndorJobList(frame) => self.step_andor_job_list(ctx, frame, child_result),
+            Frame::Conjunction(frame) => self.step_conjunction(ctx, frame, child_result),
+            Frame::Statement(frame) => self.step_statement(ctx, frame, child_result),
+            Frame::SimpleBlockJob(frame) => self.step_simple_block_job(ctx, frame, child_result),
+            Frame::Begin(frame) => self.step_begin(ctx, frame, child_result),
+            Frame::If(frame) => self.step_if(ctx, frame, child_result),
+            Frame::While(frame) => self.step_while(ctx, frame, child_result),
+            Frame::For(frame) => self.step_for(ctx, frame, child_result),
+            Frame::Switch(frame) => self.step_switch(ctx, frame, child_result),
+        }
+    }
+
+    /// Advance a command list frame.
+    fn step_job_list(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut JobListFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            frame.result = reason;
+            frame.next_conjunction += 1;
+        }
+        if !frame.checked {
+            frame.checked = true;
+            // Check for infinite recursion: a function which immediately calls itself.
+            let mut func_name = WString::new();
+            if let Some(infinite_recursive_node) =
+                self.infinite_recursive_statement_in_job_list(ctx, &frame.jobs, &mut func_name)
+            {
+                return FrameAction::Done(report_error!(
+                    self,
+                    ctx,
+                    STATUS_CMD_ERROR,
+                    infinite_recursive_node,
+                    INFINITE_FUNC_RECURSION_ERR_MSG,
+                    func_name
+                ));
+            }
+
+            // Check for stack overflow in case of function calls (regular stack overflow) or
+            // string substitution blocks, which can be recursively called with eval (issue #9302).
+            let block_type = frame.associated_block.map_or(BlockType::Top, |block| {
+                ctx.parser().block_with_id(block).typ()
+            });
+            if (block_type == BlockType::Top && ctx.parser().function_stack_is_overflowing())
+                || (block_type == BlockType::Subst && ctx.parser().is_eval_depth_exceeded())
+            {
+                return FrameAction::Done(report_error!(
+                    self,
+                    ctx,
+                    STATUS_CMD_ERROR,
+                    &frame.jobs,
+                    CALL_STACK_LIMIT_EXCEEDED_ERR_MSG
+                ));
+            }
+        }
+        if frame.next_conjunction >= frame.jobs.len() {
+            return FrameAction::Done(frame.result);
+        }
+        let conjunction = node_ref_of(&frame.jobs, &frame.jobs[frame.next_conjunction]);
+        push_frame(Frame::Conjunction(ConjunctionFrame {
+            conjunction,
+            associated_block: frame.associated_block,
+            next_job: 0,
+            tested_decorator: false,
+            awaiting_child: false,
+            result: EndExecutionReason::Ok,
+        }))
+    }
+
+    /// Advance an and-or list frame.
+    fn step_andor_job_list(
+        &mut self,
+        _ctx: &mut OperationContext<'_>,
+        frame: &mut AndorJobListFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            frame.result = reason;
+            frame.next_job += 1;
+        }
+        if frame.next_job >= frame.jobs.len() {
+            return FrameAction::Done(frame.result);
+        }
+        let conjunction = node_ref_of(&frame.jobs, &frame.jobs[frame.next_job].job);
+        push_frame(Frame::Conjunction(ConjunctionFrame {
+            conjunction,
+            associated_block: frame.associated_block,
+            next_job: 0,
+            tested_decorator: true,
+            awaiting_child: false,
+            result: EndExecutionReason::Ok,
+        }))
+    }
+
+    /// Advance a conjunction frame.
+    fn step_conjunction(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut ConjunctionFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            frame.result = reason;
+            frame.next_job += 1;
+            frame.awaiting_child = false;
+        }
+        if !frame.tested_decorator {
+            frame.tested_decorator = true;
+            if let Some(reason) = self.check_end_execution(ctx) {
+                return FrameAction::Done(reason);
+            }
+            if let Some(decorator) = &frame.conjunction.decorator {
+                let last_status = ctx.parser().last_status();
+                let skip = match decorator.keyword() {
+                    ParseKeyword::And => last_status != 0,
+                    ParseKeyword::Or => last_status == 0,
+                    _ => unreachable!(),
+                };
+                if skip {
+                    return FrameAction::Done(EndExecutionReason::Ok);
+                }
+            }
+        }
+        loop {
+            if frame.next_job == 0 {
+                let job_node = node_ref_of(&frame.conjunction, &frame.conjunction.job);
+                match self.run_job_step(ctx, &job_node, frame.associated_block) {
+                    JobStep::Completed(reason) => {
+                        frame.result = reason;
+                        frame.next_job += 1;
+                        continue;
+                    }
+                    JobStep::Frame(child) => {
+                        frame.awaiting_child = true;
+                        return FrameAction::Push(child);
+                    }
+                }
+            }
+            let index = frame.next_job - 1;
+            if index >= frame.conjunction.continuations.len() {
+                return FrameAction::Done(frame.result);
+            }
+            if let Some(reason) = self.check_end_execution(ctx) {
+                return FrameAction::Done(reason);
+            }
+            let continuation = &frame.conjunction.continuations[index];
+            let last_status = ctx.parser().last_status();
+            let skip = match continuation.conjunction.token_type() {
+                ParseTokenType::AndAnd => last_status != 0,
+                ParseTokenType::OrOr => last_status == 0,
+                _ => unreachable!(),
+            };
+            if skip {
+                frame.next_job += 1;
+                continue;
+            }
+            let job_node = node_ref_of(&frame.conjunction, &continuation.job);
+            match self.run_job_step(ctx, &job_node, frame.associated_block) {
+                JobStep::Completed(reason) => {
+                    frame.result = reason;
+                    frame.next_job += 1;
+                }
+                JobStep::Frame(child) => {
+                    frame.awaiting_child = true;
+                    return FrameAction::Push(child);
+                }
+            }
+        }
+    }
+
+    /// Run one job, or return the frame that evaluates it when it is a simple block.
+    fn run_job_step(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        job_node: &NodeRef<ast::JobPipeline>,
+        associated_block: Option<BlockId>,
+    ) -> JobStep {
+        if let Some(reason) = self.check_end_execution(ctx) {
+            return JobStep::Completed(reason);
+        }
+        if no_exec() {
+            return JobStep::Completed(EndExecutionReason::Ok);
+        }
+        let background_next_job = std::mem::take(&mut self.background_next_job);
+        if self.job_is_simple_block(job_node) && !background_next_job {
+            let statement = node_ref_of(job_node, &job_node.statement);
+            return JobStep::Frame(Box::new(Frame::SimpleBlockJob(Box::new(
+                SimpleBlockJobFrame {
+                    job_node: job_node.clone(),
+                    statement,
+                    associated_block,
+                    started: false,
+                    assignment_block: None,
+                    saved_scope: ScopedData::default(),
+                    saved_node: None,
+                    timer: None,
+                    profile_item: None,
+                },
+            ))));
+        }
+        JobStep::Completed(self.run_job_leaf(ctx, job_node, associated_block, background_next_job))
+    }
+
+    /// Advance the frame that evaluates a simple block job.
+    fn step_simple_block_job(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut SimpleBlockJobFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            return self.finish_simple_block_job(ctx, frame, reason);
+        }
+        if frame.started {
+            return FrameAction::Done(EndExecutionReason::Ok);
+        }
+        frame.started = true;
+
+        frame.saved_scope = ctx.parser().scope();
+        let mut scope = frame.saved_scope;
+        scope.eval_level += 1;
+        ctx.parser().set_scope(scope);
+        frame.saved_node = ctx
+            .parser()
+            .current_node()
+            .replace(Some(frame.job_node.clone()));
+
+        if let Some(item_id) = ctx.parser().create_profile_item() {
+            frame.profile_item = Some(ProfileItemFinish {
+                item_id,
+                start_time: ProfileItem::now(),
+                command: profiling_cmd_name_for_redirectable_block(&frame.statement, self.pstree()),
+            });
+        }
+        if job_node_wants_timing(&frame.job_node) {
+            frame.timer = Some(push_timer());
+        }
+
+        let mut block = None;
+        let result =
+            self.apply_variable_assignments(ctx, None, &frame.job_node.variables, &mut block);
+        frame.assignment_block = block;
+        if result != EndExecutionReason::Ok {
+            return self.finish_simple_block_job(ctx, frame, result);
+        }
+
+        push_frame(Frame::Statement(StatementFrame {
+            statement: frame.statement.clone(),
+            associated_block: frame.associated_block,
+            started: false,
+        }))
+    }
+
+    /// Finish a simple block job after its statement completes.
+    fn finish_simple_block_job(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut SimpleBlockJobFrame,
+        reason: EndExecutionReason,
+    ) -> FrameAction {
+        if let Some(profile_item) = frame.profile_item.take() {
+            finish_profile_item(ctx, profile_item);
+        }
+        frame.timer.take();
+        let saved_node = frame.saved_node.take();
+        let _ = ctx.parser().current_node().replace(saved_node);
+        ctx.parser().set_scope(frame.saved_scope);
+        if let Some(block) = frame.assignment_block.take() {
+            ctx.parser().pop_block(block);
+        }
+        FrameAction::Done(reason)
+    }
+
+    /// Advance a statement frame.
+    fn step_statement(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut StatementFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            return FrameAction::Done(reason);
+        }
+        if frame.started {
+            return FrameAction::Done(EndExecutionReason::Ok);
+        }
+        frame.started = true;
+
+        let statement: &ast::Statement = &frame.statement;
+        match statement {
+            Statement::Brace(brace_statement) => {
+                let block_id = ctx
+                    .parser()
+                    .push_block(Block::scope_block(BlockType::Begin));
+                let contents = node_ref_of(&frame.statement, &brace_statement.jobs);
+                push_frame(Frame::Begin(BeginFrame {
+                    contents,
+                    block_id,
+                    started: false,
+                }))
+            }
+            Statement::Block(block_statement) => match &block_statement.header {
+                BlockStatementHeader::For(header) => {
+                    let header = node_ref_of(&frame.statement, header);
+                    let contents = node_ref_of(&frame.statement, &block_statement.jobs);
+                    push_frame(Frame::For(ForFrame {
+                        header,
+                        contents,
+                        var_name: None,
+                        arguments: Vec::new(),
+                        event: None,
+                        next_value: 0,
+                        body_block: None,
+                        started: false,
+                        result: EndExecutionReason::Ok,
+                    }))
+                }
+                BlockStatementHeader::While(header) => {
+                    let header = node_ref_of(&frame.statement, header);
+                    let contents = node_ref_of(&frame.statement, &block_statement.jobs);
+                    push_frame(Frame::While(WhileFrame {
+                        header,
+                        contents,
+                        associated_block: frame.associated_block,
+                        started: false,
+                        first_condition: true,
+                        saved_status: Statuses::just(EXIT_SUCCESS),
+                        condition_result: EndExecutionReason::Ok,
+                        stage: WhileStage::Condition,
+                        awaiting_child: false,
+                        body_block: None,
+                        result: EndExecutionReason::Ok,
+                    }))
+                }
+                BlockStatementHeader::Function(header) => FrameAction::Done(
+                    self.run_function_statement(ctx, block_statement.as_ref(), header),
+                ),
+                BlockStatementHeader::Begin(_) => {
+                    let block_id = ctx
+                        .parser()
+                        .push_block(Block::scope_block(BlockType::Begin));
+                    let contents = node_ref_of(&frame.statement, &block_statement.jobs);
+                    push_frame(Frame::Begin(BeginFrame {
+                        contents,
+                        block_id,
+                        started: false,
+                    }))
+                }
+            },
+            Statement::If(if_statement) => {
+                let statement = node_ref_of(&frame.statement, if_statement.as_ref());
+                push_frame(Frame::If(IfFrame {
+                    statement,
+                    associated_block: frame.associated_block,
+                    clause_index: 0,
+                    stage: IfStage::Condition,
+                    awaiting_child: false,
+                    body_block: None,
+                    result: EndExecutionReason::Ok,
+                }))
+            }
+            Statement::Switch(switch_statement) => {
+                let statement = node_ref_of(&frame.statement, switch_statement.as_ref());
+                push_frame(Frame::Switch(SwitchFrame {
+                    statement,
+                    block_id: None,
+                    searched: false,
+                    result: EndExecutionReason::Ok,
+                    awaiting_child: false,
+                }))
+            }
             Statement::Decorated(_) | Statement::Not(_) => panic!(),
         }
     }
 
-    pub(crate) fn eval_job_list(
+    /// Advance a begin or brace block frame.
+    fn step_begin(
         &mut self,
         ctx: &mut OperationContext<'_>,
-        job_list: &ast::JobList,
-        associated_block: BlockId,
-    ) -> EndExecutionReason {
-        // Check for infinite recursion: a function which immediately calls itself..
-        let mut func_name = WString::new();
-        if let Some(infinite_recursive_node) =
-            self.infinite_recursive_statement_in_job_list(ctx, job_list, &mut func_name)
-        {
-            // We have an infinite recursion.
-            return report_error!(
-                self,
-                ctx,
-                STATUS_CMD_ERROR,
-                infinite_recursive_node,
-                INFINITE_FUNC_RECURSION_ERR_MSG,
-                func_name
-            );
+        frame: &mut BeginFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            ctx.parser().pop_block(frame.block_id);
+            trace_if_enabled(ctx.parser(), L!("end begin"));
+            return FrameAction::Done(reason);
+        }
+        if !frame.started {
+            frame.started = true;
+            trace_if_enabled(ctx.parser(), L!("begin"));
+            return push_frame(Frame::JobList(JobListFrame {
+                jobs: frame.contents.clone(),
+                next_conjunction: 0,
+                associated_block: Some(frame.block_id),
+                checked: false,
+                result: EndExecutionReason::Ok,
+            }));
+        }
+        FrameAction::Done(EndExecutionReason::Ok)
+    }
+
+    /// Advance an if statement frame.
+    fn step_if(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut IfFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            match frame.stage {
+                IfStage::Condition => {
+                    if reason == EndExecutionReason::Ok {
+                        let Some(clause) = if_clause_of(&frame.statement, frame.clause_index)
+                        else {
+                            return FrameAction::Done(EndExecutionReason::Ok);
+                        };
+                        let tail = node_ref_of(&frame.statement, &clause.andor_tail);
+                        frame.stage = IfStage::Andor;
+                        frame.awaiting_child = true;
+                        return push_frame(Frame::AndorJobList(AndorJobListFrame {
+                            jobs: tail,
+                            next_job: 0,
+                            associated_block: frame.associated_block,
+                            result: EndExecutionReason::Ok,
+                        }));
+                    }
+                    return self.advance_if_clause(ctx, frame);
+                }
+                IfStage::Andor => {
+                    let take_branch = reason == EndExecutionReason::Ok
+                        && ctx.parser().last_status() == EXIT_SUCCESS;
+                    if take_branch {
+                        return self.push_if_clause_body(ctx, frame);
+                    }
+                    return self.advance_if_clause(ctx, frame);
+                }
+                IfStage::Body | IfStage::Else => {
+                    frame.result = reason;
+                    if let Some(block) = frame.body_block.take() {
+                        ctx.parser().pop_block(block);
+                    }
+                    if let Some(reason) = self.check_end_execution(ctx) {
+                        frame.result = reason;
+                    }
+                    return FrameAction::Done(frame.result);
+                }
+            }
         }
 
-        // Check for stack overflow in case of function calls (regular stack overflow) or string
-        // substitution blocks, which can be recursively called with eval (issue #9302).
-        let block_type = ctx.parser().block_with_id(associated_block).typ();
-        if (block_type == BlockType::Top && ctx.parser().function_stack_is_overflowing())
-            || (block_type == BlockType::Subst && ctx.parser().is_eval_depth_exceeded())
-        {
-            return report_error!(
+        if frame.clause_index == 0 {
+            trace_if_enabled(ctx.parser(), L!("if"));
+        }
+        if let Some(reason) = self.check_end_execution(ctx) {
+            frame.result = reason;
+            return self.advance_if_clause(ctx, frame);
+        }
+        let Some(clause) = if_clause_of(&frame.statement, frame.clause_index) else {
+            return FrameAction::Done(EndExecutionReason::Ok);
+        };
+        let condition = node_ref_of(&frame.statement, &clause.condition);
+        frame.stage = IfStage::Condition;
+        frame.awaiting_child = true;
+        push_frame(Frame::Conjunction(ConjunctionFrame {
+            conjunction: condition,
+            associated_block: frame.associated_block,
+            next_job: 0,
+            tested_decorator: false,
+            awaiting_child: false,
+            result: EndExecutionReason::Ok,
+        }))
+    }
+
+    /// Move an if statement frame to its next clause, else clause, or completion.
+    fn advance_if_clause(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut IfFrame,
+    ) -> FrameAction {
+        frame.clause_index += 1;
+        if frame.clause_index < 1 + frame.statement.elseif_clauses.len() {
+            trace_if_enabled(ctx.parser(), L!("else if"));
+            let Some(clause) = if_clause_of(&frame.statement, frame.clause_index) else {
+                return FrameAction::Done(frame.result);
+            };
+            let condition = node_ref_of(&frame.statement, &clause.condition);
+            frame.stage = IfStage::Condition;
+            frame.awaiting_child = true;
+            return push_frame(Frame::Conjunction(ConjunctionFrame {
+                conjunction: condition,
+                associated_block: frame.associated_block,
+                next_job: 0,
+                tested_decorator: false,
+                awaiting_child: false,
+                result: EndExecutionReason::Ok,
+            }));
+        }
+        let Some(else_clause) = frame.statement.else_clause.as_ref() else {
+            ctx.parser()
+                .set_last_statuses(Statuses::just(STATUS_CMD_OK));
+            return FrameAction::Done(frame.result);
+        };
+        trace_if_enabled(ctx.parser(), L!("else"));
+        let body = node_ref_of(&frame.statement, &else_clause.body);
+        self.push_if_body(ctx, frame, body, IfStage::Else)
+    }
+
+    /// Push the body of the current if clause.
+    fn push_if_clause_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut IfFrame,
+    ) -> FrameAction {
+        let Some(clause) = if_clause_of(&frame.statement, frame.clause_index) else {
+            return FrameAction::Done(EndExecutionReason::Ok);
+        };
+        let body = node_ref_of(&frame.statement, &clause.body);
+        self.push_if_body(ctx, frame, body, IfStage::Body)
+    }
+
+    /// Push an if body with its block.
+    fn push_if_body(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut IfFrame,
+        body: NodeRef<ast::JobList>,
+        stage: IfStage,
+    ) -> FrameAction {
+        let block_id = ctx.parser().push_block(Block::if_block());
+        frame.body_block = Some(block_id);
+        frame.stage = stage;
+        frame.awaiting_child = true;
+        push_frame(Frame::JobList(JobListFrame {
+            jobs: body,
+            next_conjunction: 0,
+            associated_block: Some(block_id),
+            checked: false,
+            result: EndExecutionReason::Ok,
+        }))
+    }
+
+    /// Advance a while statement frame.
+    fn step_while(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut WhileFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            match frame.stage {
+                WhileStage::Condition => {
+                    frame.condition_result = reason;
+                    if reason != EndExecutionReason::Ok {
+                        return self.finish_while(ctx, frame);
+                    }
+                    let tail = node_ref_of(&frame.header, &frame.header.andor_tail);
+                    frame.stage = WhileStage::Andor;
+                    frame.awaiting_child = true;
+                    return push_frame(Frame::AndorJobList(AndorJobListFrame {
+                        jobs: tail,
+                        next_job: 0,
+                        associated_block: frame.associated_block,
+                        result: EndExecutionReason::Ok,
+                    }));
+                }
+                WhileStage::Andor => {
+                    frame.condition_result = reason;
+                    if frame.condition_result != EndExecutionReason::Ok {
+                        return self.finish_while(ctx, frame);
+                    }
+                    if ctx.parser().last_status() != EXIT_SUCCESS {
+                        ctx.parser().set_last_statuses(frame.saved_status.clone());
+                        return self.finish_while(ctx, frame);
+                    }
+                    if let Some(reason) = self.check_end_execution(ctx) {
+                        frame.result = reason;
+                        return self.finish_while(ctx, frame);
+                    }
+                    ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
+                    let block_id = ctx.parser().push_block(Block::while_block());
+                    frame.body_block = Some(block_id);
+                    frame.stage = WhileStage::Body;
+                    return push_frame(Frame::JobList(JobListFrame {
+                        jobs: frame.contents.clone(),
+                        next_conjunction: 0,
+                        associated_block: Some(block_id),
+                        checked: false,
+                        result: EndExecutionReason::Ok,
+                    }));
+                }
+                WhileStage::Body => {
+                    let cancel_reason = self.check_end_execution(ctx);
+                    if let Some(block) = frame.body_block.take() {
+                        ctx.parser().pop_block(block);
+                    }
+                    if cancel_reason == Some(EndExecutionReason::ControlFlow) {
+                        let do_break = ctx.parser().libdata().loop_status == LoopStatus::Breaks;
+                        ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
+                        if do_break {
+                            return self.finish_while(ctx, frame);
+                        }
+                    } else if no_exec() {
+                        return self.finish_while(ctx, frame);
+                    }
+                    return self.start_while_condition(ctx, frame);
+                }
+            }
+        }
+        if !frame.started {
+            frame.started = true;
+            trace_if_enabled(ctx.parser(), L!("while"));
+        }
+        self.start_while_condition(ctx, frame)
+    }
+
+    /// Push the next while condition.
+    fn start_while_condition(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut WhileFrame,
+    ) -> FrameAction {
+        frame.saved_status = if frame.first_condition {
+            Statuses::just(EXIT_SUCCESS)
+        } else {
+            ctx.parser().last_statuses()
+        };
+        frame.first_condition = false;
+        let condition = node_ref_of(&frame.header, &frame.header.condition);
+        frame.stage = WhileStage::Condition;
+        frame.awaiting_child = true;
+        push_frame(Frame::Conjunction(ConjunctionFrame {
+            conjunction: condition,
+            associated_block: frame.associated_block,
+            next_job: 0,
+            tested_decorator: false,
+            awaiting_child: false,
+            result: EndExecutionReason::Ok,
+        }))
+    }
+
+    /// Finish a while statement frame.
+    fn finish_while(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut WhileFrame,
+    ) -> FrameAction {
+        trace_if_enabled(ctx.parser(), L!("end while"));
+        FrameAction::Done(frame.result)
+    }
+
+    /// Advance a for statement frame.
+    fn step_for(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut ForFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(_reason) = child_result {
+            if let Some(block) = frame.body_block.take() {
+                ctx.parser().pop_block(block);
+            }
+            if self.check_end_execution(ctx) == Some(EndExecutionReason::ControlFlow) {
+                let do_break = ctx.parser().libdata().loop_status == LoopStatus::Breaks;
+                ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
+                if do_break {
+                    trace_if_enabled(ctx.parser(), L!("end for"));
+                    return FrameAction::Done(frame.result);
+                }
+            }
+            frame.next_value += 1;
+            return self.start_for_iteration(ctx, frame);
+        }
+        if !frame.started {
+            frame.started = true;
+            return self.start_for(ctx, frame);
+        }
+        self.start_for_iteration(ctx, frame)
+    }
+
+    /// Expand a for loop's variable name and values, then start its first iteration.
+    fn start_for(&mut self, ctx: &mut OperationContext<'_>, frame: &mut ForFrame) -> FrameAction {
+        let mut var_name = self.node_source_owned(&frame.header.var_name);
+        if !expand_one(&mut var_name, ExpandFlags::default(), ctx, None) {
+            return FrameAction::Done(report_error!(
                 self,
                 ctx,
-                STATUS_CMD_ERROR,
-                job_list,
-                CALL_STACK_LIMIT_EXCEEDED_ERR_MSG
-            );
+                STATUS_EXPAND_ERROR,
+                &frame.header.var_name,
+                FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG,
+                var_name
+            ));
         }
-        self.run_job_list(ctx, job_list, Some(associated_block))
+        if !valid_var_name(&var_name) {
+            return FrameAction::Done(report_error!(
+                self,
+                ctx,
+                STATUS_INVALID_ARGS,
+                frame.header.var_name,
+                "%s",
+                &varname_error(L!("for"), &var_name).to_string()
+            ));
+        }
+        let mut arguments = vec![];
+        let arg_nodes = Self::get_argument_nodes(&frame.header.args);
+        let result = self.expand_arguments_from_nodes(
+            ctx,
+            &arg_nodes,
+            &mut arguments,
+            WildcardNoMatchBehavior::Allow,
+        );
+        if result != EndExecutionReason::Ok {
+            return FrameAction::Done(result);
+        }
+        if EnvVar::flags_for(&var_name).read_only {
+            return FrameAction::Done(report_error!(
+                self,
+                ctx,
+                STATUS_INVALID_ARGS,
+                frame.header.var_name,
+                "%s: %s: cannot overwrite read-only variable",
+                "for",
+                var_name
+            ));
+        }
+        let existing = ctx.parser().vars().get(&var_name);
+        let set_result = ctx.parser().set_var(
+            &var_name,
+            ParserEnvSetMode::user(EnvMode::LOCAL),
+            existing.map_or(vec![], |var| var.as_list().to_owned()),
+        );
+        assert_eq!(set_result, EnvStackSetResult::Ok);
+        trace_if_enabled_with_args(ctx.parser(), L!("for"), &arguments);
+        frame.event = Some(Event::variable_set(var_name.clone()));
+        frame.var_name = Some(var_name);
+        frame.arguments = arguments;
+        self.start_for_iteration(ctx, frame)
+    }
+
+    /// Start one for loop iteration.
+    fn start_for_iteration(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut ForFrame,
+    ) -> FrameAction {
+        let Some(var_name) = frame.var_name.clone() else {
+            return FrameAction::Done(EndExecutionReason::Ok);
+        };
+        if frame.next_value >= frame.arguments.len() {
+            trace_if_enabled(ctx.parser(), L!("end for"));
+            return FrameAction::Done(frame.result);
+        }
+        if let Some(reason) = self.check_end_execution(ctx) {
+            return FrameAction::Done(reason);
+        }
+        let value = frame.arguments[frame.next_value].clone();
+        let set_result = ctx.parser().set_var(
+            &var_name,
+            ParserEnvSetMode::user(EnvMode::default()),
+            vec![value],
+        );
+        assert_eq!(set_result, EnvStackSetResult::Ok);
+        if let Some(event) = frame.event.as_ref() {
+            event::fire(ctx.parser(), event.clone());
+        }
+        ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
+        let block_id = ctx.parser().push_block(Block::for_block());
+        frame.body_block = Some(block_id);
+        push_frame(Frame::JobList(JobListFrame {
+            jobs: frame.contents.clone(),
+            next_conjunction: 0,
+            associated_block: Some(block_id),
+            checked: false,
+            result: EndExecutionReason::Ok,
+        }))
+    }
+
+    /// Advance a switch statement frame.
+    fn step_switch(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut SwitchFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            if let Some(block) = frame.block_id.take() {
+                ctx.parser().pop_block(block);
+            }
+            trace_if_enabled(ctx.parser(), L!("end switch"));
+            return FrameAction::Done(reason);
+        }
+        if frame.searched {
+            return FrameAction::Done(frame.result);
+        }
+        frame.searched = true;
+
+        // Expand the switch argument.
+        let switch_value = self.node_source_owned(&frame.statement.argument);
+        let mut switch_values_expanded = vec![];
+        let mut errors = ParseErrorList::new();
+        let expand_ret = expand_string(
+            switch_value,
+            &mut switch_values_expanded,
+            ExpandFlags::default(),
+            ctx,
+            Some(&mut errors),
+        );
+        parse_error_offset_source_start(
+            &mut errors,
+            frame.statement.argument.range().unwrap().start(),
+        );
+        match expand_ret.result {
+            ExpandResultCode::Error | ExpandResultCode::Overflow => {
+                return FrameAction::Done(self.report_errors(ctx, expand_ret.status, &errors));
+            }
+            ExpandResultCode::Cancel => {
+                return FrameAction::Done(EndExecutionReason::Cancelled);
+            }
+            ExpandResultCode::WildcardNoMatch => {
+                return FrameAction::Done(
+                    self.report_wildcard_error(ctx, &frame.statement.argument),
+                );
+            }
+            ExpandResultCode::Ok => {
+                if switch_values_expanded.len() > 1 {
+                    let mut error = wgettext_fmt!(
+                        "switch: Expected at most one argument, got %u",
+                        switch_values_expanded.len()
+                    );
+                    error.push('\n');
+                    return FrameAction::Done(report_error_formatted!(
+                        self,
+                        ctx,
+                        STATUS_INVALID_ARGS,
+                        &frame.statement.argument,
+                        error
+                    ));
+                }
+            }
+        }
+        let switch_value_expanded = if switch_values_expanded.is_empty() {
+            WString::new()
+        } else {
+            switch_values_expanded.remove(0).completion
+        };
+
+        let block_id = ctx.parser().push_block(Block::switch_block());
+        frame.block_id = Some(block_id);
+        trace_if_enabled_with_args(ctx.parser(), L!("switch"), &[&switch_value_expanded]);
+
+        let mut result = EndExecutionReason::Ok;
+        let mut matching_case_item = None;
+        for case_item in &frame.statement.cases {
+            if let Some(reason) = self.check_end_execution(ctx) {
+                result = reason;
+                break;
+            }
+            let arg_nodes = Self::get_argument_nodes(&case_item.arguments);
+            let mut case_args = vec![];
+            let case_result = self.expand_arguments_from_nodes(
+                ctx,
+                &arg_nodes,
+                &mut case_args,
+                WildcardNoMatchBehavior::Fail,
+            );
+            if case_result == EndExecutionReason::Ok {
+                for arg in case_args {
+                    let unescaped_arg = unescape_wildcards(&arg);
+                    if wildcard_match(&switch_value_expanded, &unescaped_arg, false) {
+                        matching_case_item = Some(case_item);
+                        break;
+                    }
+                }
+            }
+            if matching_case_item.is_some() {
+                break;
+            }
+        }
+
+        if result != EndExecutionReason::Ok {
+            ctx.parser().pop_block(block_id);
+            trace_if_enabled(ctx.parser(), L!("end switch"));
+            return FrameAction::Done(result);
+        }
+        let Some(case_item) = matching_case_item else {
+            ctx.parser().pop_block(block_id);
+            trace_if_enabled(ctx.parser(), L!("end switch"));
+            return FrameAction::Done(EndExecutionReason::Ok);
+        };
+        let body = node_ref_of(&frame.statement, &case_item.body);
+        frame.result = EndExecutionReason::Ok;
+        frame.awaiting_child = true;
+        push_frame(Frame::JobList(JobListFrame {
+            jobs: body,
+            next_conjunction: 0,
+            associated_block: Some(block_id),
+            checked: false,
+            result: EndExecutionReason::Ok,
+        }))
     }
 
     // Check to see if we should end execution.
@@ -888,418 +1796,6 @@ impl ExecutionContext {
         reason
     }
 
-    // These encapsulate the actual logic of various (block) statements.
-    fn run_block_statement(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        statement: &ast::BlockStatement,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        let bh = &statement.header;
-        let contents = &statement.jobs;
-        match bh {
-            BlockStatementHeader::For(fh) => self.run_for_statement(ctx, fh, contents),
-            BlockStatementHeader::While(wh) => {
-                self.run_while_statement(ctx, wh, contents, associated_block)
-            }
-            BlockStatementHeader::Function(fh) => self.run_function_statement(ctx, statement, fh),
-            BlockStatementHeader::Begin(_bh) => self.run_begin_statement(ctx, contents),
-        }
-    }
-
-    fn run_for_statement(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        header: &ast::ForHeader,
-        block_contents: &ast::JobList,
-    ) -> EndExecutionReason {
-        // Get the variable name: `for var_name in ...`. We expand the variable name. It better result
-        // in just one.
-        let mut for_var_name = self.node_source_owned(&header.var_name);
-        if !expand_one(&mut for_var_name, ExpandFlags::default(), ctx, None) {
-            return report_error!(
-                self,
-                ctx,
-                STATUS_EXPAND_ERROR,
-                &header.var_name,
-                FAILED_EXPANSION_VARIABLE_NAME_ERR_MSG,
-                for_var_name
-            );
-        }
-
-        if !valid_var_name(&for_var_name) {
-            return report_error!(
-                self,
-                ctx,
-                STATUS_INVALID_ARGS,
-                header.var_name,
-                "%s",
-                &varname_error(L!("for"), &for_var_name).to_string()
-            );
-        }
-
-        // Get the contents to iterate over.
-        let mut arguments = vec![];
-        let arg_nodes = Self::get_argument_nodes(&header.args);
-        let ret = self.expand_arguments_from_nodes(
-            ctx,
-            &arg_nodes,
-            &mut arguments,
-            WildcardNoMatchBehavior::Allow,
-        );
-        if ret != EndExecutionReason::Ok {
-            return ret;
-        }
-        let var = ctx.parser().vars().get(&for_var_name);
-        if EnvVar::flags_for(&for_var_name).read_only {
-            return report_error!(
-                self,
-                ctx,
-                STATUS_INVALID_ARGS,
-                header.var_name,
-                "%s: %s: cannot overwrite read-only variable",
-                "for",
-                for_var_name
-            );
-        }
-
-        let retval = ctx.parser().set_var(
-            &for_var_name,
-            ParserEnvSetMode::user(EnvMode::LOCAL),
-            var.map_or(vec![], |var| var.as_list().to_owned()),
-        );
-        assert_eq!(retval, EnvStackSetResult::Ok);
-
-        trace_if_enabled_with_args(ctx.parser(), L!("for"), &arguments);
-
-        // We fire the same event over and over again, just construct it once.
-        let evt = Event::variable_set(for_var_name.clone());
-
-        // Now drive the for loop.
-        let mut ret = EndExecutionReason::Ok;
-        for val in arguments {
-            if let Some(reason) = self.check_end_execution(ctx) {
-                ret = reason;
-                break;
-            }
-
-            let retval = ctx.parser().set_var(
-                &for_var_name,
-                ParserEnvSetMode::user(EnvMode::default()),
-                vec![val],
-            );
-            assert_eq!(
-                retval,
-                EnvStackSetResult::Ok,
-                "for loop variable should have been successfully set"
-            );
-            event::fire(ctx.parser(), evt.clone());
-
-            ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
-
-            // Push and pop the block again and again to clear variables
-            let fb = ctx.parser().push_block(Block::for_block());
-            self.run_job_list(ctx, block_contents, Some(fb));
-            ctx.parser().pop_block(fb);
-
-            if self.check_end_execution(ctx) == Some(EndExecutionReason::ControlFlow) {
-                // Handle break or continue.
-                let do_break = ctx.parser().libdata().loop_status == LoopStatus::Breaks;
-                ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
-                if do_break {
-                    break;
-                }
-            }
-        }
-
-        trace_if_enabled(ctx.parser(), L!("end for"));
-        ret
-    }
-
-    fn run_if_statement(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        statement: &ast::IfStatement,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        let mut result = EndExecutionReason::Ok;
-
-        // We have a sequence of if clauses, with a final else, resulting in a single job list that we
-        // execute.
-        let mut job_list_to_execute = None;
-        let mut if_clause = &statement.if_clause;
-
-        // Index of the *next* elseif_clause to test.
-        let elseif_clauses = &statement.elseif_clauses;
-        let mut next_elseif_idx = 0;
-
-        // We start with the 'if'.
-        trace_if_enabled(ctx.parser(), L!("if"));
-
-        loop {
-            if let Some(ret) = self.check_end_execution(ctx) {
-                result = ret;
-                break;
-            }
-
-            // An if condition has a job and a "tail" of andor jobs, e.g. "foo ; and bar; or baz".
-            // Check the condition and the tail. We treat end_execution_reason_t::error here as failure,
-            // in accordance with historic behavior.
-            let mut cond_ret =
-                self.run_job_conjunction(ctx, &if_clause.condition, associated_block);
-            if cond_ret == EndExecutionReason::Ok {
-                cond_ret = self.run_andor_job_list(ctx, &if_clause.andor_tail, associated_block);
-            }
-            let take_branch =
-                cond_ret == EndExecutionReason::Ok && ctx.parser().last_status() == EXIT_SUCCESS;
-
-            if take_branch {
-                // Condition succeeded.
-                job_list_to_execute = Some(&if_clause.body);
-                break;
-            }
-
-            // See if we have an elseif.
-            next_elseif_idx += 1;
-            if let Some(elseif_clause) = elseif_clauses.get(next_elseif_idx - 1) {
-                trace_if_enabled(ctx.parser(), L!("else if"));
-                if_clause = &elseif_clause.if_clause;
-            } else {
-                break;
-            }
-        }
-
-        if job_list_to_execute.is_none() {
-            // our ifs and elseifs failed.
-            // Check our else body.
-            if let Some(else_clause) = statement.else_clause.as_ref() {
-                trace_if_enabled(ctx.parser(), L!("else"));
-                job_list_to_execute = Some(&else_clause.body);
-            }
-        }
-
-        match job_list_to_execute {
-            None => {
-                // 'if' condition failed, no else clause, return 0, we're done.
-                // No job list means no successful conditions, so return 0 (issue #1443).
-                ctx.parser()
-                    .set_last_statuses(Statuses::just(STATUS_CMD_OK));
-            }
-            Some(job_list_to_execute) => {
-                // Execute the job list we got.
-                let ib = ctx.parser().push_block(Block::if_block());
-                self.run_job_list(ctx, job_list_to_execute, Some(ib));
-                if let Some(ret) = self.check_end_execution(ctx) {
-                    result = ret;
-                }
-                ctx.parser().pop_block(ib);
-            }
-        }
-        trace_if_enabled(ctx.parser(), L!("end if"));
-
-        // It's possible there's a last-minute cancellation (issue #1297).
-        if let Some(ret) = self.check_end_execution(ctx) {
-            result = ret;
-        }
-
-        // Otherwise, take the exit status of the job list. Reversal of issue #1061.
-        result
-    }
-
-    fn run_switch_statement(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        statement: &ast::SwitchStatement,
-    ) -> EndExecutionReason {
-        // Get the switch variable.
-        let switch_value = self.node_source_owned(&statement.argument);
-
-        // Expand it. We need to offset any errors by the position of the string.
-        let mut switch_values_expanded = vec![];
-        let mut errors = ParseErrorList::new();
-        let expand_ret = expand_string(
-            switch_value,
-            &mut switch_values_expanded,
-            ExpandFlags::default(),
-            ctx,
-            Some(&mut errors),
-        );
-        parse_error_offset_source_start(&mut errors, statement.argument.range().unwrap().start());
-
-        match expand_ret.result {
-            ExpandResultCode::Error | ExpandResultCode::Overflow => {
-                return self.report_errors(ctx, expand_ret.status, &errors);
-            }
-            ExpandResultCode::Cancel => {
-                return EndExecutionReason::Cancelled;
-            }
-            ExpandResultCode::WildcardNoMatch => {
-                return self.report_wildcard_error(ctx, &statement.argument);
-            }
-            ExpandResultCode::Ok => {
-                if switch_values_expanded.len() > 1 {
-                    let mut error = wgettext_fmt!(
-                        "switch: Expected at most one argument, got %u",
-                        switch_values_expanded.len()
-                    );
-                    error.push('\n');
-                    return report_error_formatted!(
-                        self,
-                        ctx,
-                        STATUS_INVALID_ARGS,
-                        &statement.argument,
-                        error
-                    );
-                }
-            }
-        }
-
-        // If we expanded to nothing, match the empty string.
-        assert!(
-            switch_values_expanded.len() <= 1,
-            "Should have at most one expansion"
-        );
-        let switch_value_expanded = if switch_values_expanded.is_empty() {
-            WString::new()
-        } else {
-            switch_values_expanded.remove(0).completion
-        };
-
-        let mut result = EndExecutionReason::Ok;
-
-        trace_if_enabled_with_args(ctx.parser(), L!("switch"), &[&switch_value_expanded]);
-        let sb = ctx.parser().push_block(Block::switch_block());
-
-        // Expand case statements.
-        let mut matching_case_item = None;
-        for case_item in &statement.cases {
-            if let Some(ret) = self.check_end_execution(ctx) {
-                result = ret;
-                break;
-            }
-
-            // Expand arguments. A case item list may have a wildcard that fails to expand to
-            // anything. We also report case errors, but don't stop execution; i.e. a case item that
-            // contains an unexpandable process will report and then fail to match.
-            let arg_nodes = Self::get_argument_nodes(&case_item.arguments);
-            let mut case_args = vec![];
-            let case_result = self.expand_arguments_from_nodes(
-                ctx,
-                &arg_nodes,
-                &mut case_args,
-                WildcardNoMatchBehavior::Fail,
-            );
-            if case_result == EndExecutionReason::Ok {
-                for arg in case_args {
-                    // Unescape wildcards so they can be expanded again.
-                    let unescaped_arg = unescape_wildcards(&arg);
-                    if wildcard_match(&switch_value_expanded, &unescaped_arg, false) {
-                        // If this matched, we're done.
-                        matching_case_item = Some(case_item);
-                        break;
-                    }
-                }
-            }
-            if matching_case_item.is_some() {
-                break;
-            }
-        }
-
-        if let Some(case_item) = matching_case_item {
-            // Success, evaluate the job list.
-            assert_eq!(result, EndExecutionReason::Ok, "Expected success");
-            result = self.run_job_list(ctx, &case_item.body, Some(sb));
-        }
-
-        ctx.parser().pop_block(sb);
-        trace_if_enabled(ctx.parser(), L!("end switch"));
-        result
-    }
-
-    fn run_while_statement(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        header: &ast::WhileHeader,
-        contents: &ast::JobList,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        let mut ret = EndExecutionReason::Ok;
-
-        // "The exit status of the while loop shall be the exit status of the last compound-list-2
-        // executed, or zero if none was executed."
-        // Here are more detailed requirements:
-        // - If we execute the loop body zero times, or the loop body is empty, the status is success.
-        // - An empty loop body is treated as true, both in the loop condition and after loop exit.
-        // - The exit status of the last command is visible in the loop condition. (i.e. do not set the
-        // exit status to true BEFORE executing the loop condition).
-        // We achieve this by restoring the status if the loop condition fails, plus a special
-        // affordance for the first condition.
-        let mut first_cond_check = true;
-
-        trace_if_enabled(ctx.parser(), L!("while"));
-
-        // Run while the condition is true.
-        loop {
-            // Save off the exit status if it came from the loop body. We'll restore it if the condition
-            // is false.
-            let cond_saved_status = if first_cond_check {
-                Statuses::just(EXIT_SUCCESS)
-            } else {
-                ctx.parser().last_statuses()
-            };
-            first_cond_check = false;
-
-            // Check the condition.
-            let mut cond_ret = self.run_job_conjunction(ctx, &header.condition, associated_block);
-            if cond_ret == EndExecutionReason::Ok {
-                cond_ret = self.run_andor_job_list(ctx, &header.andor_tail, associated_block);
-            }
-
-            // If the loop condition failed to execute, then exit the loop without modifying the exit
-            // status. If the loop condition executed with a failure status, restore the status and then
-            // exit the loop.
-            if cond_ret != EndExecutionReason::Ok {
-                break;
-            } else if ctx.parser().last_status() != EXIT_SUCCESS {
-                ctx.parser().set_last_statuses(cond_saved_status);
-                break;
-            }
-
-            // Check cancellation.
-            if let Some(reason) = self.check_end_execution(ctx) {
-                ret = reason;
-                break;
-            }
-
-            // Push a while block and then check its cancellation reason.
-            ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
-
-            let wb = ctx.parser().push_block(Block::while_block());
-            self.run_job_list(ctx, contents, Some(wb));
-            let cancel_reason = self.check_end_execution(ctx);
-            ctx.parser().pop_block(wb);
-
-            if cancel_reason == Some(EndExecutionReason::ControlFlow) {
-                // Handle break or continue.
-                let do_break = ctx.parser().libdata().loop_status == LoopStatus::Breaks;
-                ctx.parser().libdata_mut().loop_status = LoopStatus::Normals;
-                if do_break {
-                    break;
-                } else {
-                    continue;
-                }
-            }
-
-            // no_exec means that fish was invoked with -n or --no-execute. If set, we allow the loop to
-            // not-execute once so its contents can be checked, and then break.
-            if no_exec() {
-                break;
-            }
-        }
-        trace_if_enabled(ctx.parser(), L!("end while"));
-        ret
-    }
-
     // Define a function.
     fn run_function_statement(
         &mut self,
@@ -1349,22 +1845,6 @@ impl ExecutionContext {
             report_error!(self, ctx, err_code, header, "%s", errtext);
         }
         result
-    }
-
-    fn run_begin_statement(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        contents: &ast::JobList,
-    ) -> EndExecutionReason {
-        // Basic begin/end block. Push a scope block, run jobs, pop it
-        trace_if_enabled(ctx.parser(), L!("begin"));
-        let sb = ctx
-            .parser()
-            .push_block(Block::scope_block(BlockType::Begin));
-        let ret = self.run_job_list(ctx, contents, Some(sb));
-        ctx.parser().pop_block(sb);
-        trace_if_enabled(ctx.parser(), L!("end begin"));
-        ret
     }
 
     fn get_argument_nodes(args: &ast::ArgumentList) -> AstArgsList<'_> {
@@ -1555,11 +2035,12 @@ impl ExecutionContext {
         EndExecutionReason::Ok
     }
 
-    fn run_1_job(
+    fn run_job_leaf(
         &mut self,
         ctx: &mut OperationContext<'_>,
         job_node: &ast::JobPipeline,
         associated_block: Option<BlockId>,
+        background_next_job: bool,
     ) -> EndExecutionReason {
         if let Some(ret) = self.check_end_execution(ctx) {
             return ret;
@@ -1569,8 +2050,6 @@ impl ExecutionContext {
         if no_exec() {
             return EndExecutionReason::Ok;
         }
-
-        let background_next_job = std::mem::take(&mut self.background_next_job);
 
         // Increment the eval_level for the duration of this command.
         let _saved_eval_level = ctx.parser().push_scope(|s| s.eval_level += 1);
@@ -1625,45 +2104,6 @@ impl ExecutionContext {
         // process" containing its node. This allows us to handle block-level redirections.
         // However, if there are no redirections, then we can just jump into the block directly, which
         // is significantly faster.
-        if self.job_is_simple_block(job_node) && !background_next_job {
-            let mut block = None;
-            let mut result =
-                self.apply_variable_assignments(ctx, None, &job_node.variables, &mut block);
-            let ctx = &mut **ScopeGuard::new(ctx, |ctx| {
-                if let Some(block) = block {
-                    ctx.parser().pop_block(block);
-                }
-            });
-
-            let statement = &job_node.statement;
-            assert!(statement_is_redirectable_block(statement));
-            if result == EndExecutionReason::Ok {
-                result = match statement {
-                    Statement::Block(block_statement) => {
-                        self.run_block_statement(ctx, block_statement, associated_block)
-                    }
-                    Statement::Brace(brace_statement) => {
-                        self.run_begin_statement(ctx, &brace_statement.jobs)
-                    }
-                    Statement::If(ifstmt) => self.run_if_statement(ctx, ifstmt, associated_block),
-                    Statement::Switch(switchstmt) => self.run_switch_statement(ctx, switchstmt),
-                    // Other types should be impossible due to the
-                    // statement_is_redirectable_block check.
-                    Statement::Not(_) | Statement::Decorated(_) => {
-                        panic!()
-                    }
-                };
-            }
-
-            finalize_profile_item(
-                ctx,
-                profiling_cmd_name_for_redirectable_block(statement, self.pstree()),
-                false,
-            );
-
-            return result;
-        }
-
         let mut props = JobProperties {
             initial_background: job_is_background,
             ..Default::default()
@@ -1735,103 +2175,6 @@ impl ExecutionContext {
 
         job_reap(ctx.parser(), false, Some(&self.block_io)); // clean up jobs
         pop_result
-    }
-
-    fn test_and_run_1_job_conjunction(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        jc: &ast::JobConjunction,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        // Test this job conjunction if it has an 'and' or 'or' decorator.
-        // If it passes, then run it.
-        if let Some(reason) = self.check_end_execution(ctx) {
-            return reason;
-        }
-        // Maybe skip the job if it has a leading and/or.
-        let mut skip = false;
-        if let Some(deco) = &jc.decorator {
-            let last_status = ctx.parser().last_status();
-            match deco.keyword() {
-                ParseKeyword::And => {
-                    // AND. Skip if the last job failed.
-                    skip = last_status != 0;
-                }
-                ParseKeyword::Or => {
-                    // OR. Skip if the last job succeeded.
-                    skip = last_status == 0;
-                }
-                _ => unreachable!(),
-            }
-        }
-        // Skipping is treated as success.
-        if skip {
-            EndExecutionReason::Ok
-        } else {
-            self.run_job_conjunction(ctx, jc, associated_block)
-        }
-    }
-
-    fn run_job_conjunction(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        job_expr: &ast::JobConjunction,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        if let Some(reason) = self.check_end_execution(ctx) {
-            return reason;
-        }
-        let mut result = self.run_1_job(ctx, &job_expr.job, associated_block);
-        for jc in &job_expr.continuations {
-            if let Some(reason) = self.check_end_execution(ctx) {
-                return reason;
-            }
-            // Check the conjunction type.
-            let last_status = ctx.parser().last_status();
-            let skip = match jc.conjunction.token_type() {
-                ParseTokenType::AndAnd => {
-                    // AND. Skip if the last job failed.
-                    last_status != 0
-                }
-                ParseTokenType::OrOr => {
-                    // OR. Skip if the last job succeeded.
-                    last_status == 0
-                }
-                _ => unreachable!(),
-            };
-            if !skip {
-                result = self.run_1_job(ctx, &jc.job, associated_block);
-            }
-        }
-        result
-    }
-
-    fn run_job_list(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        job_list_node: &ast::JobList,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        let mut result = EndExecutionReason::Ok;
-        for jc in job_list_node {
-            result = self.test_and_run_1_job_conjunction(ctx, jc, associated_block);
-        }
-        // Returns the result of the last job executed or skipped.
-        result
-    }
-
-    fn run_andor_job_list(
-        &mut self,
-        ctx: &mut OperationContext<'_>,
-        job_list_node: &ast::AndorJobList,
-        associated_block: Option<BlockId>,
-    ) -> EndExecutionReason {
-        let mut result = EndExecutionReason::Ok;
-        for aoj in job_list_node {
-            result = self.test_and_run_1_job_conjunction(ctx, &aoj.job, associated_block);
-        }
-        // Returns the result of the last job executed or skipped.
-        result
     }
 
     fn populate_job_from_job_node(
@@ -1958,6 +2301,29 @@ enum WildcardNoMatchBehavior {
     Allow,
 }
 type AstArgsList<'a> = Vec<&'a ast::Argument>;
+
+/// Return the clause at `index`: 0 is the `if` clause, and `i` is `elseif_clauses[i - 1]`.
+fn if_clause_of(statement: &ast::IfStatement, index: usize) -> Option<&ast::IfClause> {
+    if index == 0 {
+        Some(&statement.if_clause)
+    } else {
+        statement
+            .elseif_clauses
+            .get(index - 1)
+            .map(|clause| &clause.if_clause)
+    }
+}
+
+/// Record the completion of one profile entry.
+fn finish_profile_item(ctx: &mut OperationContext<'_>, profile_item: ProfileItemFinish) {
+    let parser = ctx.parser();
+    let eval_level = parser.scope().eval_level;
+    let item = &mut parser.profile_items_mut()[profile_item.item_id];
+    item.duration = ProfileItem::now() - profile_item.start_time;
+    item.level = eval_level;
+    item.cmd = profile_item.command;
+    item.skipped = false;
+}
 
 fn statement_is_redirectable_block(node: &ast::Statement) -> bool {
     match node {

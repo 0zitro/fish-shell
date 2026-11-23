@@ -29,6 +29,7 @@ use crate::{
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
     task::{DescriptorTable, Task, TaskDescriptors, TaskId, TaskTable},
+    task_frame::{Frame, FrameStack, JobListFrame, StatementFrame},
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
 };
@@ -444,6 +445,13 @@ pub struct ParserEnvSetMode {
     pub user: bool,
 }
 
+/// Return a node reference for `node`, which must be part of `source`'s parsed source.
+pub(crate) fn node_ref_of<S: Node, T: Node>(source: &NodeRef<S>, node: &T) -> NodeRef<T> {
+    // SAFETY: the caller states that `node` is part of `source`'s parsed source tree, so the
+    // reference remains valid for the source's lifetime.
+    unsafe { NodeRef::new(source.parsed_source_ref(), node) }
+}
+
 impl ParserEnvSetMode {
     pub fn new(mode: EnvMode) -> Self {
         Self { mode, user: false }
@@ -701,6 +709,27 @@ impl Parser {
         // Restore the current pipeline node.
         let restore_current_node = self.current_node.scoped_replace(None);
 
+        // Move the task's frame stack out for the evaluator.
+        let mut frames = self.take_frame_stack();
+        let initial_frame = {
+            use ast::Kind::{JobList, Statement};
+            match node.kind() {
+                Statement(statement) => Frame::Statement(StatementFrame {
+                    statement: node_ref_of(node, statement),
+                    associated_block: Some(scope_block),
+                    started: false,
+                }),
+                JobList(jobs) => Frame::JobList(JobListFrame {
+                    jobs: node_ref_of(node, jobs),
+                    next_conjunction: 0,
+                    associated_block: Some(scope_block),
+                    checked: false,
+                    result: EndExecutionReason::Ok,
+                }),
+                _ => unreachable!(),
+            }
+        };
+
         let op_ctx = &mut self.context();
         // Propagate our job group.
         op_ctx.job_group = job_group.cloned();
@@ -721,15 +750,9 @@ impl Parser {
             (ld.exec_count, ld.status_count)
         };
         let (prev_exec_count, prev_status_count) = exec_counts(op_ctx);
-        let reason = {
-            use ast::Kind::{JobList, Statement};
-            match node.kind() {
-                Statement(node) => execution_ctx.eval_statement(op_ctx, node, Some(scope_block)),
-                JobList(node) => execution_ctx.eval_job_list(op_ctx, node, scope_block),
-                _ => unreachable!(),
-            }
-        };
+        let reason = execution_ctx.evaluate_frames(op_ctx, &mut frames, initial_frame);
         let (new_exec_count, new_status_count) = exec_counts(op_ctx);
+        self.restore_frame_stack(frames);
 
         drop(restore_current_node);
         self.pop_block(scope_block);
@@ -1007,6 +1030,21 @@ impl Parser {
         self.current_task_mut()
             .descriptors_mut()
             .descriptor_table_mut()
+    }
+
+    /// Remove the current task's frame stack for evaluation.
+    pub(crate) fn take_frame_stack(&mut self) -> FrameStack {
+        std::mem::take(self.current_task_mut().frames_mut())
+    }
+
+    /// Restore the current task's frame stack after evaluation.
+    pub(crate) fn restore_frame_stack(&mut self, frames: FrameStack) {
+        *self.current_task_mut().frames_mut() = frames;
+    }
+
+    /// Replace the scoped evaluation data, restoring a saved value when a frame finishes.
+    pub(crate) fn set_scope(&self, scope: ScopedData) {
+        self.scoped_data.set(scope);
     }
 
     /// Return the task `id` denotes, or `None` when the identity is stale.
