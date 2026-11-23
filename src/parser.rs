@@ -28,7 +28,7 @@ use crate::{
         SuspensionRecord, SuspensionResolution, job_reap,
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
-    task::{DescriptorTable, Task, TaskDescriptors, TaskId, TaskTable},
+    task::{DescriptorTable, Task, TaskDescriptors, TaskId, TaskLifecycle, TaskTable},
     task_frame::{Frame, FrameStack, JobListFrame, StatementFrame},
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
@@ -412,6 +412,9 @@ pub struct Parser {
     /// The task the evaluator runs.
     current_task: TaskId,
 
+    /// The session task, which reads the shell's store.
+    session_task: TaskId,
+
     /// Data managed in a scoped fashion.
     scoped_data: ScopedCell<ScopedData>,
 
@@ -464,7 +467,7 @@ impl ParserEnvSetMode {
 impl Parser {
     /// Create a parser.
     pub fn new(variables: EnvStack, cancel_behavior: CancelBehavior) -> Parser {
-        let (tasks, current_task) = TaskTable::new(Task::session(variables, None));
+        let (tasks, session_task) = TaskTable::new(Task::session(variables, None));
         let mut result = Self {
             interactive_initialized: false,
             current_node: ScopedRefCell::new(None),
@@ -474,7 +477,8 @@ impl Parser {
             suspensions: Default::default(),
             block_list: Default::default(),
             tasks,
-            current_task,
+            current_task: session_task,
+            session_task,
             scoped_data: ScopedCell::new(ScopedData::default()),
             library_data: LibraryData::new(),
             syncs_uvars: false,
@@ -645,7 +649,11 @@ impl Parser {
         let sb = self.push_block(Block::source_block(filename.clone()));
         let _filename_push = self.current_filename.scoped_replace(Some(filename));
 
+        // A file evaluation stops with `exit` without finishing the task that reads the file, as a
+        // function definition file does when the shell already provides the command.
+        let lifecycle = self.current_task_lifecycle();
         let ret = self.eval_wstr(src, io, job_group, BlockType::Top);
+        self.current_task_mut().set_lifecycle(lifecycle);
 
         self.pop_block(sb);
         self.libdata_mut().exit_current_script = false;
@@ -1040,6 +1048,51 @@ impl Parser {
     /// Restore the current task's frame stack after evaluation.
     pub(crate) fn restore_frame_stack(&mut self, frames: FrameStack) {
         *self.current_task_mut().frames_mut() = frames;
+    }
+
+    /// Create a task that evaluates `frames` with a copy of the current store.
+    pub(crate) fn create_stage_task(&mut self, frames: FrameStack) -> TaskId {
+        let mut task = self.current_task().start_from();
+        *task.frames_mut() = frames;
+        self.tasks.insert(task)
+    }
+
+    /// Remove the frames of the task `id` denotes.
+    pub(crate) fn take_task_frames(&mut self, id: TaskId) -> Option<FrameStack> {
+        self.tasks
+            .get_mut(id)
+            .map(|task| std::mem::take(task.frames_mut()))
+    }
+
+    /// Remove the task `id` denotes.
+    pub(crate) fn remove_task(&mut self, id: TaskId) -> Option<Task> {
+        self.tasks.remove(id)
+    }
+
+    /// Return the identity of the task the evaluator runs.
+    pub(crate) fn current_task_id(&self) -> TaskId {
+        self.current_task
+    }
+
+    /// Make `id` the task the evaluator runs.
+    pub(crate) fn set_current_task(&mut self, id: TaskId) {
+        self.current_task = id;
+    }
+
+    /// Return whether the evaluator runs the session task.
+    pub(crate) fn current_task_is_session(&self) -> bool {
+        self.current_task == self.session_task
+    }
+
+    /// Finish the task the evaluator runs.
+    pub(crate) fn finish_current_task(&mut self) {
+        self.current_task_mut()
+            .set_lifecycle(TaskLifecycle::Finished);
+    }
+
+    /// Return the lifecycle stage of the task the evaluator runs.
+    pub(crate) fn current_task_lifecycle(&self) -> TaskLifecycle {
+        self.current_task().lifecycle()
     }
 
     /// Replace the scoped evaluation data, restoring a saved value when a frame finishes.

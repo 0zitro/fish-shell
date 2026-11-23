@@ -10,11 +10,12 @@ pub fn exit(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) ->
         ControlFlow::Break(result) => return result,
     };
 
-    // Mark that we are exiting in the parser.
-    // TODO: in concurrent mode this won't successfully exit a pipeline, as there are other parsers
-    // involved. That is, `exit | sleep 1000` may not exit as hoped. Need to rationalize what
-    // behavior we want here.
-    parser.libdata_mut().exit_current_script = true;
+    // Only the session task ends the shell; any other task finishes here.
+    if parser.current_task_is_session() {
+        parser.libdata_mut().exit_current_script = true;
+    } else {
+        parser.finish_current_task();
+    }
 
     BuiltinResult::from_dynamic(retval)
 }

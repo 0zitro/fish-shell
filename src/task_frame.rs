@@ -9,11 +9,13 @@
 use crate::ast;
 use crate::env::Statuses;
 use crate::event::Event;
+use crate::function::FunctionProperties;
 use crate::parse_execution::EndExecutionReason;
 use crate::parse_tree::{NodeRef, ParsedSourceRef};
 use crate::parser::{BlockId, ScopedData};
 use crate::timer::PrintElapsedOnDrop;
 use fish_widestring::WString;
+use std::sync::Arc;
 
 /// A task's stack of evaluation frames.
 #[derive(Default)]
@@ -48,6 +50,8 @@ pub(crate) enum Frame {
     Statement(StatementFrame),
     /// One simple block job, awaiting the block statement it evaluates.
     SimpleBlockJob(Box<SimpleBlockJobFrame>),
+    /// One function call, awaiting the function body.
+    FunctionCall(Box<FunctionCallFrame>),
     /// A begin or brace block, awaiting its body.
     Begin(BeginFrame),
     /// One if statement, at its current clause or body.
@@ -69,6 +73,7 @@ impl Frame {
             Frame::Conjunction(frame) => frame.conjunction.parsed_source_ref(),
             Frame::Statement(frame) => frame.statement.parsed_source_ref(),
             Frame::SimpleBlockJob(frame) => frame.job_node.parsed_source_ref(),
+            Frame::FunctionCall(frame) => frame.props.func_node.parsed_source_ref(),
             Frame::Begin(frame) => frame.contents.parsed_source_ref(),
             Frame::If(frame) => frame.statement.parsed_source_ref(),
             Frame::While(frame) => frame.header.parsed_source_ref(),
@@ -184,6 +189,27 @@ pub(crate) struct ProfileItemFinish {
 
     /// The command name the profile item records.
     pub(crate) command: WString,
+}
+
+/// One function call, awaiting the function body.
+pub(crate) struct FunctionCallFrame {
+    /// The properties of the called function.
+    pub(crate) props: Arc<FunctionProperties>,
+
+    /// The function's arguments, with the function name first.
+    pub(crate) argv: Vec<WString>,
+
+    /// The block that holds the function's variables.
+    pub(crate) function_block: Option<BlockId>,
+
+    /// The scope block pushed for the function body.
+    pub(crate) scope_block: Option<BlockId>,
+
+    /// The command counter before the call.
+    pub(crate) prev_exec_count: u64,
+
+    /// The status counter before the call.
+    pub(crate) prev_status_count: u64,
 }
 
 /// A begin or brace block, awaiting its body.

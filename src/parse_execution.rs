@@ -15,7 +15,7 @@ use crate::{
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::exec_job,
+    exec::{exec_job, function_prepare_environment, function_restore_environment},
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
     },
@@ -40,16 +40,17 @@ use crate::{
     path::{path_as_implicit_cd, path_try_get_path},
     prelude::*,
     proc::{
-        ConcreteAssignment, Job, JobControl, JobProperties, Process, ProcessType,
+        ConcreteAssignment, Job, JobControl, JobProperties, Process, ProcessType, TaskStage,
         get_job_control_mode, job_reap, no_exec,
     },
     reader::fish_is_unwinding_for_exit,
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
+    task::TaskLifecycle,
     task_frame::{
-        AndorJobListFrame, BeginFrame, ConjunctionFrame, ForFrame, Frame, FrameStack, IfFrame,
-        IfStage, JobListFrame, ProfileItemFinish, SimpleBlockJobFrame, StatementFrame, SwitchFrame,
-        WhileFrame, WhileStage,
+        AndorJobListFrame, BeginFrame, ConjunctionFrame, ForFrame, Frame, FrameStack,
+        FunctionCallFrame, IfFrame, IfStage, JobListFrame, ProfileItemFinish, SimpleBlockJobFrame,
+        StatementFrame, SwitchFrame, WhileFrame, WhileStage,
     },
     timer::push_timer,
     tokenizer::{PipeOrRedir, TokenType, variable_assignment_equals_pos},
@@ -204,6 +205,18 @@ impl ExecutionContext {
         }
     }
 
+    /// Evaluate a frame stack that already records its frames.
+    pub(crate) fn evaluate_frame_stack(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frames: &mut FrameStack,
+    ) -> EndExecutionReason {
+        match frames.pop() {
+            Some(initial) => self.evaluate_frames(ctx, frames, initial),
+            None => EndExecutionReason::Ok,
+        }
+    }
+
     /// Advance one frame by one step.
     fn step_frame(
         &mut self,
@@ -217,6 +230,7 @@ impl ExecutionContext {
             Frame::Conjunction(frame) => self.step_conjunction(ctx, frame, child_result),
             Frame::Statement(frame) => self.step_statement(ctx, frame, child_result),
             Frame::SimpleBlockJob(frame) => self.step_simple_block_job(ctx, frame, child_result),
+            Frame::FunctionCall(frame) => self.step_function_call(ctx, frame, child_result),
             Frame::Begin(frame) => self.step_begin(ctx, frame, child_result),
             Frame::If(frame) => self.step_if(ctx, frame, child_result),
             Frame::While(frame) => self.step_while(ctx, frame, child_result),
@@ -614,6 +628,49 @@ impl ExecutionContext {
             }));
         }
         FrameAction::Done(EndExecutionReason::Ok)
+    }
+
+    /// Advance a function call frame.
+    fn step_function_call(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut FunctionCallFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            if let Some(scope_block) = frame.scope_block.take() {
+                ctx.parser().pop_block(scope_block);
+            }
+            if let Some(function_block) = frame.function_block.take() {
+                function_restore_environment(ctx.parser(), function_block);
+            }
+            let libdata = ctx.parser().libdata();
+            let was_empty = reason == EndExecutionReason::Ok
+                && libdata.exec_count == frame.prev_exec_count
+                && libdata.status_count == frame.prev_status_count;
+            if was_empty {
+                ctx.parser().set_last_statuses(Statuses::just(EXIT_SUCCESS));
+            }
+            return FrameAction::Done(reason);
+        }
+
+        frame.prev_exec_count = ctx.parser().libdata().exec_count;
+        frame.prev_status_count = ctx.parser().libdata().status_count;
+        frame.function_block = Some(function_prepare_environment(
+            ctx.parser(),
+            frame.argv.clone(),
+            &frame.props,
+        ));
+        let scope_block = ctx.parser().push_block(Block::scope_block(BlockType::Top));
+        frame.scope_block = Some(scope_block);
+        let body = frame.props.func_node.child_ref(|node| &node.jobs);
+        push_frame(Frame::JobList(JobListFrame {
+            jobs: body,
+            next_conjunction: 0,
+            associated_block: Some(scope_block),
+            checked: false,
+            result: EndExecutionReason::Ok,
+        }))
     }
 
     /// Advance an if statement frame.
@@ -1132,6 +1189,9 @@ impl ExecutionContext {
             return Some(EndExecutionReason::Cancelled);
         }
         let parser = ctx.parser();
+        if parser.current_task_lifecycle() == TaskLifecycle::Finished {
+            return Some(EndExecutionReason::Cancelled);
+        }
         let ld = &parser.libdata();
         if ld.exit_current_script {
             return Some(EndExecutionReason::Cancelled);
@@ -2252,6 +2312,25 @@ impl ExecutionContext {
 
         // Return what happened.
         if result == EndExecutionReason::Ok {
+            // A stage of a background job whose command the shell evaluates is a task. A
+            // foreground pipeline stage becomes a task when the scheduler starts it.
+            if j.is_initially_background() {
+                for proc in processes.iter_mut() {
+                    let task_stage = match &proc.typ {
+                        ProcessType::Function { props: Some(props) } => Some(TaskStage::Function {
+                            props: Arc::clone(props),
+                        }),
+                        ProcessType::BlockNode(statement) => {
+                            Some(TaskStage::Block(statement.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(task_stage) = task_stage {
+                        proc.typ = ProcessType::Task(task_stage);
+                    }
+                }
+            }
+
             // Link up the processes.
             assert!(!processes.is_empty());
             *j.processes_mut() = processes.into_boxed_slice();

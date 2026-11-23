@@ -237,7 +237,6 @@ impl Task {
     }
 
     /// Return a task started from this one: a copy of its store and descriptors.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_from(&self) -> Task {
         Task {
             store: self.store.copy_for_task(),

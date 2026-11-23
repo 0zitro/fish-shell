@@ -2,6 +2,7 @@
 //! functions for tracking children. These functions do not themselves launch new processes,
 //! the exec library will call proc to create representations of the running jobs as needed.
 
+use crate::task::TaskId;
 use crate::{
     ast,
     common::{WSL, is_windows_subsystem_for_linux},
@@ -68,8 +69,21 @@ pub enum ProcessType {
     /// A block of commands, represented as a node.
     /// This is always either block, ifs, or switchs, never boolean or decorated.
     BlockNode(NodeRef<ast::Statement>),
+    /// A shell evaluation that a task performs as one pipeline stage.
+    Task(TaskStage),
     /// The exec builtin.
     Exec,
+}
+
+/// The shell evaluation one task stage performs.
+pub enum TaskStage {
+    /// A function call, with the properties resolved when the stage was populated.
+    Function {
+        /// The properties of the called function.
+        props: Arc<FunctionProperties>,
+    },
+    /// A block, conditional, loop or brace block.
+    Block(NodeRef<ast::Statement>),
 }
 
 #[repr(u8)]
@@ -383,6 +397,9 @@ pub struct Process {
     /// Process ID or `None` where not available.
     pub pid: OnceLock<Pid>,
 
+    /// The task this stage evaluates, when it is a task stage.
+    pub(crate) task_id: OnceLock<TaskId>,
+
     /// If we are an "internal process," that process.
     pub internal_proc: RefCell<Option<Arc<InternalProc>>>,
 
@@ -512,10 +529,13 @@ impl Process {
         }
     }
 
-    /// Return whether this process type is internal (block, function, or builtin).
+    /// Return whether this process type is internal (block, function, builtin or task).
     pub fn is_internal(&self) -> bool {
         match self.typ {
-            ProcessType::Builtin | ProcessType::Function { .. } | ProcessType::BlockNode(_) => true,
+            ProcessType::Builtin
+            | ProcessType::Function { .. }
+            | ProcessType::BlockNode(_)
+            | ProcessType::Task(_) => true,
             ProcessType::External | ProcessType::Exec => false,
         }
     }
@@ -530,11 +550,22 @@ impl Process {
     pub fn is_block_node(&self) -> bool {
         matches!(self.typ, ProcessType::BlockNode(_))
     }
+    pub fn is_task_stage(&self) -> bool {
+        matches!(self.typ, ProcessType::Task(_))
+    }
     pub fn is_external(&self) -> bool {
         matches!(self.typ, ProcessType::External)
     }
     pub fn is_exec(&self) -> bool {
         matches!(self.typ, ProcessType::Exec)
+    }
+
+    /// Return whether this stage evaluates a block statement, directly or as a task.
+    pub fn evaluates_block_statement(&self) -> bool {
+        matches!(
+            &self.typ,
+            ProcessType::BlockNode(_) | ProcessType::Task(TaskStage::Block(_))
+        )
     }
 
     /// Return the wait handle for the process, if it exists.

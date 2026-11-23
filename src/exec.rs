@@ -30,16 +30,18 @@ use crate::io::{
 };
 use crate::nix::isatty;
 use crate::null_terminated_array::OwningNullTerminatedArray;
+use crate::parse_execution::ExecutionContext;
 use crate::parser::{Block, BlockId, BlockType, EvalRes, Parser, ParserEnvSetMode};
 use crate::prelude::*;
 use crate::proc::{
-    InternalProc, Job, JobGroupRef, Pid, ProcStatus, Process, ProcessType, hup_jobs,
+    InternalProc, Job, JobGroupRef, Pid, ProcStatus, Process, ProcessType, TaskStage, hup_jobs,
     is_interactive_session, jobs_requiring_warning_on_exit, no_exec, print_exit_warning_for_jobs,
     process_mark_finished_children,
 };
 use crate::reader::{reader_run_count, restore_term_mode};
 use crate::redirection::{Dup2List, dup2_list_resolve_chain};
 use crate::signal::RawSignal;
+use crate::task_frame::{Frame, FrameStack, FunctionCallFrame, StatementFrame};
 use crate::threads::{ThreadPool, is_forked_child};
 use crate::trace::trace_if_enabled_with_args;
 use crate::tty_handoff::TtyHandoff;
@@ -975,7 +977,7 @@ fn exec_external_command(
 
 // Given that we are about to execute a function, push a function block and set up the
 // variable environment.
-fn function_prepare_environment(
+pub(crate) fn function_prepare_environment(
     parser: &mut Parser,
     mut argv: Vec<WString>,
     props: &FunctionProperties,
@@ -1027,7 +1029,7 @@ fn function_prepare_environment(
 }
 
 // Given that we are done executing a function, restore the environment.
-fn function_restore_environment(parser: &mut Parser, block: BlockId) {
+pub(crate) fn function_restore_environment(parser: &mut Parser, block: BlockId) {
     parser.pop_block(block);
 
     // If we returned due to a return statement, then stop returning now.
@@ -1146,6 +1148,86 @@ fn exec_block_or_func_process(
         &io_chain,
     );
 
+    Ok(())
+}
+
+/// Execute a task stage: evaluate the stage's frames in a task started from the running task.
+fn exec_task_process(
+    parser: &mut Parser,
+    j: &Job,
+    p: &Process,
+    stage: &TaskStage,
+    mut io_chain: IoChain,
+    piped_output_needs_buffering: bool,
+) -> LaunchResult {
+    // A piped task stage writes into a buffer while the next stage launches, as an internal
+    // process does.
+    let mut block_output_bufferfill = None;
+    if piped_output_needs_buffering {
+        match IoBufferfill::create() {
+            Ok(bufferfill) => {
+                io_chain.push(bufferfill.clone());
+                block_output_bufferfill = Some(bufferfill);
+            }
+            Err(_) => return Err(()),
+        }
+    }
+
+    let (frames, source) = match stage {
+        TaskStage::Function { props } => {
+            let mut frames = FrameStack::new();
+            frames.push(Frame::FunctionCall(Box::new(FunctionCallFrame {
+                props: Arc::clone(props),
+                argv: p.argv().clone(),
+                function_block: None,
+                scope_block: None,
+                prev_exec_count: 0,
+                prev_status_count: 0,
+            })));
+            (frames, props.func_node.parsed_source_ref())
+        }
+        TaskStage::Block(statement) => {
+            let mut frames = FrameStack::new();
+            frames.push(Frame::Statement(StatementFrame {
+                statement: statement.clone(),
+                associated_block: None,
+                started: false,
+            }));
+            (frames, statement.parsed_source_ref())
+        }
+    };
+
+    let task_id = parser.create_stage_task(frames);
+    let _ = p.task_id.set(task_id);
+    let mut task_frames = parser
+        .take_task_frames(task_id)
+        .expect("the stage task frames are present");
+    let previous_task = parser.current_task_id();
+    parser.set_current_task(task_id);
+    let mut execution_ctx = ExecutionContext::new(source, io_chain.clone());
+    {
+        let mut op_ctx = parser.context();
+        op_ctx.job_group.clone_from(&j.group);
+        let _ = execution_ctx.evaluate_frame_stack(&mut op_ctx, &mut task_frames);
+    }
+    let status = ProcStatus::from_exit_code(parser.last_status());
+    parser.set_current_task(previous_task);
+    let _ = parser.remove_task(task_id);
+
+    p.status.set(status);
+    if status.signal_exited() {
+        let sig = status.signal_code();
+        if is_interactive_session() && [SIGINT, SIGQUIT].contains(&sig) {
+            j.group().cancel_with_signal(RawSignal::new(sig));
+        }
+    }
+
+    let mut buffer_contents = vec![];
+    if let Some(bufferfill) = block_output_bufferfill {
+        io_chain.remove(&*bufferfill);
+        buffer_contents = IoBufferfill::finish(bufferfill).newline_serialized();
+    }
+    run_internal_process_or_short_circuit(parser, j, p, buffer_contents, vec![], &io_chain);
     Ok(())
 }
 
@@ -1333,7 +1415,7 @@ fn exec_process_in_job(
         process_net_io_chain.push(Arc::new(IoClose::new(afd.as_raw_fd())));
     }
 
-    if !p.is_block_node() {
+    if !p.evaluates_block_statement() {
         // A simple `begin ... end` should not be considered an execution of a command.
         parser.libdata_mut().exec_count += 1;
     }
@@ -1368,11 +1450,19 @@ fn exec_process_in_job(
 
     // Execute the process.
     p.check_generations_before_launch();
-    match p.typ {
+    match &p.typ {
         ProcessType::Function { .. } | ProcessType::BlockNode(_) => exec_block_or_func_process(
             parser,
             j,
             p,
+            process_net_io_chain,
+            piped_output_needs_buffering,
+        ),
+        ProcessType::Task(stage) => exec_task_process(
+            parser,
+            j,
+            p,
+            stage,
             process_net_io_chain,
             piped_output_needs_buffering,
         ),
