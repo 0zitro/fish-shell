@@ -1,14 +1,61 @@
 //! Implementation of the `resume` builtin.
 
 use super::prelude::*;
+use crate::fds::make_autoclose_pipes;
 use crate::proc::{Suspension, SuspensionDirection, SuspensionForm, SuspensionHandle};
 use crate::wutil::perror_nix;
 use fish_widestring::bytes2wcstring;
-use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use libc::{POLLHUP, POLLIN, SHUT_WR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use nix::unistd::{dup, read};
-use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd, RawFd};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::thread::{self, ScopedJoinHandle};
+
+/// The role a stdin target plays in the suspended command.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum StdinTargetKind {
+    /// Descriptor 0 of the command-form source.
+    SourceStandardInput,
+    /// A duplex descriptor recorded by `--fd`.
+    DuplexEndpoint,
+}
+
+/// One suspension descriptor that receives the resuming command's standard input.
+struct StdinTarget {
+    descriptor: OwnedFd,
+    kind: StdinTargetKind,
+}
+
+/// Return whether stdin is ready, or `false` when the completion pipe is ready.
+///
+/// SAFETY: `poll` only inspects the descriptor table and writes the `revents`
+/// fields of a local `pollfd` array; no Rust value invariant is assumed.
+fn stdin_or_completion_ready(stdin_fd: RawFd, completion_fd: RawFd) -> bool {
+    let mut pollfds = [
+        libc::pollfd {
+            fd: stdin_fd,
+            events: POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: completion_fd,
+            events: POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        let result = unsafe { libc::poll(pollfds.as_mut_ptr(), 2, -1) };
+        if result < 0 {
+            if nix::Error::last() == nix::Error::EINTR {
+                continue;
+            }
+            return false;
+        }
+        return pollfds[0].revents & (POLLIN | POLLHUP) != 0;
+    }
+}
 
 /// Consume a suspension and connect its descriptors to the command's own descriptors.
 ///
@@ -122,9 +169,35 @@ fn resume_stream(streams: &mut IoStreams, suspension: &mut Suspension) -> Builti
 /// Link a command suspension's descriptors to the command's own descriptors.
 fn resume_command(streams: &mut IoStreams, suspension: &mut Suspension) -> BuiltinResult {
     let descriptors = suspension.take_all_descriptors();
+    let has_duplex = descriptors
+        .values()
+        .any(|(direction, _)| *direction == SuspensionDirection::InOut);
+    let duplex_output_count = if streams.stdin_file.is_some() {
+        descriptors
+            .values()
+            .filter(|(direction, _)| *direction == SuspensionDirection::InOut)
+            .count()
+    } else {
+        0
+    };
+    let remaining_duplex_outputs = Arc::new(AtomicUsize::new(duplex_output_count));
+    let completion_pipe = if has_duplex && streams.stdin_file.is_some() {
+        let Ok(pipes) = make_autoclose_pipes() else {
+            perror_nix("pipe", nix::Error::last());
+            return Err(STATUS_CMD_ERROR);
+        };
+        Some(pipes)
+    } else {
+        None
+    };
+    let (completion_read, completion_write) = match completion_pipe {
+        Some(pipes) => (Some(pipes.read), Some(pipes.write)),
+        None => (None, None),
+    };
     let (sender, receiver) = channel::<(bool, Vec<u8>)>();
     let result = thread::scope(|scope| {
         let mut relays: Vec<ScopedJoinHandle<'_, Result<(), nix::Error>>> = Vec::new();
+        let mut stdin_targets: Vec<StdinTarget> = Vec::new();
 
         for (descriptor, (direction, stream)) in descriptors {
             match direction {
@@ -134,15 +207,24 @@ fn resume_command(streams: &mut IoStreams, suspension: &mut Suspension) -> Built
                             let Some(stdin_file) = streams.stdin_file.as_ref() else {
                                 continue;
                             };
-                            match dup(stdin_file.as_fd()) {
-                                Ok(source) => {
-                                    relays.push(
-                                        scope.spawn(move || relay(source.as_fd(), stream.as_fd())),
-                                    );
-                                }
-                                Err(err) => {
-                                    perror_nix("dup", err);
-                                    return Err(err);
+                            if has_duplex {
+                                stdin_targets.push(StdinTarget {
+                                    descriptor: stream,
+                                    kind: StdinTargetKind::SourceStandardInput,
+                                });
+                            } else {
+                                match dup(stdin_file.as_fd()) {
+                                    Ok(source) => {
+                                        relays.push(
+                                            scope.spawn(move || {
+                                                relay(source.as_fd(), stream.as_fd())
+                                            }),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        perror_nix("dup", err);
+                                        return Err(err);
+                                    }
                                 }
                             }
                         }
@@ -166,9 +248,106 @@ fn resume_command(streams: &mut IoStreams, suspension: &mut Suspension) -> Built
                     relays
                         .push(scope.spawn(move || relay_to_sink(stream, sink, is_stderr, sender)));
                 }
+                SuspensionDirection::InOut => {
+                    let Some(stdin_file) = streams.stdin_file.as_ref() else {
+                        // SAFETY: `shutdown` only inspects the descriptor table;
+                        // the descriptor belongs to this record and is valid here.
+                        let _ = unsafe { libc::shutdown(stream.as_raw_fd(), SHUT_WR) };
+                        drop(stream);
+                        continue;
+                    };
+                    let _ = stdin_file;
+                    let Ok(recorded_output) = dup(stream.as_fd()) else {
+                        perror_nix("dup", nix::Error::last());
+                        return Err(nix::Error::last());
+                    };
+
+                    stdin_targets.push(StdinTarget {
+                        descriptor: stream,
+                        kind: StdinTargetKind::DuplexEndpoint,
+                    });
+                    let output_sender = sender.clone();
+                    let sink = stdout_sink(streams);
+                    let remaining_duplex_outputs = Arc::clone(&remaining_duplex_outputs);
+                    let completion = match completion_write.as_ref() {
+                        Some(completion_write) => match dup(completion_write.as_fd()) {
+                            Ok(completion) => Some(completion),
+                            Err(err) => {
+                                perror_nix("dup", err);
+                                return Err(err);
+                            }
+                        },
+                        None => None,
+                    };
+                    relays.push(scope.spawn(move || {
+                        let result =
+                            match relay_to_sink(recorded_output, sink, false, output_sender) {
+                                Err(nix::Error::EIO) => Ok(()),
+                                result => result,
+                            };
+                        if remaining_duplex_outputs.fetch_sub(1, Ordering::Relaxed) == 1 {
+                            if let Some(completion) = completion {
+                                let _ = write_all(completion.as_fd(), &[1]);
+                            }
+                        }
+                        result
+                    }));
+                }
             }
         }
         drop(sender);
+
+        let stdin_thread = if stdin_targets.is_empty() {
+            None
+        } else {
+            let Some(stdin_file) = streams.stdin_file.as_ref() else {
+                return Err(nix::Error::EBADF);
+            };
+            let Ok(stdin_descriptor) = dup(stdin_file.as_fd()) else {
+                perror_nix("dup", nix::Error::last());
+                return Err(nix::Error::last());
+            };
+            let Some(completion_read) = completion_read else {
+                return Err(nix::Error::EBADF);
+            };
+            Some(scope.spawn(move || {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    if !stdin_or_completion_ready(
+                        stdin_descriptor.as_raw_fd(),
+                        completion_read.as_raw_fd(),
+                    ) {
+                        break;
+                    }
+                    match read(stdin_descriptor.as_fd(), &mut buffer) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            for target in &stdin_targets {
+                                write_all(target.descriptor.as_fd(), &buffer[..count])?;
+                            }
+                        }
+                        Err(nix::Error::EINTR) => continue,
+                        Err(err) => return Err(err),
+                    }
+                }
+                for target in &stdin_targets {
+                    if target.kind == StdinTargetKind::SourceStandardInput {
+                        continue;
+                    }
+                    // SAFETY: each target is a live recorded descriptor; shutdown
+                    // only changes a socket's write direction and reports ENOTSOCK
+                    // for the other descriptor kinds.
+                    let shutdown =
+                        unsafe { libc::shutdown(target.descriptor.as_raw_fd(), SHUT_WR) };
+                    if shutdown != 0 {
+                        // A pty has no half-close. In canonical mode EOT ends the
+                        // slave's input without closing the master's output side.
+                        let _ = write_all(target.descriptor.as_fd(), &[0x04]);
+                    }
+                }
+                Ok(())
+            }))
+        };
 
         let mut first_error = None;
         if let Err(err) = receive_output(streams, &receiver) {
@@ -176,6 +355,18 @@ fn resume_command(streams: &mut IoStreams, suspension: &mut Suspension) -> Built
         }
         for relay in relays {
             match relay.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) if err != nix::Error::EPIPE => {
+                    first_error = first_error.or(Some(err));
+                }
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    first_error = first_error.or(Some(nix::Error::EIO));
+                }
+            }
+        }
+        if let Some(stdin_thread) = stdin_thread {
+            match stdin_thread.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) if err != nix::Error::EPIPE => {
                     first_error = first_error.or(Some(err));

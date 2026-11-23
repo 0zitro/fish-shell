@@ -187,6 +187,11 @@ resume $verbose_inherited_handle
 # CHECK: hello
 rm -f $verbose_inherited_file
 
+# A socketpair binding is another duplex connection.
+set -l socketpair_handle (suspend --fd 5=socketpair 'sh -c "cat <&5"')
+printf 'hello\n' | resume $socketpair_handle
+# CHECK: hello
+
 # A pipe has no inout direction, an unknown backend is refused, an empty
 # inherited path is malformed, and a path that cannot be opened is a command
 # failure.
@@ -202,3 +207,17 @@ echo bind_empty_path=$status
 $fish -c 'suspend --fd 5:in=inherit:/no/such/path "cat <&5"' 2>/dev/null
 echo bind_unopenable_path=$status
 # CHECK: bind_unopenable_path=1
+
+# Duplex backends accept only inout, and pair descriptors are validated.
+$fish -c 'suspend --fd 5:in=pty echo x' 2>/dev/null
+echo bind_pty_direction=$status
+# CHECK: bind_pty_direction=2
+$fish -c 'suspend --fd 5:out=socketpair echo x' 2>/dev/null
+echo bind_socketpair_direction=$status
+# CHECK: bind_socketpair_direction=2
+$fish -c 'suspend --fd 5=pair:5:5 echo x' 2>/dev/null
+echo bind_pair_same_descriptor=$status
+# CHECK: bind_pair_same_descriptor=2
+$fish -c 'suspend --fd 5=pair:1:2 echo x' 2>/dev/null
+echo bind_pair_standard_descriptor=$status
+# CHECK: bind_pair_standard_descriptor=2

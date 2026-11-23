@@ -647,13 +647,16 @@ pub enum SuspensionForm {
     Command,
 }
 
-/// Which side of a recorded pipe the suspended pipeline uses.
+/// Which side of a recorded descriptor the suspended pipeline uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SuspensionDirection {
     /// The suspended command reads the descriptor; the shell holds the write end.
     In,
     /// The suspended command writes the descriptor; the shell holds the read end.
     Out,
+    /// The suspended command reads and writes the descriptor; the shell holds a
+    /// duplex descriptor.
+    InOut,
 }
 
 /// The shell's ends of the pipes whose other ends a suspended command has, for each descriptor the

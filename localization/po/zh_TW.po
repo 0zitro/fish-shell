@@ -1791,11 +1791,19 @@ msgid "suspend: %s: descriptor bound twice"
 msgstr ""
 
 #, c-format
+msgid "suspend: %s: direction unsupported by backend"
+msgstr ""
+
+#, c-format
 msgid "suspend: %s: expected FD[:in|out|inout][=BACKEND]"
 msgstr ""
 
 #, c-format
 msgid "suspend: %s: inout requires a backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: invalid pair descriptor"
 msgstr ""
 
 #, c-format

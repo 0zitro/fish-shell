@@ -32,9 +32,23 @@ The direction and the backend are separately optional; an omitted direction take
 The default backend is a pipe: ``--fd FD`` makes the pipeline write ``FD`` and records the read end, while ``--fd FD:in`` makes the pipeline read ``FD`` and records the write end.
 A pipe does not accept ``inout``.
 
+``--fd FD[:in|out|inout]=pty`` creates a pseudo-terminal pair.
+The source descriptor is the slave and the recorded endpoint is the master; the direction is ``inout`` and no other direction is accepted.
+
+``--fd FD[:in|out|inout]=socketpair`` creates a Unix socket pair.
+The source descriptor is one endpoint and the recorded endpoint is the other; the direction is ``inout`` and no other direction is accepted.
+
+``--fd FD[:in|out|inout]=pair:S:D`` uses two connected descriptors supplied by the caller.
+``S`` and ``D`` stand for distinct, open descriptor numbers above 2; the source descriptor is the descriptor ``S`` names, and the recorded endpoint is the descriptor ``D`` names.
+The binding takes ownership of both.
+The direction defaults to ``inout``; any direction is accepted because the caller controls the connection.
+
 ``--fd FD[:in|out|inout]=inherit:PATH`` opens ``PATH`` for the source descriptor and records no endpoint.
 The direction selects the open mode: ``in`` is read-only, ``out`` is write-only, and ``inout``, the default, is read-write.
 Every stage that uses a bound descriptor number sees that one descriptor.
+A recorded ``inout`` endpoint is connected by :doc:`resume <resume>` to the resuming command's standard input and standard output: standard input is copied to the recorded endpoint, and the endpoint's output is relayed to standard output.
+When the resuming command's standard input is also the source of descriptor 0, both the descriptor 0 record and every ``inout`` record receive the same bytes.
+End of input half-closes a socket endpoint; a pseudo-terminal receives the end-of-file character because it has no half-close, and its output side stays open.
 The handle is written to the standard output of ``suspend``; a redirection on the ``suspend`` command applies to the handle, not to the started pipeline.
 
 A source stage that the shell evaluates itself, such as a builtin or a function, is not launched as a background job.

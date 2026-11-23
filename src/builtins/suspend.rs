@@ -1,7 +1,7 @@
 //! Implementation of the `suspend` builtin.
 
 use super::prelude::*;
-use crate::fds::{make_autoclose_pipes, wopen_cloexec};
+use crate::fds::{heightenize_fd, make_autoclose_pipes, wopen_cloexec};
 use crate::io::{IoChain, IoFile, IoPipe};
 use crate::parse_constants::{ParseErrorList, ParseTreeFlags};
 use crate::parse_tree::parse_source;
@@ -11,38 +11,41 @@ use crate::proc::{
 use crate::wutil::perror_nix;
 use fish_wcstringutil::join_strings;
 use fish_widestring::{WExt as _, WString};
-use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use libc::{F_GETFD, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use nix::fcntl::OFlag;
+use nix::pty::openpty;
 use nix::sys::signal::{Signal, kill};
 use nix::sys::stat::Mode;
 use nix::unistd::{dup, getpid};
-use std::os::fd::{AsFd as _, RawFd};
+use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-
-/// The direction a `--fd` binding gives its source descriptor.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum BindingDirection {
-    In,
-    Out,
-    InOut,
-}
-
-impl TryFrom<BindingDirection> for SuspensionDirection {
-    type Error = BindingDirection;
-
-    fn try_from(direction: BindingDirection) -> Result<Self, Self::Error> {
-        match direction {
-            BindingDirection::In => Ok(SuspensionDirection::In),
-            BindingDirection::Out => Ok(SuspensionDirection::Out),
-            BindingDirection::InOut => Err(direction),
-        }
-    }
-}
 
 /// The descriptor layout a `--fd` binding creates.
 enum BindingBackend {
     Pipe,
-    Inherit { path: WString },
+    Inherit {
+        path: WString,
+    },
+    Pty,
+    Socketpair,
+    Pair {
+        source_descriptor: RawFd,
+        destination_descriptor: RawFd,
+    },
+}
+
+impl BindingBackend {
+    /// The direction a binding of this backend takes when the specification omits one.
+    fn default_direction(&self) -> SuspensionDirection {
+        match self {
+            BindingBackend::Pipe => SuspensionDirection::Out,
+            BindingBackend::Inherit { .. }
+            | BindingBackend::Pty
+            | BindingBackend::Socketpair
+            | BindingBackend::Pair { .. } => SuspensionDirection::InOut,
+        }
+    }
 }
 
 /// One descriptor beyond the standard ones that the command form suspends.
@@ -50,13 +53,13 @@ struct FdBinding {
     /// The descriptor of the suspended pipeline.
     fd: RawFd,
     /// The direction of that descriptor in the suspended pipeline.
-    direction: BindingDirection,
+    direction: SuspensionDirection,
     /// The backend that creates or opens the descriptor.
     backend: BindingBackend,
 }
 
 /// Why a `--fd` specification is not accepted.
-enum FdBindingError {
+pub enum FdBindingError {
     /// The specification does not match `FD[:DIRECTION][=BACKEND]`.
     Malformed,
     /// The descriptor is one of 0, 1 or 2, which the command form suspends already.
@@ -65,20 +68,21 @@ enum FdBindingError {
     InoutWithoutBackend,
     /// The backend is not one this layer accepts.
     UnknownBackend,
+    /// A pair descriptor is not a distinct open descriptor above 2.
+    InvalidPairDescriptor,
+    /// The backend does not accept the direction.
+    DirectionUnsupported,
 }
 
-impl TryFrom<&wstr> for BindingDirection {
+impl TryFrom<&wstr> for SuspensionDirection {
     type Error = FdBindingError;
 
     fn try_from(text: &wstr) -> Result<Self, Self::Error> {
-        if text == L!("in") {
-            Ok(BindingDirection::In)
-        } else if text == L!("out") {
-            Ok(BindingDirection::Out)
-        } else if text == L!("inout") {
-            Ok(BindingDirection::InOut)
-        } else {
-            Err(FdBindingError::Malformed)
+        match text {
+            text if text == L!("in") => Ok(SuspensionDirection::In),
+            text if text == L!("out") => Ok(SuspensionDirection::Out),
+            text if text == L!("inout") => Ok(SuspensionDirection::InOut),
+            _ => Err(FdBindingError::Malformed),
         }
     }
 }
@@ -117,20 +121,22 @@ fn parse_fd_binding(specification: &wstr) -> Result<FdBinding, FdBindingError> {
     };
 
     let direction = match direction_text {
-        None => match &backend {
-            BindingBackend::Pipe => BindingDirection::Out,
-            BindingBackend::Inherit { .. } => BindingDirection::InOut,
-        },
-        Some(text) => BindingDirection::try_from(text)?,
+        None => backend.default_direction(),
+        Some(text) => SuspensionDirection::try_from(text)?,
     };
 
     match &backend {
         BindingBackend::Pipe => {
-            if direction == BindingDirection::InOut {
+            if direction == SuspensionDirection::InOut {
                 return Err(FdBindingError::InoutWithoutBackend);
             }
         }
-        BindingBackend::Inherit { .. } => {}
+        BindingBackend::Pty | BindingBackend::Socketpair => {
+            if direction != SuspensionDirection::InOut {
+                return Err(FdBindingError::DirectionUnsupported);
+            }
+        }
+        BindingBackend::Inherit { .. } | BindingBackend::Pair { .. } => {}
     }
 
     Ok(FdBinding {
@@ -142,6 +148,15 @@ fn parse_fd_binding(specification: &wstr) -> Result<FdBinding, FdBindingError> {
 
 /// Parse the backend part of a `--fd` specification.
 fn parse_binding_backend(text: &wstr) -> Result<BindingBackend, FdBindingError> {
+    if text == L!("pty") {
+        return Ok(BindingBackend::Pty);
+    }
+    if text == L!("socketpair") {
+        return Ok(BindingBackend::Socketpair);
+    }
+    if let Some(descriptors) = text.strip_prefix(L!("pair:")) {
+        return parse_pair_backend(descriptors);
+    }
     let Some(path) = text.strip_prefix(L!("inherit:")) else {
         return Err(FdBindingError::UnknownBackend);
     };
@@ -150,6 +165,49 @@ fn parse_binding_backend(text: &wstr) -> Result<BindingBackend, FdBindingError> 
     }
     Ok(BindingBackend::Inherit {
         path: path.to_owned(),
+    })
+}
+
+/// Return whether `fd` names an open descriptor.
+///
+/// A user-supplied raw descriptor may be closed, so it cannot be wrapped in a
+/// `BorrowedFd`: that type asserts validity for its lifetime. `fcntl(F_GETFD)`
+/// inspects the descriptor table without dereferencing memory and reports
+/// `EBADF` for a closed descriptor, so it is the safe operation for this check.
+fn descriptor_is_open(fd: RawFd) -> bool {
+    // SAFETY: `fcntl(F_GETFD)` accepts any non-negative descriptor number and
+    // only reads the descriptor table; it dereferences no Rust value.
+    unsafe { libc::fcntl(fd, F_GETFD) >= 0 }
+}
+
+/// Parse the two descriptor numbers of a `pair:S:D` backend.
+fn parse_pair_backend(text: &wstr) -> Result<BindingBackend, FdBindingError> {
+    let Some(colon) = text.find_char(':') else {
+        return Err(FdBindingError::InvalidPairDescriptor);
+    };
+    let Ok(source_descriptor) = fish_wcstol(text.slice_to(colon)) else {
+        return Err(FdBindingError::InvalidPairDescriptor);
+    };
+    let Ok(destination_descriptor) = fish_wcstol(text.slice_from(colon + 1)) else {
+        return Err(FdBindingError::InvalidPairDescriptor);
+    };
+    let (Ok(source_descriptor), Ok(destination_descriptor)) = (
+        RawFd::try_from(source_descriptor),
+        RawFd::try_from(destination_descriptor),
+    ) else {
+        return Err(FdBindingError::InvalidPairDescriptor);
+    };
+    if source_descriptor <= STDERR_FILENO
+        || destination_descriptor <= STDERR_FILENO
+        || source_descriptor == destination_descriptor
+        || !descriptor_is_open(source_descriptor)
+        || !descriptor_is_open(destination_descriptor)
+    {
+        return Err(FdBindingError::InvalidPairDescriptor);
+    }
+    Ok(BindingBackend::Pair {
+        source_descriptor,
+        destination_descriptor,
     })
 }
 
@@ -218,6 +276,20 @@ pub fn suspend(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr])
                     Err(FdBindingError::UnknownBackend) => {
                         streams.err.appendln(&wgettext_fmt!(
                             "suspend: %s: unknown backend",
+                            specification
+                        ));
+                        return Err(STATUS_INVALID_ARGS);
+                    }
+                    Err(FdBindingError::InvalidPairDescriptor) => {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "suspend: %s: invalid pair descriptor",
+                            specification
+                        ));
+                        return Err(STATUS_INVALID_ARGS);
+                    }
+                    Err(FdBindingError::DirectionUnsupported) => {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "suspend: %s: direction unsupported by backend",
                             specification
                         ));
                         return Err(STATUS_INVALID_ARGS);
@@ -390,14 +462,11 @@ fn suspend_command_pipeline(
     for binding in bindings {
         match &binding.backend {
             BindingBackend::Pipe => {
-                let Ok(direction) = SuspensionDirection::try_from(binding.direction) else {
-                    panic!("pipe binding rejects inout");
-                };
                 let Ok(pipes) = make_autoclose_pipes() else {
                     perror_nix("pipe", nix::Error::last());
                     return Err(STATUS_CMD_ERROR);
                 };
-                match direction {
+                match binding.direction {
                     SuspensionDirection::Out => {
                         io_chain.push(Arc::new(IoPipe::new(binding.fd, false, pipes.write)));
                         suspension.record_descriptor(
@@ -414,13 +483,14 @@ fn suspend_command_pipeline(
                             pipes.write,
                         );
                     }
+                    SuspensionDirection::InOut => panic!("pipe binding rejects inout"),
                 }
             }
             BindingBackend::Inherit { path } => {
                 let flags = match binding.direction {
-                    BindingDirection::In => OFlag::O_RDONLY,
-                    BindingDirection::Out => OFlag::O_WRONLY,
-                    BindingDirection::InOut => OFlag::O_RDWR,
+                    SuspensionDirection::In => OFlag::O_RDONLY,
+                    SuspensionDirection::Out => OFlag::O_WRONLY,
+                    SuspensionDirection::InOut => OFlag::O_RDWR,
                 };
                 let Ok(file) = wopen_cloexec(path, flags, Mode::empty()) else {
                     streams
@@ -429,6 +499,67 @@ fn suspend_command_pipeline(
                     return Err(STATUS_CMD_ERROR);
                 };
                 io_chain.push(Arc::new(IoFile::new(binding.fd, file)));
+            }
+            BindingBackend::Pty => {
+                let Ok(pty) = openpty(None, None) else {
+                    perror_nix("openpty", nix::Error::last());
+                    return Err(STATUS_CMD_ERROR);
+                };
+                let Ok(slave) = heightenize_fd(pty.slave, false) else {
+                    return Err(STATUS_CMD_ERROR);
+                };
+                let Ok(master) = heightenize_fd(pty.master, false) else {
+                    return Err(STATUS_CMD_ERROR);
+                };
+                io_chain.push(Arc::new(IoPipe::new(binding.fd, false, slave)));
+                suspension.record_descriptor(binding.fd, SuspensionDirection::InOut, master);
+            }
+            BindingBackend::Socketpair => {
+                let Ok((source_endpoint, record_endpoint)) = UnixStream::pair() else {
+                    perror_nix("socketpair", nix::Error::last());
+                    return Err(STATUS_CMD_ERROR);
+                };
+                let Ok(source_endpoint) = heightenize_fd(OwnedFd::from(source_endpoint), true)
+                else {
+                    return Err(STATUS_CMD_ERROR);
+                };
+                let Ok(record_endpoint) = heightenize_fd(OwnedFd::from(record_endpoint), true)
+                else {
+                    return Err(STATUS_CMD_ERROR);
+                };
+                io_chain.push(Arc::new(IoPipe::new(binding.fd, false, source_endpoint)));
+                suspension.record_descriptor(
+                    binding.fd,
+                    SuspensionDirection::InOut,
+                    record_endpoint,
+                );
+            }
+            BindingBackend::Pair {
+                source_descriptor,
+                destination_descriptor,
+            } => {
+                // SAFETY: `parse_pair_backend` verified that the descriptor is
+                // open; the binding takes ownership of it as the source endpoint
+                // so the peer can observe end of file when the source exits.
+                let Ok(source_endpoint) =
+                    heightenize_fd(unsafe { OwnedFd::from_raw_fd(*source_descriptor) }, false)
+                else {
+                    return Err(STATUS_CMD_ERROR);
+                };
+                // SAFETY: `parse_pair_backend` verified that the descriptor is
+                // open; the record takes ownership of it and closes it on drop.
+                let Ok(destination_endpoint) = heightenize_fd(
+                    unsafe { OwnedFd::from_raw_fd(*destination_descriptor) },
+                    false,
+                ) else {
+                    return Err(STATUS_CMD_ERROR);
+                };
+                io_chain.push(Arc::new(IoPipe::new(
+                    binding.fd,
+                    binding.direction == SuspensionDirection::In,
+                    source_endpoint,
+                )));
+                suspension.record_descriptor(binding.fd, binding.direction, destination_endpoint);
             }
         }
     }
