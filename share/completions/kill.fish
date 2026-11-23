@@ -16,6 +16,8 @@ if kill -L >/dev/null 2>/dev/null
     complete -c kill -s L -l table -d "List signal names and their #s"
     complete -c kill -s a -l all -d "Resolve names from other users too"
     complete -c kill -s p -l pid -d "Show resolved PID, don't send signal"
+    complete -c kill -s q -l queue -x -d "Use sigqueue(2) rather than kill(2)"
+    complete -c kill -l timeout -x -d "Send a follow-up signal after a timeout"
     complete -c kill -s r -l require-handler -d "Signal only processes with a handler"
     complete -c kill -s d -l show-process-state -x -d "Show signal state for a PID"
     complete -c kill -l verbose -d "Print PIDs and signals sent"

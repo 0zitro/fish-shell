@@ -8,6 +8,8 @@
 use super::prelude::*;
 use crate::err_fmt;
 #[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
 
 /// The status util-linux returns when some targets were signalled and some failed.
@@ -86,6 +88,25 @@ const SIGNAL_NAMES: &[SignalName] = &[
 /// not a signal disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SignalNumber(i32);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KillTarget {
+    Pid(i32),
+    PidFd { pid: i32, inode: u64 },
+}
+
+impl KillTarget {
+    fn pid(self) -> i32 {
+        match self {
+            KillTarget::Pid(pid) | KillTarget::PidFd { pid, .. } => pid,
+        }
+    }
+}
+
+struct TimeoutFollowUp {
+    milliseconds: i32,
+    signal: i32,
+}
 
 impl SignalNumber {
     fn new(number: i32) -> Self {
@@ -234,7 +255,10 @@ fn print_signal_mask_lines(streams: &mut IoStreams, mask: u64) {
 #[cfg(target_os = "linux")]
 fn process_name(pid: i32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let start = stat.find('(')? + 1;
+    let mut start = stat.find('(')? + 1;
+    while stat[start..].starts_with('(') {
+        start += 1;
+    }
     let end = stat[start..].find(')')? + start;
     Some(stat[start..end].to_owned())
 }
@@ -250,6 +274,7 @@ fn process_sigcatch(pid: i32) -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn matching_process_ids(name: &wstr, all_users: bool) -> Vec<i32> {
     let name = name.to_string();
+    // SAFETY: `getuid` has no preconditions and touches no Rust value.
     let uid = unsafe { libc::getuid() };
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -337,6 +362,162 @@ fn print_process_signal_state(streams: &mut IoStreams, pid: i32) -> BuiltinResul
         let _ = (streams, pid);
         Err(STATUS_CMD_ERROR)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn open_pidfd(pid: i32, inode: u64) -> Result<OwnedFd, nix::Error> {
+    // SAFETY: `pidfd_open` takes a PID and flags; no Rust value is involved.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(nix::Error::last());
+    }
+    // SAFETY: `pidfd_open` returned a fresh descriptor owned by this call.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+
+    if inode != 0 {
+        // SAFETY: the descriptor is live and `statbuf` is a zeroed local.
+        let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: the descriptor is live and the pointer is a valid `stat`.
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut statbuf) } < 0 {
+            return Err(nix::Error::last());
+        }
+        if statbuf.st_ino as u64 != inode {
+            return Err(nix::Error::ENOENT);
+        }
+    }
+    Ok(fd)
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct QueuedSignalInfo {
+    signal: i32,
+    error: i32,
+    code: i32,
+    _padding: i32,
+    pid: i32,
+    uid: u32,
+    value: libc::sigval,
+    _rest: [u8; std::mem::size_of::<libc::siginfo_t>() - 32],
+}
+
+#[cfg(target_os = "linux")]
+const _: () =
+    assert!(std::mem::size_of::<QueuedSignalInfo>() == std::mem::size_of::<libc::siginfo_t>());
+
+#[cfg(target_os = "linux")]
+impl QueuedSignalInfo {
+    fn new(signal: i32, value: i32) -> Self {
+        QueuedSignalInfo {
+            signal,
+            error: 0,
+            code: libc::SI_QUEUE,
+            _padding: 0,
+            // SAFETY: `getpid` and `getuid` have no preconditions and touch
+            // no Rust value.
+            pid: unsafe { libc::getpid() },
+            uid: unsafe { libc::getuid() },
+            value: libc::sigval {
+                sival_ptr: (value as isize) as *mut libc::c_void,
+            },
+            _rest: [0; std::mem::size_of::<libc::siginfo_t>() - 32],
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn send_via_pidfd(fd: &OwnedFd, signal: i32) -> Result<(), nix::Error> {
+    // SAFETY: the descriptor is a live pidfd and passing no siginfo is
+    // permitted by `pidfd_send_signal`.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(nix::Error::last());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn send_via_pidfd_with_info(
+    fd: &OwnedFd,
+    signal: i32,
+    info: &mut QueuedSignalInfo,
+) -> Result<(), nix::Error> {
+    info.signal = signal;
+    // SAFETY: `QueuedSignalInfo` has the ABI size of `siginfo_t`, is fully
+    // initialised, and the syscall only reads it for the duration of the call.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            signal,
+            info as *mut QueuedSignalInfo as *mut libc::siginfo_t,
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(nix::Error::last());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn send_with_timeout(
+    pid: i32,
+    inode: u64,
+    signal: i32,
+    value: Option<i32>,
+    follow_ups: &[TimeoutFollowUp],
+    verbose: bool,
+    streams: &mut IoStreams,
+) -> Result<(), nix::Error> {
+    let fd = open_pidfd(pid, inode)?;
+    let mut info = QueuedSignalInfo::new(signal, value.unwrap_or(signal));
+    send_via_pidfd_with_info(&fd, signal, &mut info)?;
+
+    for follow_up in follow_ups {
+        let mut pollfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `poll` reads one local `pollfd` and writes its `revents`.
+        let ready = unsafe { libc::poll(&mut pollfd, 1, follow_up.milliseconds) };
+        if ready < 0 {
+            return Err(nix::Error::last());
+        }
+        if ready == 0 {
+            if verbose {
+                streams.out.appendln(&wgettext_fmt!(
+                    "timeout, sending signal %d to pid %d",
+                    follow_up.signal,
+                    pid
+                ));
+            }
+            send_via_pidfd_with_info(&fd, follow_up.signal, &mut info)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn send_with_timeout(
+    _pid: i32,
+    _inode: u64,
+    _signal: i32,
+    _value: Option<i32>,
+    _follow_ups: &[TimeoutFollowUp],
+    _verbose: bool,
+    _streams: &mut IoStreams,
+) -> Result<(), nix::Error> {
+    Err(nix::Error::ENOSYS)
 }
 
 fn print_all_signal_names(streams: &mut IoStreams, with_numbers: bool) {
@@ -453,9 +634,16 @@ fn print_signal_table(streams: &mut IoStreams) -> BuiltinResult {
 }
 
 fn print_kill_version(streams: &mut IoStreams) -> BuiltinResult {
-    streams
-        .out
-        .appendln(&wgettext_fmt!("kill from fish %s", crate::BUILD_VERSION));
+    #[cfg(target_os = "linux")]
+    let features = L!(" (with: sigqueue, pidfd, pidfdino)");
+    #[cfg(not(target_os = "linux"))]
+    let features = L!("");
+
+    streams.out.appendln(&wgettext_fmt!(
+        "kill from fish %s%s",
+        crate::BUILD_VERSION,
+        features
+    ));
     Ok(SUCCESS)
 }
 
@@ -477,9 +665,21 @@ impl KillRun {
     }
 }
 
-/// Parse one numeric target.
-fn parse_target(argument: &wstr) -> Option<i32> {
-    fish_wcstoi(argument).ok()
+/// Parse one numeric PID or `pid:pidfd_inode` target.
+fn parse_target(argument: &wstr) -> Option<KillTarget> {
+    if let Some(colon) = argument.find_char(':') {
+        let pid = fish_wcstoi(argument.slice_to(colon)).ok()?;
+        let inode = argument
+            .slice_from(colon + 1)
+            .to_string()
+            .parse::<u64>()
+            .ok()?;
+        if pid <= 0 || inode == 0 {
+            return None;
+        }
+        return Some(KillTarget::PidFd { pid, inode });
+    }
+    fish_wcstoi(argument).ok().map(KillTarget::Pid)
 }
 
 fn signal_argument_and_targets(
@@ -494,6 +694,8 @@ fn signal_argument_and_targets(
     let mut all_users = false;
     let mut require_handler = false;
     let mut verbose = false;
+    let mut queue_value = None;
+    let mut follow_ups: Vec<TimeoutFollowUp> = Vec::new();
     let mut index = 1;
 
     while index < argv.len() {
@@ -546,8 +748,53 @@ fn signal_argument_and_targets(
                 err_fmt!("--pid and --signal are mutually exclusive").finish(streams);
                 return Err(STATUS_CMD_ERROR);
             }
+            if queue_value.is_some() {
+                err_fmt!("--pid and --queue are mutually exclusive").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            }
             do_pid = true;
             index += 1;
+            continue;
+        }
+        if argument == "-q" || argument == "--queue" {
+            if do_pid {
+                err_fmt!("--pid and --queue are mutually exclusive").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            }
+            let Some(value) = argv.get(index + 1) else {
+                err_fmt!("option '%s' requires an argument", argument).finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            let Ok(value) = fish_wcstoi(value) else {
+                err_fmt!("argument error").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            queue_value = Some(value);
+            index += 2;
+            continue;
+        }
+        if argument == "--timeout" {
+            let Some(milliseconds) = argv.get(index + 1) else {
+                err_fmt!("option '%s' requires an argument", argument).finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            let Some(signal_argument) = argv.get(index + 2) else {
+                err_fmt!("option '%s' requires an argument", argument).finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            let Ok(milliseconds) = fish_wcstoi(milliseconds) else {
+                err_fmt!("argument error").finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            let Some(follow_up_signal) = parse_signal_argument(signal_argument, false) else {
+                err_fmt!("unknown signal: %s", signal_argument).finish(streams);
+                return Err(STATUS_CMD_ERROR);
+            };
+            follow_ups.push(TimeoutFollowUp {
+                milliseconds,
+                signal: follow_up_signal.code(),
+            });
+            index += 3;
             continue;
         }
         if argument == "-d" || argument == "--show-process-state" {
@@ -625,8 +872,11 @@ fn signal_argument_and_targets(
     let mut run = KillRun::default();
     for argument in &argv[index..] {
         let targets = match parse_target(argument) {
-            Some(pid) => vec![pid],
-            None => matching_process_ids(argument, all_users),
+            Some(target) => vec![target],
+            None => matching_process_ids(argument, all_users)
+                .into_iter()
+                .map(KillTarget::Pid)
+                .collect(),
         };
         if targets.is_empty() {
             err_fmt!("cannot find process \"%s\"", argument).finish(streams);
@@ -635,7 +885,8 @@ fn signal_argument_and_targets(
             continue;
         }
 
-        for pid in targets {
+        for target in targets {
+            let pid = target.pid();
             let handler_present = !require_handler || signal_has_handler(pid, signal);
             if !handler_present {
                 if verbose {
@@ -662,25 +913,72 @@ fn signal_argument_and_targets(
                 continue;
             }
 
-            // SAFETY: `kill(2)` only reads the two scalar arguments and the process
-            // table; it holds no Rust value and assumes no pointer or lifetime.
-            let result = unsafe { libc::kill(pid, signal.code()) };
-            if result < 0 {
-                run.failed += 1;
-                err_fmt!(
-                    "sending signal to %s failed: %s",
-                    argument,
-                    std::io::Error::last_os_error().to_string()
+            let result = if !follow_ups.is_empty() {
+                let inode = match target {
+                    KillTarget::Pid(_) => 0,
+                    KillTarget::PidFd { inode, .. } => inode,
+                };
+                send_with_timeout(
+                    pid,
+                    inode,
+                    signal.code(),
+                    queue_value,
+                    &follow_ups,
+                    verbose,
+                    streams,
                 )
-                .finish(streams);
+            } else if let Some(value) = queue_value {
+                send_with_queue(pid, signal.code(), value)
+            } else {
+                match target {
+                    KillTarget::Pid(_) => send_with_kill(pid, signal.code()),
+                    KillTarget::PidFd { inode, .. } => {
+                        open_pidfd(pid, inode).and_then(|fd| send_via_pidfd(&fd, signal.code()))
+                    }
+                }
+            };
+
+            if let Err(err) = result {
+                run.failed += 1;
+                err_fmt!("sending signal to %s failed: %s", argument, err.to_string())
+                    .finish(streams);
             }
         }
     }
     run.status()
 }
 
+fn send_with_kill(pid: i32, signal: i32) -> Result<(), nix::Error> {
+    // SAFETY: `kill(2)` only reads the two scalar arguments and the process
+    // table; it holds no Rust value and assumes no pointer or lifetime.
+    let result = unsafe { libc::kill(pid, signal) };
+    if result < 0 {
+        return Err(nix::Error::last());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn send_with_queue(pid: i32, signal: i32, value: i32) -> Result<(), nix::Error> {
+    let value = libc::sigval {
+        sival_ptr: (value as isize) as *mut libc::c_void,
+    };
+    // SAFETY: `sigqueue` takes a PID, a signal and a scalar `sigval`; it holds
+    // no Rust reference and assumes no pointer or lifetime.
+    let result = unsafe { libc::sigqueue(pid, signal, value) };
+    if result < 0 {
+        return Err(nix::Error::last());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn send_with_queue(_pid: i32, _signal: i32, _value: i32) -> Result<(), nix::Error> {
+    Err(nix::Error::ENOSYS)
+}
+
 fn parse_positive_pid(argument: &wstr) -> Option<i32> {
-    let pid = parse_target(argument)?;
+    let pid = fish_wcstoi(argument).ok()?;
     (pid > 0).then_some(pid)
 }
 
@@ -690,4 +988,65 @@ pub fn kill(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) ->
         return Err(STATUS_INVALID_ARGS);
     }
     signal_argument_and_targets(parser, streams, argv)
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn queued_signal_info_matches_the_siginfo_layout() {
+        assert_eq!(
+            std::mem::size_of::<QueuedSignalInfo>(),
+            std::mem::size_of::<libc::siginfo_t>()
+        );
+        assert_eq!(std::mem::offset_of!(QueuedSignalInfo, signal), 0);
+        assert_eq!(std::mem::offset_of!(QueuedSignalInfo, error), 4);
+        assert_eq!(std::mem::offset_of!(QueuedSignalInfo, code), 8);
+        assert_eq!(std::mem::offset_of!(QueuedSignalInfo, pid), 16);
+        assert_eq!(std::mem::offset_of!(QueuedSignalInfo, uid), 20);
+        assert_eq!(std::mem::offset_of!(QueuedSignalInfo, value), 24);
+    }
+
+    #[test]
+    fn signal_numbers_keep_zero_distinct_from_signals() {
+        assert_eq!(parse_signal_argument(L!("0"), false), Some(SignalNumber(0)));
+        assert_eq!(
+            parse_signal_argument(L!("TERM"), false),
+            Some(SignalNumber(libc::SIGTERM))
+        );
+        assert_eq!(parse_signal_argument(L!("NOSUCHSIGNAL"), false), None);
+    }
+}
+
+#[allow(unexpected_cfgs)]
+#[cfg(kani)]
+mod kani_harnesses {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[kani::proof]
+    fn queued_signal_info_layout() {
+        kani::assert(
+            std::mem::size_of::<QueuedSignalInfo>() == std::mem::size_of::<libc::siginfo_t>(),
+            "QueuedSignalInfo has the siginfo_t size",
+        );
+        kani::assert(
+            std::mem::offset_of!(QueuedSignalInfo, signal) == 0,
+            "signal starts the siginfo_t layout",
+        );
+        kani::assert(
+            std::mem::offset_of!(QueuedSignalInfo, pid) == 16,
+            "pid follows the fixed siginfo_t header",
+        );
+        kani::assert(
+            std::mem::offset_of!(QueuedSignalInfo, uid) == 20,
+            "uid follows pid",
+        );
+        kani::assert(
+            std::mem::offset_of!(QueuedSignalInfo, value) == 24,
+            "sigval follows the queued-signal fields",
+        );
+    }
 }

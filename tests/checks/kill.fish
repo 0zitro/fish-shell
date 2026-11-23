@@ -58,3 +58,20 @@ $fish -c 'set -l dir (mktemp -d); ln -s /usr/bin/sleep $dir/kill_test_slp; $dir/
 $fish -c 'builtin kill -d $fish_pid | string match -q "*Caught:*"'
 echo decode=$status
 # CHECK: decode=0
+
+# A queued signal sends a sigqueue value.
+$fish -c 'sleep 10 & set -l p $last_pid; builtin kill -q 7 -TERM $p; echo queue=$status'
+# CHECK: queue=0
+
+# The timeout sends its first signal and stops waiting when the process exits.
+$fish -c 'sleep 10 & set -l p $last_pid; builtin kill --timeout 100 KILL -TERM $p; echo timeout=$status'
+# CHECK: timeout=0
+
+# Queue and pid mode are mutually exclusive.
+$fish -c 'builtin kill -p -q 7 1 2>/dev/null; echo conflict=$status'
+# CHECK: conflict=1
+
+# A pidfd inode names the same process without a PID race.
+#REQUIRES: command -v python3
+$fish -c 'sleep 10 & set -l p $last_pid; set -l inode (python3 -c "import os,sys; print(os.fstat(os.pidfd_open(int(sys.argv[1]))).st_ino)" $p); builtin kill -TERM "$p:$inode"; echo pidfdino=$status'
+# CHECK: pidfdino=0

@@ -304,6 +304,9 @@ msgstr ""
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr ""
 
+msgid "--pid and --queue are mutually exclusive"
+msgstr ""
+
 msgid "--pid and --signal are mutually exclusive"
 msgstr ""
 
@@ -1566,6 +1569,9 @@ msgstr ""
 msgid "a path variable"
 msgstr ""
 
+msgid "argument error"
+msgstr ""
+
 msgid "array index out of bounds"
 msgstr ""
 
@@ -1730,7 +1736,7 @@ msgid "job %d ('%s') was stopped and has been signalled to continue."
 msgstr ""
 
 #, c-format
-msgid "kill from fish %s"
+msgid "kill from fish %s%s"
 msgstr ""
 
 msgid "line/column index starts at 1"
@@ -1767,6 +1773,10 @@ msgstr ""
 
 #, c-format
 msgid "only f1 through f%d are supported, not 'f%s'"
+msgstr ""
+
+#, c-format
+msgid "option '%s' requires an argument"
 msgstr ""
 
 #, c-format
@@ -1825,6 +1835,10 @@ msgstr ""
 
 #, c-format
 msgid "there is no line %s"
+msgstr ""
+
+#, c-format
+msgid "timeout, sending signal %d to pid %d"
 msgstr ""
 
 msgid "too few arguments"
@@ -3325,6 +3339,9 @@ msgstr "Välj process under markören"
 msgid "Select token under cursor"
 msgstr "Välj symbol under markören"
 
+msgid "Send a follow-up signal after a timeout"
+msgstr ""
+
 msgid "Set all jobs under job control"
 msgstr ""
 
@@ -3599,6 +3616,9 @@ msgid "Use regex instead of globs"
 msgstr ""
 
 msgid "Use shell tokenization rules when splitting"
+msgstr ""
+
+msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use the portable output format"

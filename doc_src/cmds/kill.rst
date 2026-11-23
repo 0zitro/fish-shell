@@ -6,7 +6,10 @@ Synopsis
 
 .. synopsis::
 
-    kill [-s SIGNAL | -SIGNAL] [-a] [-p] [-r] [--verbose] PID | NAME ...
+    kill [-s SIGNAL | -SIGNAL] [-a] [-p] [-r] [--verbose] PID ...
+    kill [-s SIGNAL | -SIGNAL] [-a] [-p] [-r] [--verbose] NAME ...
+    kill [-s SIGNAL | -SIGNAL] [-q VALUE] [--timeout MILLISECONDS SIGNAL] PID ...
+    kill [-s SIGNAL | -SIGNAL] [-q VALUE] [--timeout MILLISECONDS SIGNAL] PID:INODE ...
     kill [-s SIGNAL | -SIGNAL] JOB ...
     kill -l [SIGNAL | 0xMASK]
     kill -L
@@ -19,9 +22,10 @@ Description
 ``SIGNAL`` is a signal name with or without the ``SIG`` prefix, or a signal number; the default is ``TERM``.
 Signal 0 performs the permission and existence checks without sending a signal.
 
-A target is a process identifier or a process name.
+A target is a process identifier, a process name, or ``PID:INODE`` for a pidfd.
 A positive identifier names one process, ``0`` names the caller's process group, and a negative identifier names the process group with that absolute identifier.
 A process name matches the process name in ``/proc/PID/stat``; only processes owned by the caller are matched unless ``--all`` is given.
+``PID:INODE`` names a pidfd by its inode and is available on Linux.
 A fish job specification such as ``%1`` is expanded by the ``kill`` function to the identifiers of the job's external processes before the builtin runs.
 
 ``-l`` prints the signal names, converts one signal number or name to a name, or decodes a hexadecimal signal mask.
@@ -43,6 +47,16 @@ Options
 **-p**, **--pid**
     Print the resolved process identifiers without sending a signal.
     This is mutually exclusive with a signal option.
+
+**-q** VALUE, **--queue** VALUE
+    Send the signal with ``sigqueue(2)`` and pass ``VALUE`` with it.
+    This is available on Linux and is mutually exclusive with ``--pid``.
+
+**--timeout** MILLISECONDS SIGNAL
+    Send the first signal through a pidfd, wait up to ``MILLISECONDS`` for the
+    process to exit, and send ``SIGNAL`` if it has not exited.
+    The option may be repeated; the follow-up signals are sent in order.
+    This is available on Linux.
 
 **-r**, **--require-handler**
     Do not signal a process that has no userspace handler for the signal.
