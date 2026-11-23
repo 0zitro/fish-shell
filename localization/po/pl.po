@@ -1187,6 +1187,9 @@ msgstr "Szukaj określonego ciągu znaków w liście"
 msgid "Searching/using paths"
 msgstr ""
 
+msgid "Send a signal to a process or job"
+msgstr ""
+
 #, c-format
 msgid "Send job %d (%s) to foreground"
 msgstr ""
@@ -1587,6 +1590,10 @@ msgid "cannot both path and unpath"
 msgstr ""
 
 #, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr ""
 
@@ -1677,6 +1684,14 @@ msgstr ""
 msgid "invalid precision: %s"
 msgstr ""
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr ""
 
@@ -1710,6 +1725,9 @@ msgstr ""
 msgid "missing subcommand"
 msgstr ""
 
+msgid "not enough arguments"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr ""
 
@@ -1733,6 +1751,10 @@ msgstr ""
 
 msgid "search:"
 msgstr "wyszukiwanie:"
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr ""
@@ -1775,6 +1797,10 @@ msgstr ""
 
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
+msgstr ""
+
+#, c-format
+msgid "unknown signal: %s"
 msgstr ""
 
 msgid "unlimited"
@@ -2720,6 +2746,12 @@ msgstr ""
 msgid "List embedded files contained in the fish binary"
 msgstr ""
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr ""
 
@@ -2969,6 +3001,9 @@ msgstr ""
 msgid "Print NULL-delimited output"
 msgstr ""
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr ""
 
@@ -3164,6 +3199,9 @@ msgstr ""
 msgid "Require parameter and don't use file completion"
 msgstr ""
 
+msgid "Resolve PIDs from other users' too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3329,6 +3367,9 @@ msgstr ""
 msgid "Show or change fish's language settings"
 msgstr ""
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
 msgstr ""
 
@@ -3339,6 +3380,9 @@ msgid "Show unavailable key bindings/erase all bindings"
 msgstr ""
 
 msgid "Show variable"
+msgstr ""
+
+msgid "Signal to send"
 msgstr ""
 
 msgid "Snapshot and define local variable"
@@ -3504,6 +3548,9 @@ msgid "Use regex instead of globs"
 msgstr ""
 
 msgid "Use shell tokenization rules when splitting"
+msgstr ""
+
+msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use the portable output format"
@@ -37853,12 +37900,6 @@ msgstr ""
 msgid "List sessions"
 msgstr ""
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46616,9 +46657,6 @@ msgstr ""
 msgid "Print NUM lines of trailing context"
 msgstr ""
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr ""
 
@@ -54192,9 +54230,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63362,9 +63397,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64659,9 +64691,6 @@ msgid "Sign the version tag"
 msgstr ""
 
 msgid "Signal and interface name"
-msgstr ""
-
-msgid "Signal to send"
 msgstr ""
 
 msgid "Signal to send to sstop the command"
@@ -75066,9 +75095,6 @@ msgid "Use shell as the user's login shell, rather than the default"
 msgstr ""
 
 msgid "Use short status indicators"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use silent mode"

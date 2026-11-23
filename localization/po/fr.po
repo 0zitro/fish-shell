@@ -1320,6 +1320,9 @@ msgstr "Rechercher une chaîne de caractères donnée dans une liste"
 msgid "Searching/using paths"
 msgstr ""
 
+msgid "Send a signal to a process or job"
+msgstr ""
+
 #, c-format
 msgid "Send job %d (%s) to foreground"
 msgstr ""
@@ -1720,6 +1723,10 @@ msgid "cannot both path and unpath"
 msgstr ""
 
 #, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr ""
 
@@ -1810,6 +1817,14 @@ msgstr ""
 msgid "invalid precision: %s"
 msgstr "précision invalide : %s"
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr "sous-commande invalide"
 
@@ -1843,6 +1858,9 @@ msgstr ""
 msgid "missing subcommand"
 msgstr ""
 
+msgid "not enough arguments"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr ""
 
@@ -1866,6 +1884,10 @@ msgstr ""
 
 msgid "search:"
 msgstr "recherche :"
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr ""
@@ -1908,6 +1930,10 @@ msgstr "non exportée"
 
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
+msgstr ""
+
+#, c-format
+msgid "unknown signal: %s"
 msgstr ""
 
 msgid "unlimited"
@@ -2853,6 +2879,12 @@ msgstr ""
 msgid "List embedded files contained in the fish binary"
 msgstr ""
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr "Lister les noms des fonctions sans leur définition"
 
@@ -3102,6 +3134,9 @@ msgstr ""
 msgid "Print NULL-delimited output"
 msgstr ""
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr ""
 
@@ -3297,6 +3332,9 @@ msgstr "Requérir un paramètre"
 msgid "Require parameter and don't use file completion"
 msgstr ""
 
+msgid "Resolve PIDs from other users' too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3462,6 +3500,9 @@ msgstr "Afficher l’horodatage de modification"
 msgid "Show or change fish's language settings"
 msgstr ""
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
 msgstr ""
 
@@ -3473,6 +3514,9 @@ msgstr "Afficher ou effacer toutes les combinaisons existantes"
 
 msgid "Show variable"
 msgstr ""
+
+msgid "Signal to send"
+msgstr "Signal à envoyer"
 
 msgid "Snapshot and define local variable"
 msgstr ""
@@ -3637,6 +3681,9 @@ msgid "Use regex instead of globs"
 msgstr ""
 
 msgid "Use shell tokenization rules when splitting"
+msgstr ""
+
+msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use the portable output format"
@@ -37986,12 +38033,6 @@ msgstr "Lister les informations de session du serveur"
 msgid "List sessions"
 msgstr "Lister les sessions"
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46749,9 +46790,6 @@ msgstr "Afficher N lignes suivant l’occurrence"
 msgid "Print NUM lines of trailing context"
 msgstr "Afficher N lignes précédant l’occurrence"
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr "Afficher la version des paquets"
 
@@ -54325,9 +54363,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63495,9 +63530,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64793,9 +64825,6 @@ msgstr ""
 
 msgid "Signal and interface name"
 msgstr ""
-
-msgid "Signal to send"
-msgstr "Signal à envoyer"
 
 msgid "Signal to send to sstop the command"
 msgstr ""
@@ -75200,9 +75229,6 @@ msgstr ""
 
 msgid "Use short status indicators"
 msgstr "Utiliser des indicateurs d’état brefs"
-
-msgid "Use sigqueue(2) rather than kill(2)"
-msgstr ""
 
 msgid "Use silent mode"
 msgstr ""

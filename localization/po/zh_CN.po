@@ -1212,6 +1212,9 @@ msgstr "在指定列表中搜索一个特定的字符串"
 msgid "Searching/using paths"
 msgstr "搜索/使用路径"
 
+msgid "Send a signal to a process or job"
+msgstr ""
+
 #, c-format
 msgid "Send job %d (%s) to foreground"
 msgstr "将作业 %d (%s) 发送到前台"
@@ -1612,6 +1615,10 @@ msgid "cannot both path and unpath"
 msgstr "无法同时是路径变量和非路径变量"
 
 #, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr "无法解析键 '%s'"
 
@@ -1702,6 +1709,14 @@ msgstr "无效的选项组合，%s"
 msgid "invalid precision: %s"
 msgstr "无效的精度：%s"
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr "无效的子命令"
 
@@ -1735,6 +1750,9 @@ msgstr ""
 msgid "missing subcommand"
 msgstr "缺少子命令"
 
+msgid "not enough arguments"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr "没有可选项"
 
@@ -1758,6 +1776,10 @@ msgstr "范围只能是：universal（通用）function（函数）global（全�
 
 msgid "search:"
 msgstr "搜索:"
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr ""
@@ -1801,6 +1823,10 @@ msgstr "未导出"
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
 msgstr "未知修饰符 '%s' 于 '%s'"
+
+#, c-format
+msgid "unknown signal: %s"
+msgstr ""
 
 msgid "unlimited"
 msgstr "无限制"
@@ -2745,6 +2771,12 @@ msgstr "如果光标下的记号是目录，则列出其内容；否则列出当
 msgid "List embedded files contained in the fish binary"
 msgstr "列出 fish 二进制文件包含的嵌入文件"
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr "列出函数的名称，但不列出其定义"
 
@@ -2994,6 +3026,9 @@ msgstr "添加值到列表开头"
 msgid "Print NULL-delimited output"
 msgstr "打印以 NULL 分隔的输出"
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr "打印所有已接受的颜色名列表"
 
@@ -3189,6 +3224,9 @@ msgstr "需要参数"
 msgid "Require parameter and don't use file completion"
 msgstr "需要参数而不使用文件补全"
 
+msgid "Resolve PIDs from other users' too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3354,6 +3392,9 @@ msgstr "显示修改时间"
 msgid "Show or change fish's language settings"
 msgstr ""
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
 msgstr "显示自修改时间以来的秒数"
 
@@ -3365,6 +3406,9 @@ msgstr "显示不可用的键位绑定/清除所有绑定"
 
 msgid "Show variable"
 msgstr "显示变量"
+
+msgid "Signal to send"
+msgstr ""
 
 msgid "Snapshot and define local variable"
 msgstr "快照并定义局域变量"
@@ -3530,6 +3574,9 @@ msgstr "使用正则表达式而不是通配符"
 
 msgid "Use shell tokenization rules when splitting"
 msgstr "拆分时使用 shell 标记规则"
+
+msgid "Use sigqueue(2) rather than kill(2)"
+msgstr ""
 
 msgid "Use the portable output format"
 msgstr "使用可移植输出格式"
@@ -37878,12 +37925,6 @@ msgstr ""
 msgid "List sessions"
 msgstr ""
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46641,9 +46682,6 @@ msgstr ""
 msgid "Print NUM lines of trailing context"
 msgstr ""
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr ""
 
@@ -54217,9 +54255,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63387,9 +63422,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64684,9 +64716,6 @@ msgid "Sign the version tag"
 msgstr ""
 
 msgid "Signal and interface name"
-msgstr ""
-
-msgid "Signal to send"
 msgstr ""
 
 msgid "Signal to send to sstop the command"
@@ -75091,9 +75120,6 @@ msgid "Use shell as the user's login shell, rather than the default"
 msgstr ""
 
 msgid "Use short status indicators"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use silent mode"

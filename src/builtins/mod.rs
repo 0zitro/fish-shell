@@ -29,6 +29,7 @@ pub mod functions;
 pub mod r#gettext;
 pub mod history;
 pub mod jobs;
+pub mod kill;
 pub mod math;
 pub mod path;
 pub mod printf;

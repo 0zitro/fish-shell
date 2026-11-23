@@ -1190,6 +1190,9 @@ msgstr "リストの中から特定の文字列を検索"
 msgid "Searching/using paths"
 msgstr "パスの検索・使用"
 
+msgid "Send a signal to a process or job"
+msgstr ""
+
 #, c-format
 msgid "Send job %d (%s) to foreground"
 msgstr "ジョブ %d (%s) をフォアグラウンドに移行します"
@@ -1590,6 +1593,10 @@ msgid "cannot both path and unpath"
 msgstr "path と unpath を同時に行うことはできません"
 
 #, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
 msgid "cannot parse key '%s'"
 msgstr "キー '%s' を解析できません"
 
@@ -1680,6 +1687,14 @@ msgstr "無効なオプションの組み合わせです: %s"
 msgid "invalid precision: %s"
 msgstr "無効な精度: %s"
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr "サブコマンドが無効です"
 
@@ -1713,6 +1728,9 @@ msgstr ""
 msgid "missing subcommand"
 msgstr "サブコマンドが不足しています"
 
+msgid "not enough arguments"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr "選択肢がありません"
 
@@ -1736,6 +1754,10 @@ msgstr "スコープは次のいずれかである必要があります: univers
 
 msgid "search:"
 msgstr "検索:"
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr "'complete --arguments' の評価中にカーソルを設定することはまだサポートされていません"
@@ -1779,6 +1801,10 @@ msgstr "エクスポート解除済み"
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
 msgstr "不明な修飾子 '%s' が '%s' 内にあります"
+
+#, c-format
+msgid "unknown signal: %s"
+msgstr ""
 
 msgid "unlimited"
 msgstr "無制限"
@@ -2727,6 +2753,12 @@ msgstr "カーソル下のトークンがディレクトリならその内容を
 msgid "List embedded files contained in the fish binary"
 msgstr "fish バイナリに含まれる埋め込みファイルをリスト表示"
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr "関数の名前のみをリスト表示し、定義は表示しない"
 
@@ -2976,6 +3008,9 @@ msgstr "リストの先頭に値を追加"
 msgid "Print NULL-delimited output"
 msgstr "NULL区切りで出力"
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr "使用可能なすべての色名の一覧を表示"
 
@@ -3171,6 +3206,9 @@ msgstr "パラメータを必須と"
 msgid "Require parameter and don't use file completion"
 msgstr "パラメータを必須とし、ファイル補完を使用しない"
 
+msgid "Resolve PIDs from other users' too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3336,6 +3374,9 @@ msgstr "更新日時を表示"
 msgid "Show or change fish's language settings"
 msgstr "fish の言語設定を表示または変更"
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
 msgstr "更新日時からの経過秒数を表示"
 
@@ -3347,6 +3388,9 @@ msgstr "利用不可能なキーバインドを表示するか、すべてのバ
 
 msgid "Show variable"
 msgstr "変数を表示"
+
+msgid "Signal to send"
+msgstr ""
 
 msgid "Snapshot and define local variable"
 msgstr "変数のスナップショットを作成し、ローカル変数として定義"
@@ -3512,6 +3556,9 @@ msgstr "グロブの代わりに正規表現を使用"
 
 msgid "Use shell tokenization rules when splitting"
 msgstr "分割時にシェルのトークン化ルールを使用"
+
+msgid "Use sigqueue(2) rather than kill(2)"
+msgstr ""
 
 msgid "Use the portable output format"
 msgstr "ポータブルな出力形式を使用"
@@ -37860,12 +37907,6 @@ msgstr ""
 msgid "List sessions"
 msgstr ""
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46623,9 +46664,6 @@ msgstr ""
 msgid "Print NUM lines of trailing context"
 msgstr ""
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr ""
 
@@ -54199,9 +54237,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63369,9 +63404,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64666,9 +64698,6 @@ msgid "Sign the version tag"
 msgstr ""
 
 msgid "Signal and interface name"
-msgstr ""
-
-msgid "Signal to send"
 msgstr ""
 
 msgid "Signal to send to sstop the command"
@@ -75073,9 +75102,6 @@ msgid "Use shell as the user's login shell, rather than the default"
 msgstr ""
 
 msgid "Use short status indicators"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use silent mode"
