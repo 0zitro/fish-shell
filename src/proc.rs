@@ -610,12 +610,12 @@ pub struct JobFlags {
 pub struct InternalJobId(u64);
 
 /// A shell-local identifier for one suspension, written as `^N`. A value is never reused.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SuspensionHandle(u64);
 
 impl SuspensionHandle {
     /// Return the handle this shell assigns next.
-    fn allocate() -> Self {
+    pub(crate) fn allocate() -> Self {
         static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
         SuspensionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed))
     }
@@ -659,51 +659,107 @@ pub enum SuspensionDirection {
     InOut,
 }
 
+/// Whether a consuming operation may still take a suspension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SuspensionAvailability {
+    /// No operation has consumed the suspension.
+    Available,
+    /// One operation has consumed the suspension.
+    Consumed,
+}
+
+/// What a suspension handle denotes when it is resolved.
+pub enum SuspensionResolution {
+    /// No suspension carries this handle in this shell.
+    Unknown,
+    /// An operation consumed the suspension; the record remains for observation.
+    Consumed,
+    /// The suspension is available to a consuming operation.
+    Available(Arc<SuspensionRecord>),
+}
+
 /// The shell's ends of the pipes whose other ends a suspended command has, for each descriptor the
 /// command had there.
-pub struct Suspension {
-    /// The handle a later `resume` consumes.
-    pub handle: SuspensionHandle,
+///
+/// The record is shared by an `Arc`, and each descriptor entry by an `Arc` of its own, so sharing a
+/// record does not duplicate kernel descriptors. One consuming operation takes the suspension; the
+/// record then reports the consumed state rather than disappearing.
+pub struct SuspensionRecord {
     /// The descriptors the suspension records.
     pub form: SuspensionForm,
     /// The shell's end of the pipe and the side the suspended command uses, for each suspended
     /// descriptor.
-    descriptors: BTreeMap<RawFd, (SuspensionDirection, OwnedFd)>,
+    descriptors: Mutex<BTreeMap<RawFd, (SuspensionDirection, Arc<OwnedFd>)>>,
+    /// Whether a consuming operation has taken the suspension.
+    availability: Mutex<SuspensionAvailability>,
 }
 
-impl Suspension {
+impl SuspensionRecord {
     /// Record a new suspension of `form`, with no descriptor yet.
     pub fn new(form: SuspensionForm) -> Self {
-        Suspension {
-            handle: SuspensionHandle::allocate(),
+        SuspensionRecord {
             form,
-            descriptors: BTreeMap::new(),
+            descriptors: Mutex::new(BTreeMap::new()),
+            availability: Mutex::new(SuspensionAvailability::Available),
         }
     }
 
     /// Record the shell's end of the pipe for `descriptor_fd`.
     pub fn record_descriptor(
-        &mut self,
+        &self,
         descriptor_fd: RawFd,
         direction: SuspensionDirection,
         shell_end: OwnedFd,
     ) {
         self.descriptors
-            .insert(descriptor_fd, (direction, shell_end));
+            .lock()
+            .expect("the suspension descriptor lock is not poisoned")
+            .insert(descriptor_fd, (direction, Arc::new(shell_end)));
     }
 
     /// Take the shell's end of the pipe for `descriptor_fd` and the side the suspended command
     /// uses.
     pub fn take_descriptor(
-        &mut self,
+        &self,
         descriptor_fd: RawFd,
-    ) -> Option<(SuspensionDirection, OwnedFd)> {
-        self.descriptors.remove(&descriptor_fd)
+    ) -> Option<(SuspensionDirection, Arc<OwnedFd>)> {
+        self.descriptors
+            .lock()
+            .expect("the suspension descriptor lock is not poisoned")
+            .remove(&descriptor_fd)
     }
 
     /// Take every recorded descriptor of this suspension.
-    pub fn take_all_descriptors(&mut self) -> BTreeMap<RawFd, (SuspensionDirection, OwnedFd)> {
-        std::mem::take(&mut self.descriptors)
+    pub fn take_all_descriptors(&self) -> BTreeMap<RawFd, (SuspensionDirection, Arc<OwnedFd>)> {
+        std::mem::take(
+            &mut *self
+                .descriptors
+                .lock()
+                .expect("the suspension descriptor lock is not poisoned"),
+        )
+    }
+
+    /// Return whether a consuming operation may still take this suspension.
+    pub(crate) fn availability(&self) -> SuspensionAvailability {
+        *self
+            .availability
+            .lock()
+            .expect("the suspension availability lock is not poisoned")
+    }
+
+    /// Consume this suspension. Return `false` when an operation already consumed it.
+    pub(crate) fn consume(&self) -> bool {
+        let mut availability = self
+            .availability
+            .lock()
+            .expect("the suspension availability lock is not poisoned");
+        match *availability {
+            SuspensionAvailability::Available => {
+                *availability = SuspensionAvailability::Consumed;
+                true
+            }
+            SuspensionAvailability::Consumed => false,
+        }
     }
 }
 
@@ -1748,8 +1804,9 @@ const CRASHSIGNALS: [libc::c_int; 6] = [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV
 
 #[cfg(test)]
 mod tests {
-    use super::SuspensionHandle;
+    use super::{SuspensionDirection, SuspensionForm, SuspensionHandle, SuspensionRecord};
     use fish_widestring::{L, ToWString as _};
+    use std::os::fd::AsRawFd as _;
 
     #[test]
     fn test_suspension_handle_parse_and_render() {
@@ -1758,5 +1815,28 @@ mod tests {
         assert_eq!(SuspensionHandle::parse(L!("12")), None);
         assert_eq!(SuspensionHandle::parse(L!("^")), None);
         assert_eq!(SuspensionHandle::parse(L!("^1x")), None);
+    }
+
+    #[test]
+    fn test_suspension_consumption_happens_once() {
+        let record = SuspensionRecord::new(SuspensionForm::Stream);
+
+        assert!(record.consume());
+        assert!(!record.consume());
+    }
+
+    #[test]
+    fn test_suspension_record_takes_each_descriptor_once() {
+        let (_read_end, write_end) = nix::unistd::pipe().expect("a pipe");
+        let write_descriptor = write_end.as_raw_fd();
+        let record = SuspensionRecord::new(SuspensionForm::Command);
+        record.record_descriptor(libc::STDIN_FILENO, SuspensionDirection::In, write_end);
+
+        let (direction, recorded) = record
+            .take_descriptor(libc::STDIN_FILENO)
+            .expect("the recorded descriptor");
+        assert_eq!(direction, SuspensionDirection::In);
+        assert_eq!(recorded.as_raw_fd(), write_descriptor);
+        assert!(record.take_descriptor(libc::STDIN_FILENO).is_none());
     }
 }

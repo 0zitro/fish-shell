@@ -2,7 +2,9 @@
 
 use super::prelude::*;
 use crate::fds::make_autoclose_pipes;
-use crate::proc::{Suspension, SuspensionDirection, SuspensionForm, SuspensionHandle};
+use crate::proc::{
+    SuspensionDirection, SuspensionForm, SuspensionHandle, SuspensionRecord, SuspensionResolution,
+};
 use crate::wutil::perror_nix;
 use fish_widestring::bytes2wcstring;
 use libc::{POLLHUP, POLLIN, SHUT_WR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
@@ -24,7 +26,7 @@ enum StdinTargetKind {
 
 /// One suspension descriptor that receives the resuming command's standard input.
 struct StdinTarget {
-    descriptor: OwnedFd,
+    descriptor: Arc<OwnedFd>,
     kind: StdinTargetKind,
 }
 
@@ -114,25 +116,35 @@ pub fn resume(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) 
         ));
         return Err(STATUS_INVALID_ARGS);
     };
-    let Some(mut suspension) = parser.take_suspension(handle) else {
-        streams.err.appendln(&wgettext_fmt!(
-            "resume: %s denotes no suspension",
-            operands[0]
-        ));
-        return Err(STATUS_CMD_ERROR);
+    let suspension = match parser.consume_suspension(handle) {
+        SuspensionResolution::Unknown => {
+            streams.err.appendln(&wgettext_fmt!(
+                "resume: %s denotes no suspension",
+                operands[0]
+            ));
+            return Err(STATUS_CMD_ERROR);
+        }
+        SuspensionResolution::Consumed => {
+            streams.err.appendln(&wgettext_fmt!(
+                "resume: %s: the suspension is consumed",
+                operands[0]
+            ));
+            return Err(STATUS_CMD_ERROR);
+        }
+        SuspensionResolution::Available(record) => record,
     };
 
     if streams.out.flush_and_check_error() != STATUS_CMD_OK {
         return Err(STATUS_CMD_ERROR);
     }
     match suspension.form {
-        SuspensionForm::Stream => resume_stream(streams, &mut suspension),
-        SuspensionForm::Command => resume_command(streams, &mut suspension),
+        SuspensionForm::Stream => resume_stream(streams, &suspension),
+        SuspensionForm::Command => resume_command(streams, &suspension),
     }
 }
 
 /// Link a stream suspension's descriptor to the command's standard output.
-fn resume_stream(streams: &mut IoStreams, suspension: &mut Suspension) -> BuiltinResult {
+fn resume_stream(streams: &mut IoStreams, suspension: &SuspensionRecord) -> BuiltinResult {
     let Some((direction, suspended_stream)) = suspension.take_descriptor(STDIN_FILENO) else {
         streams
             .err
@@ -167,7 +179,7 @@ fn resume_stream(streams: &mut IoStreams, suspension: &mut Suspension) -> Builti
 }
 
 /// Link a command suspension's descriptors to the command's own descriptors.
-fn resume_command(streams: &mut IoStreams, suspension: &mut Suspension) -> BuiltinResult {
+fn resume_command(streams: &mut IoStreams, suspension: &SuspensionRecord) -> BuiltinResult {
     let descriptors = suspension.take_all_descriptors();
     let has_duplex = descriptors
         .values()
@@ -280,11 +292,15 @@ fn resume_command(streams: &mut IoStreams, suspension: &mut Suspension) -> Built
                         None => None,
                     };
                     relays.push(scope.spawn(move || {
-                        let result =
-                            match relay_to_sink(recorded_output, sink, false, output_sender) {
-                                Err(nix::Error::EIO) => Ok(()),
-                                result => result,
-                            };
+                        let result = match relay_to_sink(
+                            Arc::new(recorded_output),
+                            sink,
+                            false,
+                            output_sender,
+                        ) {
+                            Err(nix::Error::EIO) => Ok(()),
+                            result => result,
+                        };
                         if remaining_duplex_outputs.fetch_sub(1, Ordering::Relaxed) == 1 {
                             if let Some(completion) = completion {
                                 let _ = write_all(completion.as_fd(), &[1]);
@@ -454,7 +470,7 @@ fn descriptor_sink(streams: &IoStreams, descriptor: RawFd) -> Sink {
 
 /// Relay `stream` to `sink`, tagging channel records with `is_stderr`.
 fn relay_to_sink(
-    stream: OwnedFd,
+    stream: Arc<OwnedFd>,
     sink: Sink,
     is_stderr: bool,
     sender: Sender<(bool, Vec<u8>)>,
@@ -525,13 +541,13 @@ fn write_all(target: BorrowedFd<'_>, mut data: &[u8]) -> Result<(), nix::Error> 
 
 /// Send everything `stream` produces to `sender` in chunks.
 fn relay_to_channel(
-    stream: OwnedFd,
+    stream: Arc<OwnedFd>,
     is_stderr: bool,
     sender: &Sender<(bool, Vec<u8>)>,
 ) -> Result<(), nix::Error> {
     let mut buffer = [0u8; 4096];
     loop {
-        match read(&stream, &mut buffer) {
+        match read(stream.as_fd(), &mut buffer) {
             Ok(0) => return Ok(()),
             Ok(count) => {
                 if sender.send((is_stderr, buffer[..count].to_vec())).is_err() {

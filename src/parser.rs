@@ -24,7 +24,8 @@ use crate::{
     parse_tree::{NodeRef, ParsedSourceRef, SourceLineCache, parse_source},
     prelude::*,
     proc::{
-        InternalJobId, Job, JobGroupRef, Pid, ProcStatus, Suspension, SuspensionHandle, job_reap,
+        InternalJobId, Job, JobGroupRef, Pid, ProcStatus, SuspensionAvailability, SuspensionHandle,
+        SuspensionRecord, SuspensionResolution, job_reap,
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
     wait_handle::WaitHandleStore,
@@ -37,6 +38,7 @@ use fish_common::{
 use fish_util::get_time;
 use fish_widestring::{WExt as _, wcs2bytes};
 use libc::c_int;
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write as _;
@@ -406,7 +408,7 @@ pub struct Parser {
     wait_handles: WaitHandleStore,
 
     /// The suspensions whose shell ends are open, for a later `resume`.
-    suspensions: Vec<Suspension>,
+    suspensions: BTreeMap<SuspensionHandle, Arc<SuspensionRecord>>,
 
     /// The list of blocks.
     /// This is a stack; the topmost block is at the end. This is to avoid invalidating block
@@ -920,18 +922,38 @@ impl Parser {
         &mut self.job_list
     }
 
-    /// Record a suspension for a later `resume`.
-    pub fn add_suspension(&mut self, suspension: Suspension) {
-        self.suspensions.push(suspension);
+    /// Record a suspension for a later `resume`, returning the handle that denotes it.
+    pub fn add_suspension(&mut self, suspension: SuspensionRecord) -> SuspensionHandle {
+        let handle = SuspensionHandle::allocate();
+        self.suspensions.insert(handle, Arc::new(suspension));
+        handle
     }
 
-    /// Take the suspension that `handle` denotes, if this shell records it.
-    pub fn take_suspension(&mut self, handle: SuspensionHandle) -> Option<Suspension> {
-        let index = self
-            .suspensions
-            .iter()
-            .position(|suspension| suspension.handle == handle)?;
-        Some(self.suspensions.remove(index))
+    /// Return what `handle` denotes, without consuming the suspension.
+    pub fn find_suspension(&self, handle: SuspensionHandle) -> SuspensionResolution {
+        let Some(record) = self.suspensions.get(&handle) else {
+            return SuspensionResolution::Unknown;
+        };
+        match record.availability() {
+            SuspensionAvailability::Available => {
+                SuspensionResolution::Available(Arc::clone(record))
+            }
+            SuspensionAvailability::Consumed => SuspensionResolution::Consumed,
+        }
+    }
+
+    /// Consume the suspension that `handle` denotes.
+    pub fn consume_suspension(&mut self, handle: SuspensionHandle) -> SuspensionResolution {
+        match self.find_suspension(handle) {
+            SuspensionResolution::Available(record) => {
+                if record.consume() {
+                    SuspensionResolution::Available(record)
+                } else {
+                    SuspensionResolution::Consumed
+                }
+            }
+            resolution => resolution,
+        }
     }
 
     /// Return how many suspensions this shell records.

@@ -6,7 +6,7 @@ use crate::io::{IoChain, IoFile, IoPipe};
 use crate::parse_constants::{ParseErrorList, ParseTreeFlags};
 use crate::parse_tree::parse_source;
 use crate::proc::{
-    Suspension, SuspensionDirection, SuspensionForm, get_login, is_interactive_session,
+    SuspensionDirection, SuspensionForm, SuspensionRecord, get_login, is_interactive_session,
 };
 use crate::wutil::perror_nix;
 use fish_wcstringutil::join_strings;
@@ -356,10 +356,9 @@ pub fn suspend(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr])
                 return Err(STATUS_CMD_ERROR);
             }
         };
-        let mut suspension = Suspension::new(SuspensionForm::Stream);
+        let suspension = SuspensionRecord::new(SuspensionForm::Stream);
         suspension.record_descriptor(STDIN_FILENO, SuspensionDirection::Out, shell_end);
-        let handle = suspension.handle;
-        parser.add_suspension(suspension);
+        let handle = parser.add_suspension(suspension);
         streams.out.appendln(&handle.to_wstring());
         return Ok(SUCCESS);
     }
@@ -454,7 +453,7 @@ fn suspend_command_pipeline(
         stderr_pipe.write,
     )));
 
-    let mut suspension = Suspension::new(SuspensionForm::Command);
+    let suspension = SuspensionRecord::new(SuspensionForm::Command);
     suspension.record_descriptor(STDIN_FILENO, SuspensionDirection::In, stdin_pipe.write);
     suspension.record_descriptor(STDOUT_FILENO, SuspensionDirection::Out, stdout_pipe.read);
     suspension.record_descriptor(STDERR_FILENO, SuspensionDirection::Out, stderr_pipe.read);
@@ -564,8 +563,6 @@ fn suspend_command_pipeline(
         }
     }
 
-    let handle = suspension.handle;
-
     let eval_res = parser.eval_parsed_source_background(&parsed_source, &io_chain);
     if eval_res.status.signal_exited() {
         return BuiltinResult::from_dynamic(eval_res.status.status_value());
@@ -573,7 +570,7 @@ fn suspend_command_pipeline(
     if eval_res.break_expand {
         return Err(STATUS_CMD_ERROR);
     }
-    parser.add_suspension(suspension);
+    let handle = parser.add_suspension(suspension);
     streams.out.appendln(&handle.to_wstring());
     Ok(SUCCESS)
 }

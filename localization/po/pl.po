@@ -1809,6 +1809,10 @@ msgstr ""
 msgid "resume: %s is not a suspension handle"
 msgstr ""
 
+#, c-format
+msgid "resume: %s: the suspension is consumed"
+msgstr ""
+
 msgid "resume: expected one suspension handle"
 msgstr ""
 
