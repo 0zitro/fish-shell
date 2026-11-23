@@ -813,7 +813,7 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             )
             + "or __fish_color_theme=unknown __fish_apply_theme\n"
             + "__fish_theme_export_for_webconfig",
-            env=os.environ | {"__fish_force_load_default_theme": "1"},
+            env={**os.environ, "__fish_force_load_default_theme": "1"},
         )
         assert err == "", err
 
