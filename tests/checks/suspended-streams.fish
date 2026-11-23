@@ -153,3 +153,52 @@ echo bind_direction=$status
 $fish -c 'suspend --fd 5 --fd 5 echo x' 2>/dev/null
 echo bind_duplicate=$status
 # CHECK: bind_duplicate=2
+
+# An inherited path supplies the source descriptor and records no endpoint.
+set -l inherited_file (mktemp)
+echo hello >$inherited_file
+set -l inherited_handle (suspend --fd 5:in=inherit:$inherited_file 'cat <&5')
+resume $inherited_handle
+# CHECK: hello
+rm -f $inherited_file
+
+# An inherited path defaults to inout and opens the path read-write.
+set -l default_inherited_file (mktemp)
+echo hello >$default_inherited_file
+set -l default_inherited_handle (suspend --fd 5=inherit:$default_inherited_file 'cat <&5')
+resume $default_inherited_handle
+# CHECK: hello
+rm -f $default_inherited_file
+
+# An inherited output path receives the source's writes.
+set -l inherited_output_file (mktemp)
+set -l inherited_output_handle (suspend --fd 5:out=inherit:$inherited_output_file 'echo hello >&5')
+resume $inherited_output_handle
+test (cat $inherited_output_file) = hello
+echo inherit_output=$status
+# CHECK: inherit_output=0
+rm -f $inherited_output_file
+
+# The verbose inout spelling of an inherited path is accepted.
+set -l verbose_inherited_file (mktemp)
+echo hello >$verbose_inherited_file
+set -l verbose_inherited_handle (suspend --fd 5:inout=inherit:$verbose_inherited_file 'cat <&5')
+resume $verbose_inherited_handle
+# CHECK: hello
+rm -f $verbose_inherited_file
+
+# A pipe has no inout direction, an unknown backend is refused, an empty
+# inherited path is malformed, and a path that cannot be opened is a command
+# failure.
+$fish -c 'suspend --fd 5:inout echo x' 2>/dev/null
+echo bind_inout_pipe=$status
+# CHECK: bind_inout_pipe=2
+$fish -c 'suspend --fd 5=no-such-backend echo x' 2>/dev/null
+echo bind_unknown_backend=$status
+# CHECK: bind_unknown_backend=2
+$fish -c 'suspend --fd 5=inherit: echo x' 2>/dev/null
+echo bind_empty_path=$status
+# CHECK: bind_empty_path=2
+$fish -c 'suspend --fd 5:in=inherit:/no/such/path "cat <&5"' 2>/dev/null
+echo bind_unopenable_path=$status
+# CHECK: bind_unopenable_path=1

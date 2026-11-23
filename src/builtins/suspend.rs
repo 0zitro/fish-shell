@@ -1,8 +1,8 @@
 //! Implementation of the `suspend` builtin.
 
 use super::prelude::*;
-use crate::fds::make_autoclose_pipes;
-use crate::io::{IoChain, IoPipe};
+use crate::fds::{make_autoclose_pipes, wopen_cloexec};
+use crate::io::{IoChain, IoFile, IoPipe};
 use crate::parse_constants::{ParseErrorList, ParseTreeFlags};
 use crate::parse_tree::parse_source;
 use crate::proc::{
@@ -10,39 +10,97 @@ use crate::proc::{
 };
 use crate::wutil::perror_nix;
 use fish_wcstringutil::join_strings;
-use fish_widestring::WExt as _;
+use fish_widestring::{WExt as _, WString};
 use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use nix::fcntl::OFlag;
 use nix::sys::signal::{Signal, kill};
+use nix::sys::stat::Mode;
 use nix::unistd::{dup, getpid};
 use std::os::fd::{AsFd as _, RawFd};
 use std::sync::Arc;
 
+/// The direction a `--fd` binding gives its source descriptor.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BindingDirection {
+    In,
+    Out,
+    InOut,
+}
+
+impl TryFrom<BindingDirection> for SuspensionDirection {
+    type Error = BindingDirection;
+
+    fn try_from(direction: BindingDirection) -> Result<Self, Self::Error> {
+        match direction {
+            BindingDirection::In => Ok(SuspensionDirection::In),
+            BindingDirection::Out => Ok(SuspensionDirection::Out),
+            BindingDirection::InOut => Err(direction),
+        }
+    }
+}
+
+/// The descriptor layout a `--fd` binding creates.
+enum BindingBackend {
+    Pipe,
+    Inherit { path: WString },
+}
+
 /// One descriptor beyond the standard ones that the command form suspends.
-#[derive(Clone, Copy)]
 struct FdBinding {
     /// The descriptor of the suspended pipeline.
     fd: RawFd,
-    /// The side of the pipe the suspended pipeline uses.
-    direction: SuspensionDirection,
+    /// The direction of that descriptor in the suspended pipeline.
+    direction: BindingDirection,
+    /// The backend that creates or opens the descriptor.
+    backend: BindingBackend,
 }
 
 /// Why a `--fd` specification is not accepted.
 enum FdBindingError {
-    /// The specification is not `FD:in` or `FD:out`.
+    /// The specification does not match `FD[:DIRECTION][=BACKEND]`.
     Malformed,
     /// The descriptor is one of 0, 1 or 2, which the command form suspends already.
     StandardDescriptor,
+    /// A pipe binding names `inout`.
+    InoutWithoutBackend,
+    /// The backend is not one this layer accepts.
+    UnknownBackend,
 }
 
-/// Parse one `--fd` specification, `FD`, `FD:in` or `FD:out`. The direction defaults to `out`.
+impl TryFrom<&wstr> for BindingDirection {
+    type Error = FdBindingError;
+
+    fn try_from(text: &wstr) -> Result<Self, Self::Error> {
+        if text == L!("in") {
+            Ok(BindingDirection::In)
+        } else if text == L!("out") {
+            Ok(BindingDirection::Out)
+        } else if text == L!("inout") {
+            Ok(BindingDirection::InOut)
+        } else {
+            Err(FdBindingError::Malformed)
+        }
+    }
+}
+
+/// Parse one `--fd` specification, `FD[:DIRECTION][=BACKEND]`.
 fn parse_fd_binding(specification: &wstr) -> Result<FdBinding, FdBindingError> {
-    let (fd_text, direction_text) = match specification.find_char(':') {
-        Some(colon) => (
-            specification.slice_to(colon),
-            specification.slice_from(colon + 1),
+    let (descriptor_text, backend_text) = match specification.find_char('=') {
+        Some(equals) => (
+            specification.slice_to(equals),
+            Some(specification.slice_from(equals + 1)),
         ),
-        None => (specification, L!("out")),
+        None => (specification, None),
     };
+
+    let (fd_text, direction_text) = match descriptor_text.find_char(':') {
+        Some(colon) => (
+            descriptor_text.slice_to(colon),
+            Some(descriptor_text.slice_from(colon + 1)),
+        ),
+        None => (descriptor_text, None),
+    };
+
     let Ok(fd) = fish_wcstol(fd_text) else {
         return Err(FdBindingError::Malformed);
     };
@@ -52,14 +110,47 @@ fn parse_fd_binding(specification: &wstr) -> Result<FdBinding, FdBindingError> {
     if fd <= STDERR_FILENO {
         return Err(FdBindingError::StandardDescriptor);
     }
-    let direction = if direction_text == L!("in") {
-        SuspensionDirection::In
-    } else if direction_text == L!("out") {
-        SuspensionDirection::Out
-    } else {
-        return Err(FdBindingError::Malformed);
+
+    let backend = match backend_text {
+        None => BindingBackend::Pipe,
+        Some(backend_text) => parse_binding_backend(backend_text)?,
     };
-    Ok(FdBinding { fd, direction })
+
+    let direction = match direction_text {
+        None => match &backend {
+            BindingBackend::Pipe => BindingDirection::Out,
+            BindingBackend::Inherit { .. } => BindingDirection::InOut,
+        },
+        Some(text) => BindingDirection::try_from(text)?,
+    };
+
+    match &backend {
+        BindingBackend::Pipe => {
+            if direction == BindingDirection::InOut {
+                return Err(FdBindingError::InoutWithoutBackend);
+            }
+        }
+        BindingBackend::Inherit { .. } => {}
+    }
+
+    Ok(FdBinding {
+        fd,
+        direction,
+        backend,
+    })
+}
+
+/// Parse the backend part of a `--fd` specification.
+fn parse_binding_backend(text: &wstr) -> Result<BindingBackend, FdBindingError> {
+    let Some(path) = text.strip_prefix(L!("inherit:")) else {
+        return Err(FdBindingError::UnknownBackend);
+    };
+    if path.is_empty() {
+        return Err(FdBindingError::Malformed);
+    }
+    Ok(BindingBackend::Inherit {
+        path: path.to_owned(),
+    })
 }
 
 /// Suspend the current shell, a stream on its standard input, or a command pipeline.
@@ -105,7 +196,7 @@ pub fn suspend(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr])
                     }
                     Err(FdBindingError::Malformed) => {
                         streams.err.appendln(&wgettext_fmt!(
-                            "suspend: %s: expected FD, FD:in or FD:out",
+                            "suspend: %s: expected FD[:in|out|inout][=BACKEND]",
                             specification
                         ));
                         return Err(STATUS_INVALID_ARGS);
@@ -113,6 +204,20 @@ pub fn suspend(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr])
                     Err(FdBindingError::StandardDescriptor) => {
                         streams.err.appendln(&wgettext_fmt!(
                             "suspend: %s: standard descriptors are suspended already",
+                            specification
+                        ));
+                        return Err(STATUS_INVALID_ARGS);
+                    }
+                    Err(FdBindingError::InoutWithoutBackend) => {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "suspend: %s: inout requires a backend",
+                            specification
+                        ));
+                        return Err(STATUS_INVALID_ARGS);
+                    }
+                    Err(FdBindingError::UnknownBackend) => {
+                        streams.err.appendln(&wgettext_fmt!(
+                            "suspend: %s: unknown backend",
                             specification
                         ));
                         return Err(STATUS_INVALID_ARGS);
@@ -283,18 +388,47 @@ fn suspend_command_pipeline(
     suspension.record_descriptor(STDERR_FILENO, SuspensionDirection::Out, stderr_pipe.read);
 
     for binding in bindings {
-        let Ok(pipes) = make_autoclose_pipes() else {
-            perror_nix("pipe", nix::Error::last());
-            return Err(STATUS_CMD_ERROR);
-        };
-        match binding.direction {
-            SuspensionDirection::Out => {
-                io_chain.push(Arc::new(IoPipe::new(binding.fd, false, pipes.write)));
-                suspension.record_descriptor(binding.fd, SuspensionDirection::Out, pipes.read);
+        match &binding.backend {
+            BindingBackend::Pipe => {
+                let Ok(direction) = SuspensionDirection::try_from(binding.direction) else {
+                    panic!("pipe binding rejects inout");
+                };
+                let Ok(pipes) = make_autoclose_pipes() else {
+                    perror_nix("pipe", nix::Error::last());
+                    return Err(STATUS_CMD_ERROR);
+                };
+                match direction {
+                    SuspensionDirection::Out => {
+                        io_chain.push(Arc::new(IoPipe::new(binding.fd, false, pipes.write)));
+                        suspension.record_descriptor(
+                            binding.fd,
+                            SuspensionDirection::Out,
+                            pipes.read,
+                        );
+                    }
+                    SuspensionDirection::In => {
+                        io_chain.push(Arc::new(IoPipe::new(binding.fd, true, pipes.read)));
+                        suspension.record_descriptor(
+                            binding.fd,
+                            SuspensionDirection::In,
+                            pipes.write,
+                        );
+                    }
+                }
             }
-            SuspensionDirection::In => {
-                io_chain.push(Arc::new(IoPipe::new(binding.fd, true, pipes.read)));
-                suspension.record_descriptor(binding.fd, SuspensionDirection::In, pipes.write);
+            BindingBackend::Inherit { path } => {
+                let flags = match binding.direction {
+                    BindingDirection::In => OFlag::O_RDONLY,
+                    BindingDirection::Out => OFlag::O_WRONLY,
+                    BindingDirection::InOut => OFlag::O_RDWR,
+                };
+                let Ok(file) = wopen_cloexec(path, flags, Mode::empty()) else {
+                    streams
+                        .err
+                        .appendln(&wgettext_fmt!("suspend: %s: cannot open", &path));
+                    return Err(STATUS_CMD_ERROR);
+                };
+                io_chain.push(Arc::new(IoFile::new(binding.fd, file)));
             }
         }
     }

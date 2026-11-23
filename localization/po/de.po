@@ -1788,15 +1788,27 @@ msgid "successfully set universal '%s'; but a global by that name shadows it"
 msgstr ""
 
 #, c-format
+msgid "suspend: %s: cannot open"
+msgstr ""
+
+#, c-format
 msgid "suspend: %s: descriptor bound twice"
 msgstr ""
 
 #, c-format
-msgid "suspend: %s: expected FD, FD:in or FD:out"
+msgid "suspend: %s: expected FD[:in|out|inout][=BACKEND]"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: inout requires a backend"
 msgstr ""
 
 #, c-format
 msgid "suspend: %s: standard descriptors are suspended already"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: unknown backend"
 msgstr ""
 
 msgid "suspend: --fd requires a source pipeline"
