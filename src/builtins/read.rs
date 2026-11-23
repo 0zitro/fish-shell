@@ -6,6 +6,7 @@ use crate::{
     common::valid_var_name,
     env::{EnvMode, EnvVar, Environment as _, READ_BYTE_LIMIT},
     err_fmt, err_str,
+    fds::read_blocked_cancellable,
     history::{HistoryId, MemoryHistoryId},
     input::{DecodeState, InvalidPolicy, decode_utf8},
     nix::isatty,
@@ -18,9 +19,10 @@ use crate::{
     tokenizer::{Tok, TokFlags, Tokenizer},
     wutil::{self, perror_nix},
 };
-use fish_common::{UnescapeStringStyle, escape, read_blocked, unescape_string};
+use fish_common::{UnescapeStringStyle, escape, unescape_string};
 use fish_wcstringutil::{split_about, split_string_tok};
 use fish_widestring::bytes2wcstring;
+use libc::SIGINT;
 use nix::unistd::{Whence, lseek};
 use std::{
     num::NonZeroUsize,
@@ -320,7 +322,8 @@ fn read_in_chunks(fd: RawFd, buff: &mut WString, split_null: bool, do_seek: bool
     while !finished {
         let mut inbuf = [0_u8; READ_CHUNK_SIZE];
 
-        let bytes_read = match read_blocked(fd, &mut inbuf) {
+        let bytes_read = match read_blocked_cancellable(fd, &mut inbuf) {
+            Err(nix::Error::EINTR) => return Err(128 + SIGINT),
             Ok(0) | Err(_) => {
                 eof = true;
                 break;
@@ -383,7 +386,8 @@ fn read_one_char_at_a_time(
         let chars_read = buff.len();
         let res = loop {
             let mut b = [0_u8; 1];
-            match read_blocked(fd, &mut b) {
+            match read_blocked_cancellable(fd, &mut b) {
+                Err(nix::Error::EINTR) => return Err(128 + SIGINT),
                 Ok(0) | Err(_) => {
                     break None;
                 }

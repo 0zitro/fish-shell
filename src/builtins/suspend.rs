@@ -302,6 +302,9 @@ fn suspend_command_pipeline(
     let handle = suspension.handle;
 
     let eval_res = parser.eval_parsed_source_background(&parsed_source, &io_chain);
+    if eval_res.status.signal_exited() {
+        return BuiltinResult::from_dynamic(eval_res.status.status_value());
+    }
     if eval_res.break_expand {
         return Err(STATUS_CMD_ERROR);
     }

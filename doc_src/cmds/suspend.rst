@@ -31,6 +31,9 @@ The pipeline runs as one job with its standard descriptors suspended:
 Each bound descriptor is one pipe shared by every stage that uses it.
 The handle is written to the standard output of ``suspend``; a redirection on the ``suspend`` command applies to the handle, not to the started pipeline.
 
+A source stage that the shell evaluates itself, such as a builtin or a function, is not launched as a background job.
+The command blocks while that evaluation runs, and an interrupt cancels it before a handle is written.
+
 A redirection on the ``suspend`` stage selects where the handle is written.
 
 Example
