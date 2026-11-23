@@ -670,7 +670,7 @@ pub(crate) enum SuspensionAvailability {
 
 /// What a suspension handle denotes when it is resolved.
 pub enum SuspensionResolution {
-    /// No suspension carries this handle in this shell.
+    /// No suspension in this shell has this handle.
     Unknown,
     /// An operation consumed the suspension; the record remains for observation.
     Consumed,
@@ -683,7 +683,7 @@ pub enum SuspensionResolution {
 ///
 /// The record is shared by an `Arc`, and each descriptor entry by an `Arc` of its own, so sharing a
 /// record does not duplicate kernel descriptors. One consuming operation takes the suspension; the
-/// record then reports the consumed state rather than disappearing.
+/// record then reports that it was consumed rather than disappearing.
 pub struct SuspensionRecord {
     /// The descriptors the suspension records.
     pub form: SuspensionForm,

@@ -28,7 +28,7 @@ use crate::{
         SuspensionRecord, SuspensionResolution, job_reap,
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
-    task::{Task, TaskId, TaskLocalData, TaskTable},
+    task::{DescriptorTable, Task, TaskDescriptors, TaskId, TaskTable},
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
 };
@@ -405,7 +405,7 @@ pub struct Parser {
     /// indexes during recursive evaluation.
     block_list: Vec<Block>,
 
-    /// The tasks this shell holds.
+    /// The tasks this shell records.
     tasks: TaskTable,
 
     /// The task the evaluator runs.
@@ -480,7 +480,7 @@ impl Parser {
 
         match open_dir(c".", BEST_O_SEARCH) {
             Ok(fd) => {
-                result.local_mut().set_cwd_fd(Arc::new(fd));
+                result.task_descriptors_mut().set_cwd_fd(Arc::new(fd));
             }
             Err(err) => {
                 perror_nix("Unable to open the current working directory", err);
@@ -985,15 +985,28 @@ impl Parser {
         self.current_task_mut().store_mut().functions_mut()
     }
 
-    /// Get the current task's task-local data.
+    /// Get the descriptors recorded for the current task.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn local(&self) -> &TaskLocalData {
-        self.current_task().local()
+    pub(crate) fn task_descriptors(&self) -> &TaskDescriptors {
+        self.current_task().descriptors()
     }
 
-    /// Get the current task's task-local data for modification.
-    pub(crate) fn local_mut(&mut self) -> &mut TaskLocalData {
-        self.current_task_mut().local_mut()
+    /// Get the descriptors recorded for the current task for modification.
+    pub(crate) fn task_descriptors_mut(&mut self) -> &mut TaskDescriptors {
+        self.current_task_mut().descriptors_mut()
+    }
+
+    /// Get the descriptor table of the current task.
+    pub(crate) fn descriptor_table(&self) -> &DescriptorTable {
+        self.current_task().descriptors().descriptor_table()
+    }
+
+    /// Get the descriptor table of the current task for modification.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn descriptor_table_mut(&mut self) -> &mut DescriptorTable {
+        self.current_task_mut()
+            .descriptors_mut()
+            .descriptor_table_mut()
     }
 
     /// Return the task `id` denotes, or `None` when the identity is stale.

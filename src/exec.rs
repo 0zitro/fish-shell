@@ -90,6 +90,12 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
         return true;
     }
 
+    // A task's descriptors are the base of every process it starts; the block's and the command's
+    // redirections are applied over them.
+    let mut task_io = parser.descriptor_table().to_io_chain();
+    task_io.append(&block_io);
+    let block_io = task_io;
+
     // Handle an exec call.
     if job.processes()[0].is_exec() {
         // If we are interactive, perhaps disallow exec if there are background jobs.

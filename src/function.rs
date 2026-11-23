@@ -62,7 +62,7 @@ const _: () = assert_sync::<FunctionProperties>();
 /// it extends.
 #[derive(Clone)]
 pub(crate) struct FunctionFrame {
-    /// The definitions this frame holds.
+    /// The definitions this frame records.
     funcs: HashMap<WString, Arc<FunctionProperties>>,
 
     /// Names whose autoloading this frame prevents.
@@ -110,7 +110,7 @@ impl FunctionFrame {
         }
     }
 
-    /// Add a definition to this frame, replacing one it already holds.
+    /// Add a definition to this frame, replacing a definition it already records.
     fn add(&mut self, name: WString, props: Arc<FunctionProperties>) {
         self.autoload_tombstones.remove(&name);
         self.funcs.insert(name, props);
@@ -156,7 +156,7 @@ pub(crate) enum FunctionStore {
     /// The shell's namespace, shared by the process.
     #[default]
     Shell,
-    /// A task's namespace: its own frame over the chain captured when the task started.
+    /// A task's namespace: a frame over the chain captured when the task started.
     #[cfg_attr(not(test), allow(dead_code))]
     Task(Arc<FunctionFrame>),
 }
@@ -168,7 +168,7 @@ impl FunctionStore {
     }
 
     /// Return a store for a task started from this one: an empty frame over the namespace this
-    /// store holds now.
+    /// store extends now.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn copy_for_task(&self) -> Self {
         FunctionStore::Task(Arc::new(FunctionFrame::new(Some(self.current_frame()))))
@@ -270,7 +270,7 @@ impl FunctionStore {
         names.into_iter().collect()
     }
 
-    /// Drop the autoloaded definitions this store holds.
+    /// Drop the autoloaded definitions this store records.
     pub fn invalidate_path(&mut self) {
         match self {
             FunctionStore::Shell => {
@@ -284,7 +284,7 @@ impl FunctionStore {
         }
     }
 
-    /// Insert a definition into this store's own frame without changing whether it is an autoload.
+    /// Insert a definition into this store's frame without changing whether it is an autoload.
     fn insert_definition(&mut self, name: WString, props: Arc<FunctionProperties>) {
         match self {
             FunctionStore::Shell => Arc::make_mut(&mut function_set().root).add(name, props),
@@ -358,7 +358,7 @@ fn allow_autoload(set: &FunctionSet, store: &FunctionStore, name: &wstr) -> bool
 pub fn load(name: &wstr, parser: &mut Parser) -> bool {
     let mut path_to_autoload = None;
     let store_lacks_props = parser.functions().get_props(name).is_none();
-    // Note we can't autoload while holding the funcset lock.
+    // Note autoloading is not performed while the funcset mutex is locked.
     // Lock around a local region.
     {
         let mut set = function_set();

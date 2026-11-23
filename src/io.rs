@@ -181,6 +181,11 @@ pub trait IoData: Send + Sync {
     fn as_bufferfill(&self) -> Option<&IoBufferfill> {
         None
     }
+
+    /// Return the shared descriptor this redirection records, when it records one.
+    fn shared_source_fd(&self) -> Option<Arc<OwnedFd>> {
+        None
+    }
 }
 
 pub struct IoClose {
@@ -236,11 +241,14 @@ impl IoData for IoFd {
 pub struct IoFile {
     fd: RawFd,
     // The file which we are writing to or reading from.
-    file: File,
+    file: Arc<OwnedFd>,
 }
 impl IoFile {
     pub fn new(fd: RawFd, file: File) -> Self {
-        IoFile { fd, file }
+        IoFile {
+            fd,
+            file: Arc::new(OwnedFd::from(file)),
+        }
         // Invalid file redirections are replaced with a closed fd, so the following
         // assertion isn't guaranteed to pass:
         // assert(file_fd_.valid() && "File is not valid");
@@ -259,13 +267,16 @@ impl IoData for IoFile {
     fn print(&self) {
         eprintf!("file %d -> %d\n", self.file.as_raw_fd(), self.fd);
     }
+    fn shared_source_fd(&self) -> Option<Arc<OwnedFd>> {
+        Some(Arc::clone(&self.file))
+    }
 }
 
 /// Represents (one end) of a pipe.
 pub struct IoPipe {
     fd: RawFd,
     // The pipe's fd. Conceptually this is dup2'd to io_data_t::fd.
-    pipe_fd: OwnedFd,
+    pipe_fd: Arc<OwnedFd>,
     /// Whether this is an input pipe. This is used only for informational purposes.
     is_input: bool,
 }
@@ -273,7 +284,7 @@ impl IoPipe {
     pub fn new(fd: RawFd, is_input: bool, pipe_fd: OwnedFd) -> Self {
         IoPipe {
             fd,
-            pipe_fd,
+            pipe_fd: Arc::new(pipe_fd),
             is_input,
         }
     }
@@ -295,6 +306,9 @@ impl IoData for IoPipe {
             if self.is_input { "yes" } else { "no" },
             self.fd
         );
+    }
+    fn shared_source_fd(&self) -> Option<Arc<OwnedFd>> {
+        Some(Arc::clone(&self.pipe_fd))
     }
 }
 
@@ -541,7 +555,7 @@ impl IoChain {
     /// Follow this chain's redirections for `fd` down to a descriptor of the shell.
     ///
     /// Returns `None` when the chain closes the descriptor or redirects it to an in-process
-    /// buffer, and the descriptor itself when the chain does not mention it.
+    /// buffer, and the descriptor itself when the chain records no redirection for it.
     pub fn resolve_fd(&self, fd: RawFd) -> Option<RawFd> {
         let mut current = fd;
         for _ in 0..64 {
@@ -552,6 +566,24 @@ impl IoChain {
                 IoMode::Close | IoMode::BufferFill => return None,
                 IoMode::Fd => current = io.source_fd(),
                 IoMode::Pipe | IoMode::File => return Some(io.source_fd()),
+            }
+        }
+        None
+    }
+
+    /// Follow this chain's redirections for `fd` down to a descriptor the chain records as a
+    /// shared source.
+    ///
+    /// Returns `None` when the chain closes the descriptor, redirects it to an in-process buffer,
+    /// or records no redirection for it.
+    pub fn resolve_shared_fd(&self, fd: RawFd) -> Option<Arc<OwnedFd>> {
+        let mut current = fd;
+        for _ in 0..64 {
+            let io = self.io_for_fd(current)?;
+            match io.io_mode() {
+                IoMode::Close | IoMode::BufferFill => return None,
+                IoMode::Fd => current = io.source_fd(),
+                IoMode::Pipe | IoMode::File => return io.shared_source_fd(),
             }
         }
         None
