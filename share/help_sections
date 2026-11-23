@@ -72,6 +72,7 @@ cmds/history
 cmds/if
 cmds/isatty
 cmds/jobs
+cmds/kill
 cmds/math
 cmds/nextd
 cmds/not

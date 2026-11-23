@@ -303,7 +303,7 @@ impl ExecutionContext {
             conjunction,
             associated_block: frame.associated_block,
             next_job: 0,
-            tested_decorator: true,
+            tested_decorator: false,
             awaiting_child: false,
             result: EndExecutionReason::Ok,
         }))
@@ -399,7 +399,7 @@ impl ExecutionContext {
             return JobStep::Completed(EndExecutionReason::Ok);
         }
         let background_next_job = std::mem::take(&mut self.background_next_job);
-        if self.job_is_simple_block(job_node) && !background_next_job {
+        if self.job_is_simple_block(job_node) && !background_next_job && job_node.bg.is_none() {
             let statement = node_ref_of(job_node, &job_node.statement);
             return JobStep::Frame(Box::new(Frame::SimpleBlockJob(Box::new(
                 SimpleBlockJobFrame {
@@ -659,7 +659,7 @@ impl ExecutionContext {
                     if let Some(reason) = self.check_end_execution(ctx) {
                         frame.result = reason;
                     }
-                    return FrameAction::Done(frame.result);
+                    return self.finish_if(ctx, frame);
                 }
             }
         }
@@ -672,7 +672,8 @@ impl ExecutionContext {
             return self.advance_if_clause(ctx, frame);
         }
         let Some(clause) = if_clause_of(&frame.statement, frame.clause_index) else {
-            return FrameAction::Done(EndExecutionReason::Ok);
+            frame.result = EndExecutionReason::Ok;
+            return self.finish_if(ctx, frame);
         };
         let condition = node_ref_of(&frame.statement, &clause.condition);
         frame.stage = IfStage::Condition;
@@ -697,7 +698,7 @@ impl ExecutionContext {
         if frame.clause_index < 1 + frame.statement.elseif_clauses.len() {
             trace_if_enabled(ctx.parser(), L!("else if"));
             let Some(clause) = if_clause_of(&frame.statement, frame.clause_index) else {
-                return FrameAction::Done(frame.result);
+                return self.finish_if(ctx, frame);
             };
             let condition = node_ref_of(&frame.statement, &clause.condition);
             frame.stage = IfStage::Condition;
@@ -714,7 +715,7 @@ impl ExecutionContext {
         let Some(else_clause) = frame.statement.else_clause.as_ref() else {
             ctx.parser()
                 .set_last_statuses(Statuses::just(STATUS_CMD_OK));
-            return FrameAction::Done(frame.result);
+            return self.finish_if(ctx, frame);
         };
         trace_if_enabled(ctx.parser(), L!("else"));
         let body = node_ref_of(&frame.statement, &else_clause.body);
@@ -728,10 +729,17 @@ impl ExecutionContext {
         frame: &mut IfFrame,
     ) -> FrameAction {
         let Some(clause) = if_clause_of(&frame.statement, frame.clause_index) else {
-            return FrameAction::Done(EndExecutionReason::Ok);
+            frame.result = EndExecutionReason::Ok;
+            return self.finish_if(ctx, frame);
         };
         let body = node_ref_of(&frame.statement, &clause.body);
         self.push_if_body(ctx, frame, body, IfStage::Body)
+    }
+
+    /// Finish an if statement frame.
+    fn finish_if(&mut self, ctx: &mut OperationContext<'_>, frame: &mut IfFrame) -> FrameAction {
+        trace_if_enabled(ctx.parser(), L!("end if"));
+        FrameAction::Done(frame.result)
     }
 
     /// Push an if body with its block.
