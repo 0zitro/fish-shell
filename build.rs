@@ -6,6 +6,8 @@ use rsconf::Target;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(kani)");
+
     let is_nightly =
         rustc_version::version_meta().unwrap().channel == rustc_version::Channel::Nightly;
     rsconf::declare_cfg("nightly", is_nightly);

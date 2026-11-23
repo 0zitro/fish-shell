@@ -301,6 +301,12 @@ msgstr "--entire 和 --index 不能同時使用"
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr "--invert 和 --groups-only 不能同時使用"
 
+msgid "--pid and --queue are mutually exclusive"
+msgstr ""
+
+msgid "--pid and --signal are mutually exclusive"
+msgstr ""
+
 msgid "--query and --names are mutually exclusive"
 msgstr "--query 和 --names 不能同時使用"
 
@@ -380,6 +386,9 @@ msgstr "無效的系統呼叫"
 msgid "Block of code to run conditionally"
 msgstr "條件執行的程式碼區塊"
 
+msgid "Blocked"
+msgstr ""
+
 msgid "Broken pipe"
 msgstr "損壞的管道"
 
@@ -437,6 +446,9 @@ msgstr "指派給切片時不能使用 --append 或 --prepend"
 
 msgid "Cannot use stdin (fd 0) as pipe output"
 msgstr "不能將 stdin（fd 0）用作管道輸出"
+
+msgid "Caught"
+msgstr ""
 
 msgid "Change working directory"
 msgstr "變更工作目錄"
@@ -728,6 +740,9 @@ msgstr "%s 的家目錄"
 
 msgid "I/O on asynchronous file descriptor is possible"
 msgstr "非同步檔案描述子的 I/O 是可行的"
+
+msgid "Ignored"
+msgstr ""
 
 #, c-format
 msgid "Illegal file descriptor in redirection '%s'"
@@ -1049,6 +1064,12 @@ msgstr "解析 fish 命令稿的選項"
 msgid "Parsing fish AST"
 msgstr "fish AST 解析"
 
+msgid "Pending (process)"
+msgstr ""
+
+msgid "Pending (thread)"
+msgstr ""
+
 msgid "Perform a command multiple times"
 msgstr "執行一個命令數次"
 
@@ -1194,6 +1215,9 @@ msgstr "從列表中搜尋特定字串"
 
 msgid "Searching/using paths"
 msgstr "搜尋／使用路徑"
+
+msgid "Send a signal to a process or job"
+msgstr ""
 
 #, c-format
 msgid "Send job %d (%s) to foreground"
@@ -1562,6 +1586,9 @@ msgstr "「set --show」不允許使用切片"
 msgid "a path variable"
 msgstr "路徑變數"
 
+msgid "argument error"
+msgstr ""
+
 msgid "array index out of bounds"
 msgstr "陣列索引越界"
 
@@ -1603,6 +1630,14 @@ msgstr "不能同時匯出和取消匯出"
 
 msgid "cannot both path and unpath"
 msgstr "不能同時標為路徑和取消標為路徑"
+
+#, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
+msgid "cannot open %s"
+msgstr ""
 
 #, c-format
 msgid "cannot parse key '%s'"
@@ -1680,6 +1715,9 @@ msgstr "在事件處理器：%s"
 msgid "in function '%s'"
 msgstr "在函式「%s」"
 
+msgid "invalid PID argument"
+msgstr ""
+
 #, c-format
 msgid "invalid field width: %s"
 msgstr "無效的欄位寬度：%s"
@@ -1695,6 +1733,14 @@ msgstr "無效的選項組合，%s"
 msgid "invalid precision: %s"
 msgstr "無效的精度：%s"
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr "無效的子命令"
 
@@ -1705,6 +1751,10 @@ msgstr "無效的底線樣式：%s"
 #, c-format
 msgid "job %d ('%s') was stopped and has been signalled to continue."
 msgstr "作業 %d（%s）停止過並收到了訊號要求繼續。"
+
+#, c-format
+msgid "kill from fish %s%s"
+msgstr ""
 
 msgid "line/column index starts at 1"
 msgstr "行/欄索引從 1 開始"
@@ -1728,12 +1778,23 @@ msgstr ""
 msgid "missing subcommand"
 msgstr "缺少子命令"
 
+msgid "not enough arguments"
+msgstr ""
+
+#, c-format
+msgid "not signalling pid %d, it has no userspace handler for signal %d"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr "沒得選擇"
 
 #, c-format
 msgid "only f1 through f%d are supported, not 'f%s'"
 msgstr "只支援 f1 至 f%d，不包括「f%s」"
+
+#, c-format
+msgid "option '%s' requires an argument"
+msgstr ""
 
 #, c-format
 msgid "or press ctrl-%c or ctrl-%c twice in a row."
@@ -1765,6 +1826,14 @@ msgstr "作用域只能是以下之一：universal、function、global、local"
 
 msgid "search:"
 msgstr "搜尋："
+
+#, c-format
+msgid "sending signal %d to pid %d"
+msgstr ""
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr "尚不支援於執行「complete --arguments」時設定游標"
@@ -1840,8 +1909,19 @@ msgstr ""
 msgid "there is no line %s"
 msgstr "沒有第 %s 行"
 
+#, c-format
+msgid "timeout, sending signal %d to pid %d"
+msgstr ""
+
+msgid "too few arguments"
+msgstr ""
+
 msgid "too many arguments"
 msgstr "太多引數"
+
+#, c-format
+msgid "unexpected sigmask format: %s"
+msgstr ""
 
 msgid "unexported"
 msgstr "未匯出"
@@ -1849,6 +1929,10 @@ msgstr "未匯出"
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
 msgstr "未知的修飾鍵「%s」，於「%s」"
+
+#, c-format
+msgid "unknown signal: %s"
+msgstr ""
 
 msgid "unlimited"
 msgstr "無限制"
@@ -2794,6 +2878,12 @@ msgstr "若游標所在的詞元是目錄，則列出其內容，否則列出目
 msgid "List embedded files contained in the fish binary"
 msgstr "列出 fish 二進位檔中嵌入的檔案"
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr "列出函式名稱，不包括其定義"
 
@@ -3043,6 +3133,9 @@ msgstr "將值加到列表開頭"
 msgid "Print NULL-delimited output"
 msgstr "印出 NULL 分隔的輸出"
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr "印出所有接受的顏色名稱"
 
@@ -3238,6 +3331,9 @@ msgstr "需要參數"
 msgid "Require parameter and don't use file completion"
 msgstr "需要參數且不使用檔案補全"
 
+msgid "Resolve names from other users too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3315,6 +3411,9 @@ msgstr "選擇游標處的行程"
 
 msgid "Select token under cursor"
 msgstr "選擇游標處的詞元"
+
+msgid "Send a follow-up signal after a timeout"
+msgstr ""
 
 msgid "Set all jobs under job control"
 msgstr "令所有作業歸作業控制管理"
@@ -3403,8 +3502,14 @@ msgstr "顯示修改時間"
 msgid "Show or change fish's language settings"
 msgstr "顯示或更改 fish 語言設定"
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
 msgstr "顯示自修改時間以來的秒數"
+
+msgid "Show signal state for a PID"
+msgstr ""
 
 msgid "Show the process ID of each process in the job"
 msgstr "顯示作業每個行程的行程 ID"
@@ -3414,6 +3519,12 @@ msgstr "顯示不可用的按鍵綁定／清除所有綁定"
 
 msgid "Show variable"
 msgstr "顯示變數"
+
+msgid "Signal only processes with a handler"
+msgstr ""
+
+msgid "Signal to send"
+msgstr ""
 
 msgid "Snapshot and define local variable"
 msgstr "快照並定義區域變數"
@@ -3576,6 +3687,9 @@ msgstr "使用正則表示式而非 glob"
 
 msgid "Use shell tokenization rules when splitting"
 msgstr "使用 shell 分詞規則來分割"
+
+msgid "Use sigqueue(2) rather than kill(2)"
+msgstr ""
 
 msgid "Use the portable output format"
 msgstr "使用可攜的輸出格式"
@@ -37926,12 +38040,6 @@ msgstr ""
 msgid "List sessions"
 msgstr ""
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46689,9 +46797,6 @@ msgstr ""
 msgid "Print NUM lines of trailing context"
 msgstr ""
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr ""
 
@@ -54265,9 +54370,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63435,9 +63537,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64732,9 +64831,6 @@ msgid "Sign the version tag"
 msgstr ""
 
 msgid "Signal and interface name"
-msgstr ""
-
-msgid "Signal to send"
 msgstr ""
 
 msgid "Signal to send to sstop the command"
@@ -75139,9 +75235,6 @@ msgid "Use shell as the user's login shell, rather than the default"
 msgstr ""
 
 msgid "Use short status indicators"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use silent mode"

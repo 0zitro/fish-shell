@@ -67,6 +67,8 @@ lexer_rules = [
         (r"\.\.\.", Generic.Other),
         # Parameters.
         (r"[\w-]+", Name.Constant),
+        # A colon separates components of one target, as in PID:INODE.
+        (r":", Name.Constant),
         (r"[=%]", Name.Constant),
         (
             r"[<>]",

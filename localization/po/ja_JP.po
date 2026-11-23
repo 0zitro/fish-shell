@@ -306,6 +306,12 @@ msgstr "--entire と --index は同時には指定できません"
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr "--invert と --groups-only は同時には指定できません"
 
+msgid "--pid and --queue are mutually exclusive"
+msgstr ""
+
+msgid "--pid and --signal are mutually exclusive"
+msgstr ""
+
 msgid "--query and --names are mutually exclusive"
 msgstr "--query と --names は同時には指定できません"
 
@@ -385,6 +391,9 @@ msgstr "不正なシステムコール"
 msgid "Block of code to run conditionally"
 msgstr "条件に応じて実行するコードブロック"
 
+msgid "Blocked"
+msgstr ""
+
 msgid "Broken pipe"
 msgstr "壊れたパイプ(Broken pipe)"
 
@@ -442,6 +451,9 @@ msgstr "スライスへの代入時に --append または --prepend を使用す
 
 msgid "Cannot use stdin (fd 0) as pipe output"
 msgstr "標準入力(fd 0)をパイプの出力として使用することはできません"
+
+msgid "Caught"
+msgstr ""
 
 msgid "Change working directory"
 msgstr "作業ディレクトリを変更します"
@@ -733,6 +745,9 @@ msgstr "%s のホーム"
 
 msgid "I/O on asynchronous file descriptor is possible"
 msgstr "非同期ファイル記述子での I/O が可能です"
+
+msgid "Ignored"
+msgstr ""
 
 #, c-format
 msgid "Illegal file descriptor in redirection '%s'"
@@ -1054,6 +1069,12 @@ msgstr "fish スクリプト内のオプションを解析します"
 msgid "Parsing fish AST"
 msgstr "fish AST(抽象構文木)の解析"
 
+msgid "Pending (process)"
+msgstr ""
+
+msgid "Pending (thread)"
+msgstr ""
+
 msgid "Perform a command multiple times"
 msgstr "コマンドを繰り返し実行"
 
@@ -1198,6 +1219,9 @@ msgstr "リストの中から特定の文字列を検索"
 
 msgid "Searching/using paths"
 msgstr "パスの検索・使用"
+
+msgid "Send a signal to a process or job"
+msgstr ""
 
 #, c-format
 msgid "Send job %d (%s) to foreground"
@@ -1566,6 +1590,9 @@ msgstr "`set --show` では変数名にスライスを使用することはで�
 msgid "a path variable"
 msgstr "パス変数"
 
+msgid "argument error"
+msgstr ""
+
 msgid "array index out of bounds"
 msgstr "配列のインデックスが範囲外です"
 
@@ -1607,6 +1634,14 @@ msgstr "export と unexport を同時に行うことはできません"
 
 msgid "cannot both path and unpath"
 msgstr "path と unpath を同時に行うことはできません"
+
+#, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
+msgid "cannot open %s"
+msgstr ""
 
 #, c-format
 msgid "cannot parse key '%s'"
@@ -1684,6 +1719,9 @@ msgstr "イベントハンドラ内: %s"
 msgid "in function '%s'"
 msgstr "関数 '%s' 内"
 
+msgid "invalid PID argument"
+msgstr ""
+
 #, c-format
 msgid "invalid field width: %s"
 msgstr "無効なフィールド幅: %s"
@@ -1699,6 +1737,14 @@ msgstr "無効なオプションの組み合わせです: %s"
 msgid "invalid precision: %s"
 msgstr "無効な精度: %s"
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr "サブコマンドが無効です"
 
@@ -1709,6 +1755,10 @@ msgstr "無効な下線スタイルです: %s"
 #, c-format
 msgid "job %d ('%s') was stopped and has been signalled to continue."
 msgstr "ジョブ %d ('%s') は停止していましたが、再開のためのシグナルが送られました"
+
+#, c-format
+msgid "kill from fish %s%s"
+msgstr ""
 
 msgid "line/column index starts at 1"
 msgstr "行/列のインデックスは 1 から始まります"
@@ -1732,12 +1782,23 @@ msgstr ""
 msgid "missing subcommand"
 msgstr "サブコマンドが不足しています"
 
+msgid "not enough arguments"
+msgstr ""
+
+#, c-format
+msgid "not signalling pid %d, it has no userspace handler for signal %d"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr "選択肢がありません"
 
 #, c-format
 msgid "only f1 through f%d are supported, not 'f%s'"
 msgstr "f1からf%dまでのみサポートされています。'f%s'はサポートされていません"
+
+#, c-format
+msgid "option '%s' requires an argument"
+msgstr ""
 
 #, c-format
 msgid "or press ctrl-%c or ctrl-%c twice in a row."
@@ -1769,6 +1830,14 @@ msgstr "スコープは次のいずれかである必要があります: univers
 
 msgid "search:"
 msgstr "検索:"
+
+#, c-format
+msgid "sending signal %d to pid %d"
+msgstr ""
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr "'complete --arguments' の評価中にカーソルを設定することはまだサポートされていません"
@@ -1844,8 +1913,19 @@ msgstr ""
 msgid "there is no line %s"
 msgstr "%s 行目は存在しません"
 
+#, c-format
+msgid "timeout, sending signal %d to pid %d"
+msgstr ""
+
+msgid "too few arguments"
+msgstr ""
+
 msgid "too many arguments"
 msgstr "引数が多すぎます"
+
+#, c-format
+msgid "unexpected sigmask format: %s"
+msgstr ""
 
 msgid "unexported"
 msgstr "エクスポート解除済み"
@@ -1853,6 +1933,10 @@ msgstr "エクスポート解除済み"
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
 msgstr "不明な修飾子 '%s' が '%s' 内にあります"
+
+#, c-format
+msgid "unknown signal: %s"
+msgstr ""
 
 msgid "unlimited"
 msgstr "無制限"
@@ -2801,6 +2885,12 @@ msgstr "カーソル下のトークンがディレクトリならその内容を
 msgid "List embedded files contained in the fish binary"
 msgstr "fish バイナリに含まれる埋め込みファイルをリスト表示"
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr "関数の名前のみをリスト表示し、定義は表示しない"
 
@@ -3050,6 +3140,9 @@ msgstr "リストの先頭に値を追加"
 msgid "Print NULL-delimited output"
 msgstr "NULL区切りで出力"
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr "使用可能なすべての色名の一覧を表示"
 
@@ -3245,6 +3338,9 @@ msgstr "パラメータを必須と"
 msgid "Require parameter and don't use file completion"
 msgstr "パラメータを必須とし、ファイル補完を使用しない"
 
+msgid "Resolve names from other users too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3322,6 +3418,9 @@ msgstr "カーソル下のプロセスを選択"
 
 msgid "Select token under cursor"
 msgstr "カーソル下のトークンを選択"
+
+msgid "Send a follow-up signal after a timeout"
+msgstr ""
 
 msgid "Set all jobs under job control"
 msgstr "すべてのジョブをジョブ制御の対象に"
@@ -3410,8 +3509,14 @@ msgstr "更新日時を表示"
 msgid "Show or change fish's language settings"
 msgstr "fish の言語設定を表示または変更"
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
 msgstr "更新日時からの経過秒数を表示"
+
+msgid "Show signal state for a PID"
+msgstr ""
 
 msgid "Show the process ID of each process in the job"
 msgstr "ジョブ内の各プロセスのプロセスIDを表示"
@@ -3421,6 +3526,12 @@ msgstr "利用不可能なキーバインドを表示するか、すべてのバ
 
 msgid "Show variable"
 msgstr "変数を表示"
+
+msgid "Signal only processes with a handler"
+msgstr ""
+
+msgid "Signal to send"
+msgstr ""
 
 msgid "Snapshot and define local variable"
 msgstr "変数のスナップショットを作成し、ローカル変数として定義"
@@ -3583,6 +3694,9 @@ msgstr "グロブの代わりに正規表現を使用"
 
 msgid "Use shell tokenization rules when splitting"
 msgstr "分割時にシェルのトークン化ルールを使用"
+
+msgid "Use sigqueue(2) rather than kill(2)"
+msgstr ""
 
 msgid "Use the portable output format"
 msgstr "ポータブルな出力形式を使用"
@@ -37931,12 +38045,6 @@ msgstr ""
 msgid "List sessions"
 msgstr ""
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46694,9 +46802,6 @@ msgstr ""
 msgid "Print NUM lines of trailing context"
 msgstr ""
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr ""
 
@@ -54270,9 +54375,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63440,9 +63542,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64737,9 +64836,6 @@ msgid "Sign the version tag"
 msgstr ""
 
 msgid "Signal and interface name"
-msgstr ""
-
-msgid "Signal to send"
 msgstr ""
 
 msgid "Signal to send to sstop the command"
@@ -75144,9 +75240,6 @@ msgid "Use shell as the user's login shell, rather than the default"
 msgstr ""
 
 msgid "Use short status indicators"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use silent mode"

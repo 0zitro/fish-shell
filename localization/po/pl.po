@@ -303,6 +303,12 @@ msgstr ""
 msgid "--invert and --groups-only are mutually exclusive"
 msgstr ""
 
+msgid "--pid and --queue are mutually exclusive"
+msgstr ""
+
+msgid "--pid and --signal are mutually exclusive"
+msgstr ""
+
 msgid "--query and --names are mutually exclusive"
 msgstr ""
 
@@ -382,6 +388,9 @@ msgstr ""
 msgid "Block of code to run conditionally"
 msgstr ""
 
+msgid "Blocked"
+msgstr ""
+
 msgid "Broken pipe"
 msgstr ""
 
@@ -438,6 +447,9 @@ msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr ""
 
 msgid "Cannot use stdin (fd 0) as pipe output"
+msgstr ""
+
+msgid "Caught"
 msgstr ""
 
 msgid "Change working directory"
@@ -729,6 +741,9 @@ msgid "Home for %s"
 msgstr "Katalog domowy dla %s"
 
 msgid "I/O on asynchronous file descriptor is possible"
+msgstr ""
+
+msgid "Ignored"
 msgstr ""
 
 #, c-format
@@ -1051,6 +1066,12 @@ msgstr ""
 msgid "Parsing fish AST"
 msgstr ""
 
+msgid "Pending (process)"
+msgstr ""
+
+msgid "Pending (thread)"
+msgstr ""
+
 msgid "Perform a command multiple times"
 msgstr "Wykonaj komendę wielokrotnie"
 
@@ -1194,6 +1215,9 @@ msgid "Search for a specified string in a list"
 msgstr "Szukaj określonego ciągu znaków w liście"
 
 msgid "Searching/using paths"
+msgstr ""
+
+msgid "Send a signal to a process or job"
 msgstr ""
 
 #, c-format
@@ -1563,6 +1587,9 @@ msgstr ""
 msgid "a path variable"
 msgstr ""
 
+msgid "argument error"
+msgstr ""
+
 msgid "array index out of bounds"
 msgstr ""
 
@@ -1603,6 +1630,14 @@ msgid "cannot both export and unexport"
 msgstr ""
 
 msgid "cannot both path and unpath"
+msgstr ""
+
+#, c-format
+msgid "cannot find process \"%s\""
+msgstr ""
+
+#, c-format
+msgid "cannot open %s"
 msgstr ""
 
 #, c-format
@@ -1681,6 +1716,9 @@ msgstr "w procedurze obsługi zdarzeń: %s"
 msgid "in function '%s'"
 msgstr ""
 
+msgid "invalid PID argument"
+msgstr ""
+
 #, c-format
 msgid "invalid field width: %s"
 msgstr ""
@@ -1696,6 +1734,14 @@ msgstr ""
 msgid "invalid precision: %s"
 msgstr ""
 
+#, c-format
+msgid "invalid sigmask format: %s"
+msgstr ""
+
+#, c-format
+msgid "invalid signal name or number: %s"
+msgstr ""
+
 msgid "invalid subcommand"
 msgstr ""
 
@@ -1705,6 +1751,10 @@ msgstr ""
 
 #, c-format
 msgid "job %d ('%s') was stopped and has been signalled to continue."
+msgstr ""
+
+#, c-format
+msgid "kill from fish %s%s"
 msgstr ""
 
 msgid "line/column index starts at 1"
@@ -1729,11 +1779,22 @@ msgstr ""
 msgid "missing subcommand"
 msgstr ""
 
+msgid "not enough arguments"
+msgstr ""
+
+#, c-format
+msgid "not signalling pid %d, it has no userspace handler for signal %d"
+msgstr ""
+
 msgid "nothing to choose from"
 msgstr ""
 
 #, c-format
 msgid "only f1 through f%d are supported, not 'f%s'"
+msgstr ""
+
+#, c-format
+msgid "option '%s' requires an argument"
 msgstr ""
 
 #, c-format
@@ -1766,6 +1827,14 @@ msgstr ""
 
 msgid "search:"
 msgstr "wyszukiwanie:"
+
+#, c-format
+msgid "sending signal %d to pid %d"
+msgstr ""
+
+#, c-format
+msgid "sending signal to %s failed: %s"
+msgstr ""
 
 msgid "setting cursor while evaluating 'complete --arguments' is not yet supported"
 msgstr ""
@@ -1841,7 +1910,18 @@ msgstr ""
 msgid "there is no line %s"
 msgstr ""
 
+#, c-format
+msgid "timeout, sending signal %d to pid %d"
+msgstr ""
+
+msgid "too few arguments"
+msgstr ""
+
 msgid "too many arguments"
+msgstr ""
+
+#, c-format
+msgid "unexpected sigmask format: %s"
 msgstr ""
 
 msgid "unexported"
@@ -1849,6 +1929,10 @@ msgstr ""
 
 #, c-format
 msgid "unknown modifier '%s' in '%s'"
+msgstr ""
+
+#, c-format
+msgid "unknown signal: %s"
 msgstr ""
 
 msgid "unlimited"
@@ -2794,6 +2878,12 @@ msgstr ""
 msgid "List embedded files contained in the fish binary"
 msgstr ""
 
+msgid "List signal names"
+msgstr ""
+
+msgid "List signal names and their #s"
+msgstr ""
+
 msgid "List the names of the functions, but not their definition"
 msgstr ""
 
@@ -3043,6 +3133,9 @@ msgstr ""
 msgid "Print NULL-delimited output"
 msgstr ""
 
+msgid "Print PIDs and signals sent"
+msgstr ""
+
 msgid "Print a list of all accepted color names"
 msgstr ""
 
@@ -3238,6 +3331,9 @@ msgstr ""
 msgid "Require parameter and don't use file completion"
 msgstr ""
 
+msgid "Resolve names from other users too"
+msgstr ""
+
 msgid "Resolve symbolic links before changing directory"
 msgstr ""
 
@@ -3314,6 +3410,9 @@ msgid "Select process under cursor"
 msgstr ""
 
 msgid "Select token under cursor"
+msgstr ""
+
+msgid "Send a follow-up signal after a timeout"
 msgstr ""
 
 msgid "Set all jobs under job control"
@@ -3403,7 +3502,13 @@ msgstr ""
 msgid "Show or change fish's language settings"
 msgstr ""
 
+msgid "Show resolved PID, don't send signal"
+msgstr ""
+
 msgid "Show seconds since the modification time"
+msgstr ""
+
+msgid "Show signal state for a PID"
 msgstr ""
 
 msgid "Show the process ID of each process in the job"
@@ -3413,6 +3518,12 @@ msgid "Show unavailable key bindings/erase all bindings"
 msgstr ""
 
 msgid "Show variable"
+msgstr ""
+
+msgid "Signal only processes with a handler"
+msgstr ""
+
+msgid "Signal to send"
 msgstr ""
 
 msgid "Snapshot and define local variable"
@@ -3575,6 +3686,9 @@ msgid "Use regex instead of globs"
 msgstr ""
 
 msgid "Use shell tokenization rules when splitting"
+msgstr ""
+
+msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use the portable output format"
@@ -37924,12 +38038,6 @@ msgstr ""
 msgid "List sessions"
 msgstr ""
 
-msgid "List signal names"
-msgstr ""
-
-msgid "List signal names and their #s"
-msgstr ""
-
 msgid "List sinks of the output device"
 msgstr ""
 
@@ -46687,9 +46795,6 @@ msgstr ""
 msgid "Print NUM lines of trailing context"
 msgstr ""
 
-msgid "Print PIDs and signals sent"
-msgstr ""
-
 msgid "Print PKG versions"
 msgstr ""
 
@@ -54263,9 +54368,6 @@ msgid "Resize the image [geometry]"
 msgstr ""
 
 msgid "Resolution, in DPI [75]"
-msgstr ""
-
-msgid "Resolve PIDs from other users' too"
 msgstr ""
 
 msgid "Resolve TXT records for services"
@@ -63433,9 +63535,6 @@ msgstr ""
 msgid "Show requires and prerequires"
 msgstr ""
 
-msgid "Show resolved PID, don't send signal"
-msgstr ""
-
 msgid "Show result"
 msgstr ""
 
@@ -64730,9 +64829,6 @@ msgid "Sign the version tag"
 msgstr ""
 
 msgid "Signal and interface name"
-msgstr ""
-
-msgid "Signal to send"
 msgstr ""
 
 msgid "Signal to send to sstop the command"
@@ -75137,9 +75233,6 @@ msgid "Use shell as the user's login shell, rather than the default"
 msgstr ""
 
 msgid "Use short status indicators"
-msgstr ""
-
-msgid "Use sigqueue(2) rather than kill(2)"
 msgstr ""
 
 msgid "Use silent mode"

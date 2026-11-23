@@ -274,6 +274,10 @@ const BUILTIN_DATAS: &[BuiltinData] = &[
         func: jobs::jobs,
     },
     BuiltinData {
+        name: L!("kill"),
+        func: kill::kill,
+    },
+    BuiltinData {
         name: L!("math"),
         func: math::math,
     },
@@ -525,6 +529,7 @@ pub fn builtin_get_desc(name: &wstr) -> Option<&'static wstr> {
         _ if name == "history" => wgettext!("History of commands executed by user"),
         _ if name == "if" => wgettext!("Evaluate block if condition is true"),
         _ if name == "jobs" => wgettext!("Print currently running jobs"),
+        _ if name == "kill" => wgettext!("Send a signal to a process or job"),
         _ if name == "math" => wgettext!("Evaluate math expressions"),
         _ if name == "not" => wgettext!("Negate exit status of job"),
         _ if name == "or" => wgettext!("Execute command if previous command failed"),
