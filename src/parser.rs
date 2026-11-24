@@ -418,6 +418,9 @@ pub struct Parser {
     /// The session task, which reads the shell's store.
     session_task: TaskId,
 
+    /// The number of file evaluations the evaluator is inside.
+    file_evaluation_depth: u32,
+
     /// The tasks that can run, in the order they were made runnable.
     scheduler: Scheduler,
 
@@ -484,6 +487,7 @@ impl Parser {
             tasks,
             current_task: session_task,
             session_task,
+            file_evaluation_depth: 0,
             scheduler: Scheduler::new(),
             scoped_data: ScopedCell::new(ScopedData::default()),
             library_data: LibraryData::new(),
@@ -655,11 +659,9 @@ impl Parser {
         let sb = self.push_block(Block::source_block(filename.clone()));
         let _filename_push = self.current_filename.scoped_replace(Some(filename));
 
-        // A file evaluation stops with `exit` without finishing the task that reads the file, as a
-        // function definition file does when the shell already provides the command.
-        let lifecycle = self.current_task_lifecycle();
+        self.file_evaluation_depth += 1;
         let ret = self.eval_wstr(src, io, job_group, BlockType::Top);
-        self.current_task_mut().set_lifecycle(lifecycle);
+        self.file_evaluation_depth -= 1;
 
         self.pop_block(sb);
         self.libdata_mut().exit_current_script = false;
@@ -1119,10 +1121,12 @@ impl Parser {
 
     /// Record the task `id` as runnable.
     pub(crate) fn schedule_runnable_task(&mut self, id: TaskId) {
-        if let Some(task) = self.task_mut(id) {
-            task.set_lifecycle(TaskLifecycle::Runnable);
+        if self
+            .task_mut(id)
+            .is_some_and(|task| task.transition_lifecycle_to(TaskLifecycle::Runnable))
+        {
+            self.scheduler.push(id);
         }
-        self.scheduler.push(id);
     }
 
     /// Return the next runnable task.
@@ -1159,6 +1163,11 @@ impl Parser {
         self.current_task_mut().record_event_handler(handler);
     }
 
+    /// Return whether the evaluator is inside a file evaluation.
+    pub(crate) fn is_evaluating_file(&self) -> bool {
+        self.file_evaluation_depth > 0
+    }
+
     /// Return the identity of the task the evaluator runs.
     pub(crate) fn current_task_id(&self) -> TaskId {
         self.current_task
@@ -1182,9 +1191,9 @@ impl Parser {
 
     /// Finish the task the evaluator runs.
     pub(crate) fn finish_current_task(&mut self) {
-        let task = self.current_task_mut();
-        task.set_lifecycle(TaskLifecycle::Finished);
-        task.set_ended();
+        let _ = self
+            .current_task_mut()
+            .transition_lifecycle_to(TaskLifecycle::Finished);
     }
 
     /// Return the lifecycle stage of the task the evaluator runs.
@@ -1211,25 +1220,30 @@ impl Parser {
         self.scheduler.has_runnable()
     }
 
-    /// Wake every blocked task whose wait is satisfied; the session task leaves the blocked
-    /// registry because its evaluator resumes it directly, and a running task is resumed in place
-    /// by its own evaluator rather than queued.
+    /// Wake every blocked task whose wait is satisfied.
+    ///
+    /// The session task leaves the blocked registry because its evaluator resumes it directly.
+    /// A running task is resumed in place by its own evaluator. A finished task is queued only so
+    /// `step_stage_task` can record its stage completion; its lifecycle stays `Finished`.
     pub(crate) fn wake_ready_tasks(&mut self) {
         let waits: Vec<(TaskId, WaitReason)> = self.scheduler.blocked().collect();
         for (id, reason) in waits {
             if !self.wait_reason_ready(reason) {
                 continue;
             }
-            let task_is_running = self
-                .task(id)
-                .is_some_and(|task| task.lifecycle() == TaskLifecycle::Running);
-            if id == self.session_task || task_is_running {
+            if id == self.session_task {
                 self.scheduler.forget(id);
-            } else {
-                if let Some(task) = self.task_mut(id) {
-                    task.set_lifecycle(TaskLifecycle::Runnable);
-                }
-                self.scheduler.wake(id);
+                continue;
+            }
+            let lifecycle = self.task(id).map(|task| task.lifecycle());
+            let can_run = self
+                .task_mut(id)
+                .is_some_and(|task| task.transition_lifecycle_to(TaskLifecycle::Runnable));
+            match lifecycle {
+                Some(TaskLifecycle::Finished) => self.scheduler.wake(id),
+                Some(TaskLifecycle::Running) => self.scheduler.forget(id),
+                _ if can_run => self.scheduler.wake(id),
+                _ => self.scheduler.forget(id),
             }
         }
     }

@@ -29,7 +29,7 @@ pub(crate) enum TaskLifecycle {
     Running,
     /// The task waits for an event.
     Blocked,
-    /// The task's command list has completed.
+    /// The task's command list has completed; no transition leaves this state.
     Finished,
 }
 
@@ -124,7 +124,6 @@ pub(crate) struct Task {
     blocks: Vec<Block>,
     assignment_block: Option<BlockId>,
     event_handlers: Vec<Arc<EventHandler>>,
-    ended: bool,
 }
 
 impl Task {
@@ -142,7 +141,6 @@ impl Task {
             blocks: Vec::new(),
             assignment_block: None,
             event_handlers: Vec::new(),
-            ended: false,
         }
     }
 
@@ -157,7 +155,6 @@ impl Task {
             blocks: self.blocks.clone(),
             assignment_block: None,
             event_handlers: Vec::new(),
-            ended: false,
         }
     }
 
@@ -179,16 +176,6 @@ impl Task {
     /// Take the event handlers the task registered.
     pub fn take_event_handlers(&mut self) -> Vec<Arc<EventHandler>> {
         std::mem::take(&mut self.event_handlers)
-    }
-
-    /// Record that the task's evaluation has ended.
-    pub fn set_ended(&mut self) {
-        self.ended = true;
-    }
-
-    /// Return whether the task's evaluation has ended.
-    pub fn ended(&self) -> bool {
-        self.ended
     }
 
     /// Return the store this task reads.
@@ -253,10 +240,18 @@ impl Task {
         self.lifecycle
     }
 
-    /// Record this task's lifecycle stage.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn set_lifecycle(&mut self, lifecycle: TaskLifecycle) {
-        self.lifecycle = lifecycle;
+    /// Move this task to `next` and return whether the move is legal.
+    ///
+    /// `Finished` is final: no transition leaves it.
+    /// A running task is never queued, so `Running` does not move to `Runnable`.
+    pub fn transition_lifecycle_to(&mut self, next: TaskLifecycle) -> bool {
+        if self.lifecycle == TaskLifecycle::Finished
+            || (self.lifecycle == TaskLifecycle::Running && next == TaskLifecycle::Runnable)
+        {
+            return false;
+        }
+        self.lifecycle = next;
+        true
     }
 }
 
@@ -513,14 +508,18 @@ mod tests {
         assert!(table.get(task_id).is_none());
 
         let task = table.get_mut(reused_id).expect("the reused slot task");
+        assert!(task.transition_lifecycle_to(TaskLifecycle::Running));
+        assert!(!task.transition_lifecycle_to(TaskLifecycle::Runnable));
+        assert!(task.transition_lifecycle_to(TaskLifecycle::Blocked));
+        assert!(task.transition_lifecycle_to(TaskLifecycle::Runnable));
+        assert!(task.transition_lifecycle_to(TaskLifecycle::Finished));
         for lifecycle in [
             TaskLifecycle::Runnable,
             TaskLifecycle::Running,
             TaskLifecycle::Blocked,
-            TaskLifecycle::Finished,
         ] {
-            task.set_lifecycle(lifecycle);
-            assert_eq!(task.lifecycle(), lifecycle);
+            assert!(!task.transition_lifecycle_to(lifecycle));
+            assert_eq!(task.lifecycle(), TaskLifecycle::Finished);
         }
     }
 }

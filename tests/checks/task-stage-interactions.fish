@@ -6,19 +6,19 @@ begin
     set -l b (/bin/echo z)
     echo a=$a b=$b
 end &
-wait
+builtin wait
 # CHECK: a=y b=z
 
 begin
     cat (echo from-task | psub)
 end &
-wait
+builtin wait
 # CHECK: from-task
 
 # A builtin stage of a background job is a task, so an enclosing capture does not
 # receive its output.
 set -l captured (echo hi &)
-wait
+builtin wait
 echo "captured=$captured"
 # CHECK: hi
 # CHECK: captured=
@@ -30,7 +30,7 @@ begin
     exec /bin/echo exec-ran
     echo unreachable-exec
 end &
-wait
+builtin wait
 echo after-exec=$status
 # CHECK: before-exec
 # CHECK: exec-ran
@@ -42,7 +42,7 @@ begin
         echo task-handler-ran
     end
 end &
-wait
+builtin wait
 set -l first_emit (emit task_event 2>&1)
 echo "first_emit=[$first_emit]"
 # CHECK: first_emit=[]
@@ -66,7 +66,7 @@ begin
     return 7
     echo unreachable-return
 end &
-wait
+builtin wait
 echo after-return=$status
 # CHECK: after-return=7
 
@@ -78,7 +78,7 @@ jobs -c %1
 # CHECK: begin
 # CHECK: /bin/sleep 0.2
 # CHECK: end &
-wait
+builtin wait
 
 # A background task with no later blocking point runs before the script ends.
 begin

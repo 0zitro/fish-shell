@@ -3114,7 +3114,7 @@ impl Parser {
     pub(crate) fn step_stage_task(&mut self, task_id: TaskId) -> bool {
         if self
             .task(task_id)
-            .is_some_and(|task| task.ended() || task.lifecycle() == TaskLifecycle::Finished)
+            .is_some_and(|task| task.lifecycle() == TaskLifecycle::Finished)
         {
             // `exec` in the task finished its evaluation; complete the stage with the command's
             // status rather than resuming frames that were discarded.
@@ -3147,7 +3147,7 @@ impl Parser {
         let previous_task = self.current_task_id();
         self.set_current_task(task_id);
         if let Some(task) = self.task_mut(task_id) {
-            task.set_lifecycle(TaskLifecycle::Running);
+            let _ = task.transition_lifecycle_to(TaskLifecycle::Running);
         }
         if self
             .task(task_id)
@@ -3191,7 +3191,7 @@ impl Parser {
             EvalOutcome::Blocked(reason) => {
                 if let Some(task) = self.task_mut(task_id) {
                     *task.frames_mut() = frames;
-                    task.set_lifecycle(TaskLifecycle::Blocked);
+                    let _ = task.transition_lifecycle_to(TaskLifecycle::Blocked);
                 }
                 self.set_current_task(previous_task);
                 self.register_blocked(task_id, reason);
@@ -3215,7 +3215,7 @@ impl Parser {
     /// Finish a stage task, recording the status of `stage` when it has one.
     fn finish_stage_task(&mut self, task_id: TaskId, status: Option<c_int>, previous_task: TaskId) {
         if let Some(task) = self.task_mut(task_id) {
-            task.set_lifecycle(TaskLifecycle::Finished);
+            let _ = task.transition_lifecycle_to(TaskLifecycle::Finished);
         }
         self.set_current_task(task_id);
         let assignment_block = self

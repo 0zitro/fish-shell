@@ -10,8 +10,9 @@ pub fn exit(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) ->
         ControlFlow::Break(result) => return result,
     };
 
-    // Only the session task ends the shell; any other task finishes here.
-    if parser.current_task_is_session() {
+    // Only the session task ends the shell; a file evaluation ends the file, not its task; any
+    // other task finishes here.
+    if parser.current_task_is_session() || parser.is_evaluating_file() {
         parser.libdata_mut().exit_current_script = true;
     } else {
         parser.finish_current_task();
