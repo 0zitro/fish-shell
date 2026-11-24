@@ -30,7 +30,6 @@ use crate::io::{
 };
 use crate::nix::isatty;
 use crate::null_terminated_array::OwningNullTerminatedArray;
-use crate::parse_execution::ExecutionContext;
 use crate::parser::{Block, BlockId, BlockType, EvalRes, Parser, ParserEnvSetMode};
 use crate::prelude::*;
 use crate::proc::{
@@ -41,6 +40,7 @@ use crate::proc::{
 use crate::reader::{reader_run_count, restore_term_mode};
 use crate::redirection::{Dup2List, dup2_list_resolve_chain};
 use crate::signal::RawSignal;
+use crate::task::StageTask;
 use crate::task_frame::{Frame, FrameStack, FunctionCallFrame, StatementFrame};
 use crate::threads::{ThreadPool, is_forked_child};
 use crate::trace::trace_if_enabled_with_args;
@@ -93,9 +93,20 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
     }
 
     // A task's descriptors are the base of every process it starts; the block's and the command's
-    // redirections are applied over them.
+    // redirections are applied over them. A background job does not write into the enclosing
+    // command substitution's capture.
     let mut task_io = parser.descriptor_table().to_io_chain();
-    task_io.append(&block_io);
+    if job.is_initially_background() {
+        let mut inherited = IoChain::new();
+        for data in &block_io.0 {
+            if data.io_mode() != IoMode::BufferFill {
+                inherited.push(std::sync::Arc::clone(data));
+            }
+        }
+        task_io.append(&inherited);
+    } else {
+        task_io.append(&block_io);
+    }
     let block_io = task_io;
 
     // Handle an exec call.
@@ -261,8 +272,6 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
                 ParserEnvSetMode::new(EnvMode::GLOBAL),
                 last_pid.to_wstring(),
             );
-        } else {
-            parser.set_empty(L!("last_pid"), ParserEnvSetMode::new(EnvMode::GLOBAL));
         }
     }
 
@@ -275,6 +284,7 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
                 .iter()
                 .any(|p| !p.is_completed() && !p.is_stopped())
             {
+                parser.run_runnable_tasks();
                 process_mark_finished_children(parser, true, Some(&block_io));
             }
             if let Some(statuses) = job.statuses() {
@@ -680,7 +690,7 @@ fn run_internal_process(p: &Process, outdata: Vec<u8>, errdata: Vec<u8>, ios: &I
 
 /// If `outdata` or `errdata` are both empty, then mark the process as completed immediately.
 /// Otherwise, run an internal process.
-fn run_internal_process_or_short_circuit(
+pub(crate) fn run_internal_process_or_short_circuit(
     parser: &mut Parser,
     j: &Job,
     p: &Process,
@@ -1151,7 +1161,7 @@ fn exec_block_or_func_process(
     Ok(())
 }
 
-/// Execute a task stage: evaluate the stage's frames in a task started from the running task.
+/// Schedule a task stage: build its frames and make its task runnable.
 fn exec_task_process(
     parser: &mut Parser,
     j: &Job,
@@ -1162,12 +1172,12 @@ fn exec_task_process(
 ) -> LaunchResult {
     // A piped task stage writes into a buffer while the next stage launches, as an internal
     // process does.
-    let mut block_output_bufferfill = None;
+    let mut buffered_output = None;
     if piped_output_needs_buffering {
         match IoBufferfill::create() {
             Ok(bufferfill) => {
                 io_chain.push(bufferfill.clone());
-                block_output_bufferfill = Some(bufferfill);
+                buffered_output = Some(bufferfill);
             }
             Err(_) => return Err(()),
         }
@@ -1197,37 +1207,18 @@ fn exec_task_process(
         }
     };
 
-    let task_id = parser.create_stage_task(frames);
+    let task_id = parser.create_stage_task(
+        frames,
+        StageTask {
+            io_chain,
+            job: j.internal_job_id,
+            job_group: j.group.clone(),
+            buffered_output,
+            source,
+        },
+    );
     let _ = p.task_id.set(task_id);
-    let mut task_frames = parser
-        .take_task_frames(task_id)
-        .expect("the stage task frames are present");
-    let previous_task = parser.current_task_id();
-    parser.set_current_task(task_id);
-    let mut execution_ctx = ExecutionContext::new(source, io_chain.clone());
-    {
-        let mut op_ctx = parser.context();
-        op_ctx.job_group.clone_from(&j.group);
-        let _ = execution_ctx.evaluate_frame_stack(&mut op_ctx, &mut task_frames);
-    }
-    let status = ProcStatus::from_exit_code(parser.last_status());
-    parser.set_current_task(previous_task);
-    let _ = parser.remove_task(task_id);
-
-    p.status.set(status);
-    if status.signal_exited() {
-        let sig = status.signal_code();
-        if is_interactive_session() && [SIGINT, SIGQUIT].contains(&sig) {
-            j.group().cancel_with_signal(RawSignal::new(sig));
-        }
-    }
-
-    let mut buffer_contents = vec![];
-    if let Some(bufferfill) = block_output_bufferfill {
-        io_chain.remove(&*bufferfill);
-        buffer_contents = IoBufferfill::finish(bufferfill).newline_serialized();
-    }
-    run_internal_process_or_short_circuit(parser, j, p, buffer_contents, vec![], &io_chain);
+    parser.schedule_runnable_task(task_id);
     Ok(())
 }
 

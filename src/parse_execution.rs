@@ -15,13 +15,16 @@ use crate::{
     env::{EnvMode, EnvStackSetResult, EnvVar, Environment as _, Statuses, handle_env_return},
     err_fmt,
     event::{self, Event},
-    exec::{exec_job, function_prepare_environment, function_restore_environment},
+    exec::{
+        exec_job, function_prepare_environment, function_restore_environment,
+        run_internal_process_or_short_circuit,
+    },
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
     },
     flog::flog,
     function,
-    io::{FdOutputStream, IoChain, IoStreams, OutputStream, StringOutputStream},
+    io::{FdOutputStream, IoBufferfill, IoChain, IoStreams, OutputStream, StringOutputStream},
     job_group::JobGroup,
     operation_context::OperationContext,
     parse_constants::{
@@ -40,13 +43,13 @@ use crate::{
     path::{path_as_implicit_cd, path_try_get_path},
     prelude::*,
     proc::{
-        ConcreteAssignment, Job, JobControl, JobProperties, Process, ProcessType, TaskStage,
-        get_job_control_mode, job_reap, no_exec,
+        ConcreteAssignment, Job, JobControl, JobProperties, ProcStatus, Process, ProcessType,
+        TaskStage, get_job_control_mode, job_reap, no_exec,
     },
     reader::fish_is_unwinding_for_exit,
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
-    task::TaskLifecycle,
+    task::{StageTask, TaskId, TaskLifecycle},
     task_frame::{
         AndorJobListFrame, BeginFrame, ConjunctionFrame, ForFrame, Frame, FrameStack,
         FunctionCallFrame, IfFrame, IfStage, JobListFrame, ProfileItemFinish, SimpleBlockJobFrame,
@@ -2508,4 +2511,81 @@ fn remove_job(parser: &mut Parser, job: &Rc<Job>) -> bool {
         }
     }
     false
+}
+
+impl Parser {
+    /// Run every runnable task until none remains runnable.
+    pub(crate) fn run_runnable_tasks(&mut self) {
+        while let Some(task_id) = self.take_runnable_task() {
+            self.run_stage_task(task_id);
+        }
+    }
+
+    /// Run one stage task to completion and record its stage's completion.
+    fn run_stage_task(&mut self, task_id: TaskId) {
+        let Some(stage) = self.task(task_id).and_then(|task| task.stage()) else {
+            return;
+        };
+        let source = stage.source.clone();
+        let io_chain = stage.io_chain.clone();
+        let job_group = stage.job_group.clone();
+        let Some(mut frames) = self.take_task_frames(task_id) else {
+            return;
+        };
+
+        let previous_task = self.current_task_id();
+        self.set_current_task(task_id);
+        if let Some(task) = self.task_mut(task_id) {
+            task.set_lifecycle(TaskLifecycle::Running);
+        }
+
+        let mut execution_ctx = ExecutionContext::new(source, io_chain);
+        {
+            let mut op_ctx = self.context();
+            op_ctx.job_group = job_group;
+            let _ = execution_ctx.evaluate_frame_stack(&mut op_ctx, &mut frames);
+        }
+
+        let status = self.last_status();
+        // Control flow ends the task, not the tasks that run after it.
+        {
+            let libdata = self.libdata_mut();
+            libdata.returning = false;
+            libdata.loop_status = LoopStatus::Normals;
+        }
+        if let Some(task) = self.task_mut(task_id) {
+            task.set_lifecycle(TaskLifecycle::Finished);
+        }
+        self.set_current_task(previous_task);
+
+        let Some(stage) = self.task_mut(task_id).and_then(|task| task.take_stage()) else {
+            return;
+        };
+        self.complete_stage(task_id, stage, status);
+        let _ = self.remove_task(task_id);
+    }
+
+    /// Record the completion of the stage `stage` with `status`.
+    fn complete_stage(&mut self, task_id: TaskId, stage: StageTask, status: c_int) {
+        let Some(job) = self.job_with_internal_id(stage.job) else {
+            return;
+        };
+        let Some(process) = job
+            .processes()
+            .iter()
+            .find(|process| process.task_id.get() == Some(&task_id))
+        else {
+            return;
+        };
+
+        process.status.set(ProcStatus::from_exit_code(status));
+
+        let mut io_chain = stage.io_chain;
+        let mut buffered = vec![];
+        if let Some(bufferfill) = stage.buffered_output {
+            io_chain.remove(&*bufferfill);
+            buffered = IoBufferfill::finish(bufferfill).newline_serialized();
+        }
+        run_internal_process_or_short_circuit(self, &job, process, buffered, vec![], &io_chain);
+    }
 }

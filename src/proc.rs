@@ -1022,6 +1022,11 @@ impl Job {
 
         // Wait for the status of our own job to change.
         while !fish_is_unwinding_for_exit() && !self.is_stopped() && !self.is_completed() {
+            // Run the tasks that can run before waiting for an event.
+            parser.run_runnable_tasks();
+            if fish_is_unwinding_for_exit() || self.is_stopped() || self.is_completed() {
+                break;
+            }
             process_mark_finished_children(parser, /*block_ok=*/ true, block_io);
         }
         if self.is_completed() {
@@ -1300,6 +1305,13 @@ fn handle_child_status(job: &Job, proc: &Process, status: ProcStatus) {
 /// Wait for any process finishing, or receipt of a signal.
 pub fn proc_wait_any(parser: &mut Parser) {
     process_mark_finished_children(parser, /*block_ok=*/ true, /*block_io=*/ None);
+    let is_interactive = parser.scope().is_interactive;
+    process_clean_after_marking(parser, is_interactive);
+}
+
+/// Reap finished children and collect completed jobs, without waiting for an event.
+pub(crate) fn proc_clean_jobs(parser: &mut Parser) {
+    process_mark_finished_children(parser, /*block_ok=*/ false, /*block_io=*/ None);
     let is_interactive = parser.scope().is_interactive;
     process_clean_after_marking(parser, is_interactive);
 }

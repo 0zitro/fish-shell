@@ -28,7 +28,10 @@ use crate::{
         SuspensionRecord, SuspensionResolution, job_reap,
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
-    task::{DescriptorTable, Task, TaskDescriptors, TaskId, TaskLifecycle, TaskTable},
+    task::{
+        DescriptorTable, Scheduler, StageTask, Task, TaskDescriptors, TaskId, TaskLifecycle,
+        TaskTable,
+    },
     task_frame::{Frame, FrameStack, JobListFrame, StatementFrame},
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
@@ -415,6 +418,9 @@ pub struct Parser {
     /// The session task, which reads the shell's store.
     session_task: TaskId,
 
+    /// The tasks that can run, in the order they were made runnable.
+    scheduler: Scheduler,
+
     /// Data managed in a scoped fashion.
     scoped_data: ScopedCell<ScopedData>,
 
@@ -479,6 +485,7 @@ impl Parser {
             tasks,
             current_task: session_task,
             session_task,
+            scheduler: Scheduler::new(),
             scoped_data: ScopedCell::new(ScopedData::default()),
             library_data: LibraryData::new(),
             syncs_uvars: false,
@@ -1050,11 +1057,33 @@ impl Parser {
         *self.current_task_mut().frames_mut() = frames;
     }
 
-    /// Create a task that evaluates `frames` with a copy of the current store.
-    pub(crate) fn create_stage_task(&mut self, frames: FrameStack) -> TaskId {
+    /// Create a task that evaluates a job stage's `frames`.
+    pub(crate) fn create_stage_task(&mut self, frames: FrameStack, stage: StageTask) -> TaskId {
         let mut task = self.current_task().start_from();
+        task.descriptors_mut()
+            .descriptor_table_mut()
+            .record_from_chain(&stage.io_chain);
         *task.frames_mut() = frames;
+        task.set_stage(stage);
         self.tasks.insert(task)
+    }
+
+    /// Record the task `id` as runnable.
+    pub(crate) fn schedule_runnable_task(&mut self, id: TaskId) {
+        self.scheduler.push(id);
+    }
+
+    /// Return the next runnable task.
+    pub(crate) fn take_runnable_task(&mut self) -> Option<TaskId> {
+        self.scheduler.pop()
+    }
+
+    /// Return the job `id` denotes.
+    pub(crate) fn job_with_internal_id(&self, id: InternalJobId) -> Option<Rc<Job>> {
+        self.job_list
+            .iter()
+            .find(|job| job.internal_job_id == id)
+            .cloned()
     }
 
     /// Remove the frames of the task `id` denotes.
@@ -1077,6 +1106,12 @@ impl Parser {
     /// Make `id` the task the evaluator runs.
     pub(crate) fn set_current_task(&mut self, id: TaskId) {
         self.current_task = id;
+        // The process's current directory follows the task it evaluates.
+        if let Some(cwd_fd) = self.task_descriptors().cwd_fd() {
+            if let Err(err) = nix::unistd::fchdir(cwd_fd.as_ref()) {
+                perror_nix("fchdir", err);
+            }
+        }
     }
 
     /// Return whether the evaluator runs the session task.
@@ -1104,6 +1139,11 @@ impl Parser {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn task(&self, id: TaskId) -> Option<&Task> {
         self.tasks.get(id)
+    }
+
+    /// Return the task `id` denotes for modification, or `None` when the identity is stale.
+    pub(crate) fn task_mut(&mut self, id: TaskId) -> Option<&mut Task> {
+        self.tasks.get_mut(id)
     }
 
     /// Start a task from the current task's store and return its identity.

@@ -8,9 +8,12 @@
 
 use crate::env::{EnvMode, EnvSetMode, EnvStack};
 use crate::function::FunctionStore;
-use crate::io::{IoChain, IoFd};
+use crate::io::{IoBufferfill, IoChain, IoFd};
+use crate::parse_tree::ParsedSourceRef;
 use crate::prelude::*;
+use crate::proc::{InternalJobId, JobGroupRef};
 use crate::task_frame::FrameStack;
+use std::collections::VecDeque;
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::sync::Arc;
 
@@ -211,12 +214,31 @@ impl TaskDescriptors {
     }
 }
 
+/// The job stage a scheduled task evaluates.
+pub(crate) struct StageTask {
+    /// The descriptors the stage's evaluation reads.
+    pub(crate) io_chain: IoChain,
+
+    /// The job whose stage this task is.
+    pub(crate) job: InternalJobId,
+
+    /// The job's process group, which the stage's child jobs reuse.
+    pub(crate) job_group: Option<JobGroupRef>,
+
+    /// The buffer that holds output piped into a later stage.
+    pub(crate) buffered_output: Option<Arc<IoBufferfill>>,
+
+    /// The parsed source the stage's frames were built from.
+    pub(crate) source: ParsedSourceRef,
+}
+
 /// One evaluation the shell schedules, with the store and descriptors it reads.
 pub(crate) struct Task {
     store: TaskStore,
     descriptors: TaskDescriptors,
     frames: FrameStack,
     lifecycle: TaskLifecycle,
+    stage: Option<StageTask>,
 }
 
 impl Task {
@@ -233,6 +255,7 @@ impl Task {
             },
             frames: FrameStack::new(),
             lifecycle: TaskLifecycle::Runnable,
+            stage: None,
         }
     }
 
@@ -243,6 +266,7 @@ impl Task {
             descriptors: self.descriptors.copy_for_task(),
             frames: FrameStack::new(),
             lifecycle: TaskLifecycle::Runnable,
+            stage: None,
         }
     }
 
@@ -272,6 +296,21 @@ impl Task {
         &mut self.frames
     }
 
+    /// Return the job stage this task evaluates.
+    pub fn stage(&self) -> Option<&StageTask> {
+        self.stage.as_ref()
+    }
+
+    /// Record the job stage this task evaluates.
+    pub fn set_stage(&mut self, stage: StageTask) {
+        self.stage = Some(stage);
+    }
+
+    /// Remove and return the job stage this task evaluates.
+    pub fn take_stage(&mut self) -> Option<StageTask> {
+        self.stage.take()
+    }
+
     /// Return this task's lifecycle stage.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn lifecycle(&self) -> TaskLifecycle {
@@ -282,6 +321,30 @@ impl Task {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_lifecycle(&mut self, lifecycle: TaskLifecycle) {
         self.lifecycle = lifecycle;
+    }
+}
+
+/// The tasks that can run, in the order they were made runnable.
+pub(crate) struct Scheduler {
+    runnable: VecDeque<TaskId>,
+}
+
+impl Scheduler {
+    /// Return a scheduler with no runnable task.
+    pub fn new() -> Scheduler {
+        Scheduler {
+            runnable: VecDeque::new(),
+        }
+    }
+
+    /// Record `id` as runnable.
+    pub fn push(&mut self, id: TaskId) {
+        self.runnable.push_back(id);
+    }
+
+    /// Return the next runnable task.
+    pub fn pop(&mut self) -> Option<TaskId> {
+        self.runnable.pop_front()
     }
 }
 
