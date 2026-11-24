@@ -24,7 +24,6 @@ use crate::fork_exec::{
     },
 };
 use crate::function::FunctionProperties;
-use crate::{ast, parse_tree::NodeRef};
 use crate::io::{
     BufferedOutputStream, FdOutputStream, IoBufferfill, IoChain, IoClose, IoMode, IoPipe,
     IoStreams, OutputStream, SeparatedBuffer, StringOutputStream,
@@ -47,6 +46,7 @@ use crate::threads::{ThreadPool, is_forked_child};
 use crate::trace::trace_if_enabled_with_args;
 use crate::tty_handoff::TtyHandoff;
 use crate::wutil::{fish_wcstol, perror_nix};
+use crate::{ast, parse_tree::NodeRef};
 use fish_common::{ScopeGuard, exit_without_destructors, truncate_at_nul, write_loop};
 use fish_widestring::{ToWString as _, bytes2wcstring, wcs2bytes, wcs2zstring};
 use libc::{
@@ -1215,7 +1215,7 @@ fn exec_task_process(
             job: j.internal_job_id,
             job_group: j.group.clone(),
             buffered_output,
-            source,
+            parsed_source: source,
         },
     );
     let _ = p.task_id.set(task_id);
@@ -1497,6 +1497,7 @@ pub(crate) enum PendingStage {
         props: Arc<FunctionProperties>,
         argv: Vec<WString>,
         chain: IoChain,
+        piped_output_needs_buffering: bool,
         variable_assignments: Vec<crate::proc::ConcreteAssignment>,
     },
 
@@ -1505,6 +1506,7 @@ pub(crate) enum PendingStage {
         process_index: usize,
         statement: NodeRef<ast::Statement>,
         chain: IoChain,
+        piped_output_needs_buffering: bool,
         variable_assignments: Vec<crate::proc::ConcreteAssignment>,
     },
 }
@@ -1569,14 +1571,8 @@ pub(crate) fn launch_stage(
         ProcessType::Exec => panic!("an exec process appeared in a pipeline"),
         ProcessType::Task(stage) => {
             let block_id = push_assignment_block(parser, &assignments);
-            let result = exec_task_process(
-                parser,
-                j,
-                p,
-                stage,
-                chain,
-                piped_output_needs_buffering,
-            );
+            let result =
+                exec_task_process(parser, j, p, stage, chain, piped_output_needs_buffering);
             pop_assignment_block(parser, block_id);
             result?;
             Ok(None)
@@ -1597,9 +1593,14 @@ pub(crate) fn launch_stage(
                 .iter()
                 .position(|candidate| std::ptr::eq(candidate, p))
                 .expect("the stage belongs to the job"),
-            props: Arc::clone(props.as_ref().expect("a function stage records its properties")),
+            props: Arc::clone(
+                props
+                    .as_ref()
+                    .expect("a function stage records its properties"),
+            ),
             argv: p.argv().clone(),
             chain,
+            piped_output_needs_buffering,
             variable_assignments: assignments,
         })),
         ProcessType::BlockNode(statement) => Ok(Some(PendingStage::Block {
@@ -1610,6 +1611,7 @@ pub(crate) fn launch_stage(
                 .expect("the stage belongs to the job"),
             statement: statement.clone(),
             chain,
+            piped_output_needs_buffering,
             variable_assignments: assignments,
         })),
     }
@@ -1640,7 +1642,6 @@ pub(crate) fn pop_assignment_block(parser: &mut Parser, block_id: Option<BlockId
         parser.pop_block(block_id);
     }
 }
-
 
 // Do we have a fish internal process that pipes into a real process? If so, we are going to
 // launch it last (if there's more than one, just the last one). That is to prevent buffering

@@ -26,8 +26,7 @@ use crate::{
     },
     fds::{PIPE_ERROR, make_autoclose_pipes},
     flog::flog,
-    flogf,
-    function,
+    flogf, function,
     io::{FdOutputStream, IoBufferfill, IoChain, IoStreams, OutputStream, StringOutputStream},
     job_group::JobGroup,
     operation_context::OperationContext,
@@ -277,16 +276,16 @@ impl ExecutionContext {
         child_result: Option<EndExecutionReason>,
     ) -> FrameAction {
         if let Some(reason) = child_result {
-            frame.stage_running = false;
-            if reason != EndExecutionReason::Ok && frame.stage_result.is_none() {
-                frame.stage_result = Some(reason);
+            frame.active_stage_running = false;
+            if reason != EndExecutionReason::Ok && frame.end_reason.is_none() {
+                frame.end_reason = Some(reason);
             }
 
             let process_index = frame
-                .current_process_index
+                .active_process_index
                 .take()
                 .expect("a completed stage records its process");
-            frame.procs_launched += 1;
+            frame.processes_launched += 1;
             if frame.suspended_at.is_none()
                 && ctx.parser().suspension_count() != frame.suspension_count
             {
@@ -294,12 +293,14 @@ impl ExecutionContext {
             }
             let process = &frame.job.processes()[process_index];
             if process.leads_pgrp && frame.job.group().wants_terminal() {
-                frame.handoff.to_job_group(frame.job.group.as_ref().unwrap());
+                frame
+                    .handoff
+                    .to_job_group(frame.job.group.as_ref().unwrap());
             }
-            if frame.stage_is_deferred {
-                frame.stage_is_deferred = false;
+            if frame.active_stage_is_deferred {
+                frame.active_stage_is_deferred = false;
             } else {
-                frame.loop_index += 1;
+                frame.stage_launch_index += 1;
             }
         }
 
@@ -315,25 +316,25 @@ impl ExecutionContext {
                         frame.started = true;
                     }
 
-                    if frame.loop_index < frame.job.processes().len() {
-                        let index = frame.loop_index;
+                    if frame.stage_launch_index < frame.job.processes().len() {
+                        let index = frame.stage_launch_index;
                         let process = &frame.job.processes()[index];
                         let mut proc_pipes = PartialPipes::default();
-                        std::mem::swap(&mut proc_pipes.read, &mut frame.pipe_next_read);
+                        std::mem::swap(&mut proc_pipes.read, &mut frame.pipe_read_for_next_stage);
                         if !process.is_last_in_job {
                             let Ok(pipes) = make_autoclose_pipes() else {
                                 flog!(warning, wgettext!(PIPE_ERROR));
                                 abort_pipeline_from(&frame.job, index);
-                                frame.aborted = true;
-                                frame.loop_index = frame.job.processes().len();
-                                frame.pipe_next_read = None;
+                                frame.pipeline_aborted = true;
+                                frame.stage_launch_index = frame.job.processes().len();
+                                frame.pipe_read_for_next_stage = None;
                                 continue;
                             };
-                            frame.pipe_next_read = Some(pipes.read);
+                            frame.pipe_read_for_next_stage = Some(pipes.read);
                             proc_pipes.write = Some(pipes.write);
                             if Some(index) == frame.deferred_process {
                                 frame.deferred_pipes = proc_pipes;
-                                frame.loop_index += 1;
+                                frame.stage_launch_index += 1;
                                 continue;
                             }
                         }
@@ -349,38 +350,40 @@ impl ExecutionContext {
                             false,
                         ) {
                             Ok(Some(stage)) => {
-                                frame.current_process_index = Some(index);
-                                frame.stage_running = true;
-                                frame.stage_is_deferred = false;
+                                frame.active_process_index = Some(index);
+                                frame.active_stage_running = true;
+                                frame.active_stage_is_deferred = false;
                                 return Self::push_stage_frame(frame, stage);
                             }
                             Ok(None) => {
-                                frame.procs_launched += 1;
+                                frame.processes_launched += 1;
                                 if frame.suspended_at.is_none()
                                     && ctx.parser().suspension_count() != frame.suspension_count
                                 {
                                     frame.suspended_at = Some(index);
                                 }
                                 if process.leads_pgrp && frame.job.group().wants_terminal() {
-                                    frame.handoff.to_job_group(frame.job.group.as_ref().unwrap());
+                                    frame
+                                        .handoff
+                                        .to_job_group(frame.job.group.as_ref().unwrap());
                                 }
-                                frame.loop_index += 1;
+                                frame.stage_launch_index += 1;
                                 continue;
                             }
                             Err(()) => {
-                                frame.aborted = true;
+                                frame.pipeline_aborted = true;
                                 abort_pipeline_from(&frame.job, index);
-                                frame.loop_index = frame.job.processes().len();
-                                frame.pipe_next_read = None;
+                                frame.stage_launch_index = frame.job.processes().len();
+                                frame.pipe_read_for_next_stage = None;
                                 continue;
                             }
                         }
                     }
 
-                    if !frame.deferred_launched {
-                        frame.deferred_launched = true;
+                    if !frame.deferred_stage_launched {
+                        frame.deferred_stage_launched = true;
                         if let Some(dp) = frame.deferred_process {
-                            if frame.aborted {
+                            if frame.pipeline_aborted {
                                 frame.job.processes()[dp].mark_aborted_before_launch();
                             } else {
                                 let pipes = std::mem::take(&mut frame.deferred_pipes);
@@ -394,13 +397,13 @@ impl ExecutionContext {
                                     true,
                                 ) {
                                     Ok(Some(stage)) => {
-                                        frame.current_process_index = Some(dp);
-                                        frame.stage_running = true;
-                                        frame.stage_is_deferred = true;
+                                        frame.active_process_index = Some(dp);
+                                        frame.active_stage_running = true;
+                                        frame.active_stage_is_deferred = true;
                                         return Self::push_stage_frame(frame, stage);
                                     }
                                     Ok(None) => {
-                                        frame.procs_launched += 1;
+                                        frame.processes_launched += 1;
                                         if frame.suspended_at.is_none()
                                             && ctx.parser().suspension_count()
                                                 != frame.suspension_count
@@ -409,7 +412,7 @@ impl ExecutionContext {
                                         }
                                     }
                                     Err(()) => {
-                                        frame.job.processes()[dp].mark_aborted_before_launch()
+                                        frame.job.processes()[dp].mark_aborted_before_launch();
                                     }
                                 }
                             }
@@ -417,14 +420,14 @@ impl ExecutionContext {
                         continue;
                     }
 
-                    frame.pipe_next_read = None;
-                    if frame.aborted && frame.procs_launched == 0 {
+                    frame.pipe_read_for_next_stage = None;
+                    if frame.pipeline_aborted && frame.processes_launched == 0 {
                         if let Some(statuses) = frame.job.statuses() {
                             ctx.parser().set_last_statuses(statuses);
                             ctx.parser().libdata_mut().status_count += 1;
                         }
                         remove_job(ctx.parser(), &frame.job);
-                        frame.stage_result.get_or_insert(EndExecutionReason::Error);
+                        frame.end_reason.get_or_insert(EndExecutionReason::Error);
                         return self.finish_job_frame(ctx, frame);
                     }
 
@@ -465,7 +468,7 @@ impl ExecutionContext {
                                 Some(&frame.block_io),
                             );
                         }
-                        crate::proc::read_finished_bufferfills(&frame.block_io);
+                        crate::proc::collect_finished_process_output(&frame.block_io);
                         if let Some(statuses) = frame.job.statuses() {
                             ctx.parser().set_last_statuses(statuses);
                             ctx.parser().libdata_mut().status_count += 1;
@@ -477,7 +480,7 @@ impl ExecutionContext {
                     }
 
                     if frame.job.is_completed() {
-                        crate::proc::read_finished_bufferfills(&frame.block_io);
+                        crate::proc::collect_finished_process_output(&frame.block_io);
                         let last_process = frame
                             .job
                             .processes()
@@ -486,12 +489,19 @@ impl ExecutionContext {
                         let last_process_status = last_process.status();
                         let last_process_exited = last_process_status.normal_exited()
                             || last_process_status.signal_exited();
-                        if last_process_exited
-                            && let Some(statuses) = frame.job.statuses()
-                        {
+                        if last_process_exited && let Some(statuses) = frame.job.statuses() {
                             ctx.parser().set_last_statuses(statuses);
                             ctx.parser().libdata_mut().status_count += 1;
                         }
+                        return self.finish_job_frame(ctx, frame);
+                    }
+
+                    if ctx
+                        .parser()
+                        .job_with_internal_id(frame.job.internal_job_id)
+                        .is_none()
+                    {
+                        // The job entry was removed while it ran, as a disowned job is.
                         return self.finish_job_frame(ctx, frame);
                     }
 
@@ -509,8 +519,8 @@ impl ExecutionContext {
     }
 
     fn push_stage_frame(frame: &JobFrame, stage: PendingStage) -> FrameAction {
-        let source = match &stage {
-            PendingStage::Builtin { .. } => frame.source.clone(),
+        let parsed_source = match &stage {
+            PendingStage::Builtin { .. } => frame.parsed_source.clone(),
             PendingStage::Function { props, .. } => props.func_node.parsed_source_ref(),
             PendingStage::Block { statement, .. } => statement.parsed_source_ref(),
         };
@@ -520,11 +530,12 @@ impl ExecutionContext {
             stage,
             assignment_block: None,
             started: false,
-            saved_block_io: None,
-            saved_node: None,
-            saved_scope: None,
-            saved_job_group: None,
-            source,
+            block_io_before: None,
+            node_before: None,
+            scoped_data_before: None,
+            job_group_before: None,
+            output_bufferfill: None,
+            parsed_source,
         })))
     }
 
@@ -557,7 +568,7 @@ impl ExecutionContext {
             process.mark_aborted_before_launch();
         }
         remove_job(ctx.parser(), &frame.job);
-        frame.stage_result.get_or_insert(EndExecutionReason::Error);
+        frame.end_reason.get_or_insert(EndExecutionReason::Error);
         self.finish_job_frame(ctx, frame)
     }
 
@@ -577,7 +588,7 @@ impl ExecutionContext {
             self.cancel_signal = frame.job.group().get_cancel_signal();
         }
         job_reap(ctx.parser(), false, Some(&self.block_io));
-        FrameAction::Done(frame.stage_result.unwrap_or(EndExecutionReason::Ok))
+        FrameAction::Done(frame.end_reason.unwrap_or(EndExecutionReason::Ok))
     }
 
     /// Advance a shell-evaluated job stage.
@@ -588,26 +599,40 @@ impl ExecutionContext {
         child_result: Option<EndExecutionReason>,
     ) -> FrameAction {
         if let Some(reason) = child_result {
+            let process_index = stage_process_index(&frame.stage);
             let chain = stage_chain(&frame.stage).clone();
             self.restore_stage_scope(ctx, frame);
             pop_assignment_block(ctx.parser(), frame.assignment_block.take());
-            if let Some(saved) = frame.saved_block_io.take() {
+            if let Some(saved) = frame.block_io_before.take() {
                 self.block_io = saved;
             }
 
+            if let Some(bufferfill) = frame.output_bufferfill.take() {
+                // The stage wrote into a capture; the bytes enter the pipe row now that the
+                // processes reading the row are launched.
+                let contents = IoBufferfill::finish(bufferfill).newline_serialized();
+                let process = &frame.job.processes()[process_index];
+                process
+                    .status
+                    .set(ProcStatus::from_exit_code(ctx.parser().last_status()));
+                run_internal_process_or_short_circuit(
+                    ctx.parser(),
+                    &frame.job,
+                    process,
+                    contents,
+                    vec![],
+                    &chain,
+                );
+                return FrameAction::Done(EndExecutionReason::Ok);
+            }
+
             let status = ctx.parser().last_status();
-            complete_stage_process(
-                ctx.parser(),
-                &frame.job,
-                stage_process_index(&frame.stage),
-                &chain,
-                status,
-            );
+            complete_stage_process(ctx.parser(), &frame.job, process_index, &chain, status);
             return FrameAction::Done(reason);
         }
 
         frame.started = true;
-        let chain = stage_chain(&frame.stage).clone();
+        let mut chain = stage_chain(&frame.stage).clone();
         let assignments = match &frame.stage {
             PendingStage::Builtin {
                 variable_assignments,
@@ -623,18 +648,46 @@ impl ExecutionContext {
             } => variable_assignments,
         };
 
+        let piped_output_needs_buffering = match &frame.stage {
+            PendingStage::Builtin { .. } => false,
+            PendingStage::Function {
+                piped_output_needs_buffering,
+                ..
+            }
+            | PendingStage::Block {
+                piped_output_needs_buffering,
+                ..
+            } => *piped_output_needs_buffering,
+        };
+        if piped_output_needs_buffering {
+            match IoBufferfill::create() {
+                Ok(bufferfill) => {
+                    chain.push(bufferfill.clone());
+                    frame.output_bufferfill = Some(bufferfill);
+                }
+                Err(_) => {
+                    abort_pipeline_from(&frame.job, stage_process_index(&frame.stage));
+                    return FrameAction::Done(EndExecutionReason::Error);
+                }
+            }
+        }
+
         // The stage runs with its job's node and one more evaluation level, so a diagnostic the
         // stage reports carries the command line it came from.
-        frame.saved_node = Some(ctx.parser().current_node().replace(Some(frame.node.clone())));
+        frame.node_before = Some(
+            ctx.parser()
+                .current_node()
+                .replace(Some(frame.node.clone())),
+        );
         let mut scope = ctx.parser().scope();
-        frame.saved_scope = Some(scope.clone());
+        frame.scoped_data_before = Some(scope);
         scope.eval_level += 1;
         ctx.parser().set_scope(scope);
-        frame.saved_job_group = Some(self.job_group.take());
+        frame.job_group_before = Some(self.job_group.take());
         self.job_group = frame.job.group.clone();
 
         frame.assignment_block = push_assignment_block(ctx.parser(), assignments);
-        frame.saved_block_io = Some(std::mem::replace(&mut self.block_io, chain));
+        frame.block_io_before = Some(std::mem::replace(&mut self.block_io, chain));
 
         match &frame.stage {
             PendingStage::Builtin {
@@ -652,7 +705,7 @@ impl ExecutionContext {
                 )
                 .expect("a builtin stage launches");
                 self.restore_stage_scope(ctx, frame);
-                if let Some(saved) = frame.saved_block_io.take() {
+                if let Some(saved) = frame.block_io_before.take() {
                     self.block_io = saved;
                 }
                 pop_assignment_block(ctx.parser(), frame.assignment_block.take());
@@ -668,25 +721,23 @@ impl ExecutionContext {
                     prev_status_count: 0,
                 })))
             }
-            PendingStage::Block { statement, .. } => {
-                push_frame(Frame::Statement(StatementFrame {
-                    statement: statement.clone(),
-                    associated_block: None,
-                    started: false,
-                }))
-            }
+            PendingStage::Block { statement, .. } => push_frame(Frame::Statement(StatementFrame {
+                statement: statement.clone(),
+                associated_block: None,
+                started: false,
+            })),
         }
     }
 
     /// Restore the node, evaluation level and job group a stage saved.
     fn restore_stage_scope(&mut self, ctx: &mut OperationContext<'_>, frame: &mut StageFrame) {
-        if let Some(saved) = frame.saved_scope.take() {
+        if let Some(saved) = frame.scoped_data_before.take() {
             ctx.parser().set_scope(saved);
         }
-        if let Some(saved) = frame.saved_node.take() {
+        if let Some(saved) = frame.node_before.take() {
             ctx.parser().current_node().replace(saved);
         }
-        if let Some(saved) = frame.saved_job_group.take() {
+        if let Some(saved) = frame.job_group_before.take() {
             self.job_group = saved;
         }
     }
@@ -874,8 +925,8 @@ impl ExecutionContext {
                     associated_block,
                     started: false,
                     assignment_block: None,
-                    saved_scope: ScopedData::default(),
-                    saved_node: None,
+                    scoped_data_before: ScopedData::default(),
+                    node_before: None,
                     timer: None,
                     profile_item: None,
                 },
@@ -899,11 +950,11 @@ impl ExecutionContext {
         }
         frame.started = true;
 
-        frame.saved_scope = ctx.parser().scope();
-        let mut scope = frame.saved_scope;
+        frame.scoped_data_before = ctx.parser().scope();
+        let mut scope = frame.scoped_data_before;
         scope.eval_level += 1;
         ctx.parser().set_scope(scope);
-        frame.saved_node = ctx
+        frame.node_before = ctx
             .parser()
             .current_node()
             .replace(Some(frame.job_node.clone()));
@@ -912,6 +963,7 @@ impl ExecutionContext {
             frame.profile_item = Some(ProfileItemFinish {
                 item_id,
                 start_time: ProfileItem::now(),
+                level: ctx.parser().scope().eval_level,
                 command: profiling_cmd_name_for_redirectable_block(&frame.statement, self.pstree()),
             });
         }
@@ -945,9 +997,9 @@ impl ExecutionContext {
             finish_profile_item(ctx, profile_item);
         }
         frame.timer.take();
-        let saved_node = frame.saved_node.take();
-        let _ = ctx.parser().current_node().replace(saved_node);
-        ctx.parser().set_scope(frame.saved_scope);
+        let node_before = frame.node_before.take();
+        let _ = ctx.parser().current_node().replace(node_before);
+        ctx.parser().set_scope(frame.scoped_data_before);
         if let Some(block) = frame.assignment_block.take() {
             ctx.parser().pop_block(block);
         }
@@ -2588,6 +2640,7 @@ impl ExecutionContext {
             profile_item_id.map(|item_id| ProfileItemFinish {
                 item_id,
                 start_time: ProfileItem::now(),
+                level: ctx.parser().scope().eval_level,
                 command: WString::new(),
             })
         };
@@ -2655,22 +2708,22 @@ impl ExecutionContext {
             job: Rc::clone(&job),
             node: unsafe { NodeRef::new(Arc::clone(self.pstree()), job_node) },
             block_io: self.block_io.clone(),
-            source: self.pstree().clone(),
+            parsed_source: self.pstree().clone(),
             profile_item,
             suspended_at: None,
             handoff: crate::tty_handoff::TtyHandoff::new(|| {}),
-            loop_index: 0,
-            procs_launched: 0,
-            pipe_next_read: None,
+            stage_launch_index: 0,
+            processes_launched: 0,
+            pipe_read_for_next_stage: None,
             deferred_pipes: PartialPipes::default(),
             deferred_process: None,
-            deferred_launched: false,
-            stage_is_deferred: false,
-            current_process_index: None,
-            aborted: false,
+            deferred_stage_launched: false,
+            active_stage_is_deferred: false,
+            active_process_index: None,
+            pipeline_aborted: false,
             suspension_count: 0,
-            stage_running: false,
-            stage_result: None,
+            active_stage_running: false,
+            end_reason: None,
             phase: JobPhase::Launch,
             started: false,
         };
@@ -2836,10 +2889,9 @@ fn if_clause_of(statement: &ast::IfStatement, index: usize) -> Option<&ast::IfCl
 /// Record the completion of one profile entry.
 fn finish_profile_item(ctx: &mut OperationContext<'_>, profile_item: ProfileItemFinish) {
     let parser = ctx.parser();
-    let eval_level = parser.scope().eval_level;
     let item = &mut parser.profile_items_mut()[profile_item.item_id];
     item.duration = ProfileItem::now() - profile_item.start_time;
-    item.level = eval_level;
+    item.level = profile_item.level;
     item.cmd = profile_item.command;
     item.skipped = false;
 }
@@ -2992,7 +3044,7 @@ impl Parser {
         let Some(stage) = self.task(task_id).and_then(|task| task.stage()) else {
             return false;
         };
-        let source = stage.source.clone();
+        let source = stage.parsed_source.clone();
         let io_chain = stage.io_chain.clone();
         let job_group = stage.job_group.clone();
         let Some(mut frames) = self.take_task_frames(task_id) else {

@@ -1559,8 +1559,8 @@ fn bufferfill_read_finished_process_output(block_io: &IoChain) {
     stdout.read_all_available();
 }
 
-/// Read the output completed external processes wrote into a capture.
-pub(crate) fn read_finished_bufferfills(block_io: &IoChain) {
+/// Collect the output completed external processes wrote into a capture.
+pub(crate) fn collect_finished_process_output(block_io: &IoChain) {
     bufferfill_read_finished_process_output(block_io);
     if let Some(stderr) = block_io.io_for_fd(STDERR_FILENO)
         && let Some(stderr) = stderr.as_bufferfill()

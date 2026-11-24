@@ -7,7 +7,6 @@
 //! in the same slot.
 
 use crate::env::{EnvMode, EnvSetMode, EnvStack};
-use crate::fd_ready_set::Readiness;
 use crate::function::FunctionStore;
 use crate::io::{IoBufferfill, IoChain, IoFd};
 use crate::parse_tree::ParsedSourceRef;
@@ -231,7 +230,7 @@ pub(crate) struct StageTask {
     pub(crate) buffered_output: Option<Arc<IoBufferfill>>,
 
     /// The parsed source the stage's frames were built from.
-    pub(crate) source: ParsedSourceRef,
+    pub(crate) parsed_source: ParsedSourceRef,
 }
 
 /// One evaluation the shell schedules, with the store and descriptors it reads.
@@ -344,9 +343,6 @@ impl Task {
 pub(crate) enum WaitReason {
     /// The job `InternalJobId` completes.
     Job(InternalJobId),
-
-    /// The descriptor reaches the readiness it is watched for.
-    Descriptor { fd: RawFd, readiness: Readiness },
 }
 
 /// The tasks that can run, and the event each blocked task waits for.
@@ -403,9 +399,7 @@ impl Scheduler {
 
     /// Return every blocked task and its wait.
     pub fn blocked(&self) -> impl Iterator<Item = (TaskId, WaitReason)> + '_ {
-        self.blocked
-            .iter()
-            .map(|(id, reason)| (*id, *reason))
+        self.blocked.iter().map(|(id, reason)| (*id, *reason))
     }
 }
 

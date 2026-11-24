@@ -29,6 +29,7 @@ use crate::{
         SuspensionRecord, SuspensionResolution, job_reap, proc_clean_jobs,
         process_mark_finished_children,
     },
+    reader::fish_is_unwinding_for_exit,
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
     task::{
         DescriptorTable, Scheduler, StageTask, Task, TaskDescriptors, TaskId, TaskLifecycle,
@@ -762,12 +763,16 @@ impl Parser {
         let mut pending_initial = Some(initial_frame);
         let job_group_for_cancel = job_group.cloned();
         let reason = loop {
+            if signal_check_cancel() != 0 || fish_is_unwinding_for_exit() {
+                break EndExecutionReason::Error;
+            }
             let mut op_ctx = self.context();
             op_ctx.job_group = job_group.cloned();
             let jg = job_group_for_cancel.clone();
             let cancel_checker: CancelChecker = Box::new(move || {
                 signal_check_cancel() != 0
-                    || jg.as_ref()
+                    || jg
+                        .as_ref()
                         .and_then(|group| group.get_cancel_signal())
                         .is_some()
             });
@@ -1163,10 +1168,7 @@ impl Parser {
         match reason {
             WaitReason::Job(job_id) => self
                 .job_with_internal_id(job_id)
-                .is_none_or(|job| job.is_completed()),
-            WaitReason::Descriptor { fd, readiness } => {
-                crate::fd_ready_set::poll_fd_ready(fd, readiness)
-            }
+                .is_none_or(|job| job.is_completed() || job.is_stopped()),
         }
     }
 
@@ -1200,11 +1202,17 @@ impl Parser {
                 self.step_stage_task(id);
             }
             self.wake_ready_tasks();
-            if self.scheduler.reason(target).is_none() {
+            if self.scheduler.reason(target).is_none()
+                || signal_check_cancel() != 0
+                || fish_is_unwinding_for_exit()
+            {
                 return;
             }
             self.wait_for_events();
-            if self.scheduler.reason(target).is_none() {
+            if self.scheduler.reason(target).is_none()
+                || signal_check_cancel() != 0
+                || fish_is_unwinding_for_exit()
+            {
                 return;
             }
         }
@@ -1219,19 +1227,18 @@ impl Parser {
 
     /// Wait for an event that satisfies a blocked task's wait.
     fn wait_for_events(&mut self) {
-        let waits: Vec<WaitReason> = self.scheduler.blocked().map(|(_, reason)| reason).collect();
-        if waits.is_empty() {
+        if self.scheduler.blocked().next().is_none() {
             return;
         }
 
-        let blocked_before: Vec<TaskId> =
+        let blocked_task_ids_before: Vec<TaskId> =
             self.scheduler.blocked().map(|(id, _)| id).collect();
 
         // Act on the events already reported before sleeping, so a notification that arrived while
         // no task was waiting still wakes its task.
         self.reap_and_wake();
         if self.scheduler_has_runnable_tasks()
-            || blocked_before
+            || blocked_task_ids_before
                 .iter()
                 .any(|id| self.scheduler.reason(*id).is_none())
         {
@@ -1241,11 +1248,6 @@ impl Parser {
         let topic = topic_monitor::principal();
         let mut fds = FdReadySet::new();
         fds.add(topic.wakeup_fd(), Readiness::Readable);
-        for reason in waits {
-            if let WaitReason::Descriptor { fd, readiness } = reason {
-                fds.add(fd, readiness);
-            }
-        }
         fds.check(Timeout::Forever);
         topic.consume_wakeup();
         self.reap_and_wake();
