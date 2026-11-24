@@ -28,8 +28,8 @@ use fish_common::{Timepoint, escape, timef};
 use fish_widestring::ToWString;
 use libc::{
     _SC_CLK_TCK, EXIT_SUCCESS, SIG_IGN, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGINT, SIGPIPE, SIGQUIT,
-    SIGSEGV, SIGSYS, SIGTTOU, STDOUT_FILENO, WCONTINUED, WEXITSTATUS, WIFCONTINUED, WIFEXITED,
-    WIFSIGNALED, WIFSTOPPED, WNOHANG, WSTOPSIG, WTERMSIG, WUNTRACED,
+    SIGSEGV, SIGSYS, SIGTTOU, STDERR_FILENO, STDOUT_FILENO, WCONTINUED, WEXITSTATUS, WIFCONTINUED,
+    WIFEXITED, WIFSIGNALED, WIFSTOPPED, WNOHANG, WSTOPSIG, WTERMSIG, WUNTRACED,
 };
 use nix::{
     sys::{
@@ -440,6 +440,7 @@ pub struct ProcTimes {
     pub jiffies: ClockTicks,
 }
 
+#[derive(Clone)]
 pub struct ConcreteAssignment {
     pub variable_name: WString,
     pub values: Vec<WString>,
@@ -1556,6 +1557,16 @@ fn bufferfill_read_finished_process_output(block_io: &IoChain) {
         return;
     };
     stdout.read_all_available();
+}
+
+/// Read the output completed external processes wrote into a capture.
+pub(crate) fn read_finished_bufferfills(block_io: &IoChain) {
+    bufferfill_read_finished_process_output(block_io);
+    if let Some(stderr) = block_io.io_for_fd(STDERR_FILENO)
+        && let Some(stderr) = stderr.as_bufferfill()
+    {
+        stderr.read_all_available();
+    }
 }
 
 /// Generate process_exit events for any completed processes in `j`.

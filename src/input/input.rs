@@ -5,7 +5,7 @@ use super::{
 use crate::{
     common::{WSL, is_windows_subsystem_for_linux, shell_modes},
     env::{EnvStack, Environment as _},
-    fd_readable_set::{FdReadableSet, Timeout},
+    fd_ready_set::{FdReadySet, Readiness, Timeout},
     flog::{FloggableDebug, flog},
     key::{self, Key, Modifiers, ViewportPosition, char_to_symbol},
     prelude::*,
@@ -800,23 +800,23 @@ pub(super) fn next_input_event(
     ioport_fd: RawFd,
     timeout: Timeout,
 ) -> InputEventTrigger {
-    let mut fdset = FdReadableSet::new();
+    let mut fdset = FdReadySet::new();
     loop {
         fdset.clear();
-        fdset.add(in_fd);
+        fdset.add(in_fd, Readiness::Readable);
 
         // Add the completion ioport (possibly -1 - a no-op).
-        fdset.add(ioport_fd);
+        fdset.add(ioport_fd, Readiness::Readable);
 
         // Get the uvar notifier fd (possibly none).
         let notifier = default_notifier();
         let notifier_fd = notifier.notification_fd();
         if let Some(notifier_fd) = notifier_fd {
-            fdset.add(notifier_fd);
+            fdset.add(notifier_fd, Readiness::Readable);
         }
 
         // Here's where we call select().
-        let select_res = fdset.check_readable(timeout);
+        let select_res = fdset.check(timeout);
         if select_res < 0 {
             let err = Errno::last();
             if err == Errno::EINTR || err == Errno::EAGAIN {
@@ -836,19 +836,21 @@ pub(super) fn next_input_event(
         // The priority order is: uvars, stdin, ioport.
         // Check to see if we want a universal variable barrier.
         if let Some(notifier_fd) = notifier_fd {
-            if fdset.test(notifier_fd) && notifier.notification_fd_became_readable(notifier_fd) {
+            if fdset.test(notifier_fd, Readiness::Readable)
+                && notifier.notification_fd_became_readable(notifier_fd)
+            {
                 return InputEventTrigger::UvarNotified;
             }
         }
 
         // Check stdin.
-        if fdset.test(in_fd) {
+        if fdset.test(in_fd, Readiness::Readable) {
             return readb(in_fd).map_or(InputEventTrigger::Eof, InputEventTrigger::Byte);
         }
 
         // Check for iothread completions only if there is no data to be read from the stdin.
         // This gives priority to the foreground.
-        if fdset.test(ioport_fd) {
+        if fdset.test(ioport_fd, Readiness::Readable) {
             return InputEventTrigger::IOPortNotified;
         }
     }

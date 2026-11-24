@@ -20,7 +20,8 @@ also provides the ability to perform a blocking wait for any topic to change in 
 set. This is the real power of topics: you can wait for a sigchld signal OR a thread exit.
 */
 
-use crate::fd_readable_set::{FdReadableSet, Timeout};
+use crate::fd_monitor::FdEventSignaller;
+use crate::fd_ready_set::Timeout;
 use crate::fds::{self, AutoClosePipes, make_fd_nonblocking};
 use crate::flog::{FloggableDebug, flog};
 use fish_common::assert_sync;
@@ -238,7 +239,7 @@ impl BinarySemaphore {
                     // call until data is available (that is, fish would use 100% cpu while waiting for
                     // processes). This call prevents that.
                     if cfg!(feature = "tsan") {
-                        _ = FdReadableSet::is_fd_readable(fd, Timeout::Forever);
+                        _ = crate::fd_ready_set::is_fd_readable(fd, Timeout::Forever);
                     }
                     let mut ignored: u8 = 0;
                     match unistd::read(&pipes.read, std::slice::from_mut(&mut ignored)) {
@@ -315,6 +316,9 @@ pub struct TopicMonitor {
     /// If status_ is STATUS_NEEDS_WAKEUP, then a thread has committed to call wait() on our sema and
     /// this must be balanced by the next call to post(). Note only one thread may wait at a time.
     sema_: BinarySemaphore,
+
+    /// Signalled on every post, so a poll set can wait for a topic change beside its descriptors.
+    wakeup_: FdEventSignaller,
 }
 
 const _: () = assert_sync::<TopicMonitor>();
@@ -349,6 +353,9 @@ impl TopicMonitor {
             ((oldstatus & STATUS_NEEDS_WAKEUP) != 0),
             "If STATUS_NEEDS_WAKEUP is set no other bits should be set"
         );
+
+        // Keep the poll set wakeable for a change even when the topic bit is already pending.
+        self.wakeup_.post();
 
         // If the bit was already set, then someone else posted to this topic and nobody has reacted to
         // it yet. In that case we're done.
@@ -435,6 +442,16 @@ impl TopicMonitor {
     /// Access the current generations.
     pub fn current_generations(self: &TopicMonitor) -> GenerationsList {
         self.updated_gens()
+    }
+
+    /// Return the descriptor that becomes readable when a topic changes.
+    pub fn wakeup_fd(self: &TopicMonitor) -> std::os::fd::RawFd {
+        self.wakeup_.read_fd_raw()
+    }
+
+    /// Consume a pending topic-change notification.
+    pub fn consume_wakeup(self: &TopicMonitor) -> bool {
+        self.wakeup_.try_consume()
     }
 
     /// Access the generation for a topic.

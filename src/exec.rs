@@ -24,6 +24,7 @@ use crate::fork_exec::{
     },
 };
 use crate::function::FunctionProperties;
+use crate::{ast, parse_tree::NodeRef};
 use crate::io::{
     BufferedOutputStream, FdOutputStream, IoBufferfill, IoChain, IoClose, IoMode, IoPipe,
     IoStreams, OutputStream, SeparatedBuffer, StringOutputStream,
@@ -525,7 +526,7 @@ fn can_use_posix_spawn_for_job(job: &Job, dup2s: &Dup2List) -> bool {
     !wants_terminal
 }
 
-fn internal_exec(vars: &EnvStack, is_repainting: bool, j: &Job, block_io: IoChain) {
+pub(crate) fn internal_exec(vars: &EnvStack, is_repainting: bool, j: &Job, block_io: IoChain) {
     // Do a regular launch -  but without forking first...
     let mut all_ios = block_io;
     if !all_ios.append_from_specs(j.processes()[0].redirection_specs(), &vars.get_pwd_slash()) {
@@ -1297,7 +1298,7 @@ fn get_performer_for_builtin(p: &Process, j: &Job, io_chain: &IoChain) -> Box<Pr
 }
 
 /// Executes a builtin "process".
-fn exec_builtin_process(
+pub(crate) fn exec_builtin_process(
     parser: &mut Parser,
     j: &Job,
     p: &Process,
@@ -1318,11 +1319,11 @@ fn exec_builtin_process(
 }
 
 #[derive(Default)]
-struct PartialPipes {
+pub(crate) struct PartialPipes {
     /// Read end of the pipe.
-    read: Option<OwnedFd>,
+    pub(crate) read: Option<OwnedFd>,
     /// Write end of the pipe.
-    write: Option<OwnedFd>,
+    pub(crate) write: Option<OwnedFd>,
 }
 
 /// Executes a process \p `in` `job`, using the pipes `pipes` (which may have invalid fds if this
@@ -1480,6 +1481,167 @@ fn exec_process_in_job(
     }
 }
 
+/// One shell-evaluated stage whose process the evaluator runs from frames.
+pub(crate) enum PendingStage {
+    /// A builtin command.
+    Builtin {
+        process_index: usize,
+        chain: IoChain,
+        piped_output_needs_buffering: bool,
+        variable_assignments: Vec<crate::proc::ConcreteAssignment>,
+    },
+
+    /// A function call.
+    Function {
+        process_index: usize,
+        props: Arc<FunctionProperties>,
+        argv: Vec<WString>,
+        chain: IoChain,
+        variable_assignments: Vec<crate::proc::ConcreteAssignment>,
+    },
+
+    /// A block, conditional, loop or switch statement.
+    Block {
+        process_index: usize,
+        statement: NodeRef<ast::Statement>,
+        chain: IoChain,
+        variable_assignments: Vec<crate::proc::ConcreteAssignment>,
+    },
+}
+
+/// Build the descriptors of one stage.
+fn process_io_chain(
+    parser: &mut Parser,
+    p: &Process,
+    mut chain: IoChain,
+    pipes: PartialPipes,
+    deferred_pipes: &PartialPipes,
+) -> Option<IoChain> {
+    if let Some(fd) = pipes.write {
+        chain.push(Arc::new(IoPipe::new(p.pipe_write_fd, false, fd)));
+    }
+    if !chain.append_from_specs(p.redirection_specs(), &parser.vars().get_pwd_slash()) {
+        return None;
+    }
+    if let Some(fd) = pipes.read {
+        chain.push(Arc::new(IoPipe::new(STDIN_FILENO, true, fd)));
+    }
+    for afd in [&deferred_pipes.read, &deferred_pipes.write]
+        .into_iter()
+        .flatten()
+    {
+        chain.push(Arc::new(IoClose::new(afd.as_raw_fd())));
+    }
+    Some(chain)
+}
+
+/// Launch one stage, recording a shell-evaluated stage instead of running it.
+pub(crate) fn launch_stage(
+    parser: &mut Parser,
+    j: &Job,
+    p: &Process,
+    block_io: IoChain,
+    pipes: PartialPipes,
+    deferred_pipes: &PartialPipes,
+    is_deferred_run: bool,
+) -> Result<Option<PendingStage>, ()> {
+    trace_if_enabled_with_args(parser, L!(""), p.argv());
+    let chain = process_io_chain(parser, p, block_io, pipes, deferred_pipes).ok_or(())?;
+
+    if !p.evaluates_block_statement() {
+        parser.libdata_mut().exec_count += 1;
+    }
+
+    p.check_generations_before_launch();
+
+    let piped_output_needs_buffering = !p.is_last_in_job && !is_deferred_run;
+    let assignments = p.variable_assignments.clone();
+
+    match &p.typ {
+        ProcessType::External => {
+            let block_id = push_assignment_block(parser, &assignments);
+            let result = exec_external_command(parser, j, p, &chain);
+            pop_assignment_block(parser, block_id);
+            result?;
+            parser.mut_wait_handles().remove_by_pid(p.pid().unwrap());
+            Ok(None)
+        }
+        ProcessType::Exec => panic!("an exec process appeared in a pipeline"),
+        ProcessType::Task(stage) => {
+            let block_id = push_assignment_block(parser, &assignments);
+            let result = exec_task_process(
+                parser,
+                j,
+                p,
+                stage,
+                chain,
+                piped_output_needs_buffering,
+            );
+            pop_assignment_block(parser, block_id);
+            result?;
+            Ok(None)
+        }
+        ProcessType::Builtin => Ok(Some(PendingStage::Builtin {
+            process_index: j
+                .processes()
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, p))
+                .expect("the stage belongs to the job"),
+            chain,
+            piped_output_needs_buffering,
+            variable_assignments: assignments,
+        })),
+        ProcessType::Function { props } => Ok(Some(PendingStage::Function {
+            process_index: j
+                .processes()
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, p))
+                .expect("the stage belongs to the job"),
+            props: Arc::clone(props.as_ref().expect("a function stage records its properties")),
+            argv: p.argv().clone(),
+            chain,
+            variable_assignments: assignments,
+        })),
+        ProcessType::BlockNode(statement) => Ok(Some(PendingStage::Block {
+            process_index: j
+                .processes()
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, p))
+                .expect("the stage belongs to the job"),
+            statement: statement.clone(),
+            chain,
+            variable_assignments: assignments,
+        })),
+    }
+}
+
+/// Push a block that holds a stage's variable assignments and set them.
+pub(crate) fn push_assignment_block(
+    parser: &mut Parser,
+    assignments: &[crate::proc::ConcreteAssignment],
+) -> Option<BlockId> {
+    if assignments.is_empty() {
+        return None;
+    }
+    let block_id = parser.push_block(Block::variable_assignment_block());
+    for assignment in assignments {
+        parser.set_var(
+            &assignment.variable_name,
+            ParserEnvSetMode::new(EnvMode::LOCAL_EXPORTED),
+            assignment.values.clone(),
+        );
+    }
+    Some(block_id)
+}
+
+/// Pop the block that holds a stage's variable assignments.
+pub(crate) fn pop_assignment_block(parser: &mut Parser, block_id: Option<BlockId>) {
+    if let Some(block_id) = block_id {
+        parser.pop_block(block_id);
+    }
+}
+
+
 // Do we have a fish internal process that pipes into a real process? If so, we are going to
 // launch it last (if there's more than one, just the last one). That is to prevent buffering
 // from blocking further processes. See #1396.
@@ -1487,7 +1649,7 @@ fn exec_process_in_job(
 //   for i in (seq 1 5); sleep 1; echo $i; end | cat
 // This should show the output as it comes, not buffer until the end.
 // Any such process (only one per job) will be called the "deferred" process.
-fn get_deferred_process(j: &Job) -> Option<usize> {
+pub(crate) fn get_deferred_process(j: &Job) -> Option<usize> {
     // Common case is no deferred proc.
     if j.processes().len() <= 1 {
         return None;
@@ -1509,7 +1671,7 @@ fn get_deferred_process(j: &Job) -> Option<usize> {
 
 /// Given that we failed to execute process `failed_proc` in job `job`, mark that process and
 /// every subsequent process in the pipeline as aborted before launch.
-fn abort_pipeline_from(job: &Job, offset: usize) {
+pub(crate) fn abort_pipeline_from(job: &Job, offset: usize) {
     for p in job.processes().iter().skip(offset) {
         p.mark_aborted_before_launch();
     }
@@ -1518,7 +1680,7 @@ fn abort_pipeline_from(job: &Job, offset: usize) {
 // Given that we are about to execute an exec() call, check if the parser is interactive and there
 // are extant background jobs. If so, warn the user and do not exec().
 // Return true if we should allow exec, false to disallow it.
-fn allow_exec_with_background_jobs(parser: &mut Parser) -> bool {
+pub(crate) fn allow_exec_with_background_jobs(parser: &mut Parser) -> bool {
     // If we're not interactive, we cannot warn.
     if !parser.is_interactive() {
         return true;

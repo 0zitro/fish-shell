@@ -11,6 +11,7 @@ use crate::{
     },
     event::{self, Event},
     expand::{ExpandFlags, expand_string, replace_home_directory_with_tilde},
+    fd_ready_set::{FdReadySet, Readiness, Timeout},
     fds::{BEST_O_SEARCH, open_dir},
     flog, flogf, function,
     io::IoChain,
@@ -20,19 +21,21 @@ use crate::{
         FISH_MAX_EVAL_DEPTH, FISH_MAX_STACK_DEPTH, ParseError, ParseErrorList, ParseTreeFlags,
         SOURCE_LOCATION_UNKNOWN,
     },
-    parse_execution::{EndExecutionReason, ExecutionContext},
+    parse_execution::{EndExecutionReason, EvalOutcome, ExecutionContext},
     parse_tree::{NodeRef, ParsedSourceRef, SourceLineCache, parse_source},
     prelude::*,
     proc::{
         InternalJobId, Job, JobGroupRef, Pid, ProcStatus, SuspensionAvailability, SuspensionHandle,
-        SuspensionRecord, SuspensionResolution, job_reap,
+        SuspensionRecord, SuspensionResolution, job_reap, proc_clean_jobs,
+        process_mark_finished_children,
     },
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
     task::{
         DescriptorTable, Scheduler, StageTask, Task, TaskDescriptors, TaskId, TaskLifecycle,
-        TaskTable,
+        TaskTable, WaitReason,
     },
     task_frame::{Frame, FrameStack, JobListFrame, StatementFrame},
+    topic_monitor,
     wait_handle::WaitHandleStore,
     wutil::perror_nix,
 };
@@ -53,6 +56,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub enum BlockData {
     Function {
         /// Name of the function
@@ -68,7 +72,7 @@ pub enum BlockData {
 }
 
 /// block_t represents a block of commands.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Block {
     /// Type of block.
     block_type: BlockType,
@@ -404,11 +408,6 @@ pub struct Parser {
     /// The suspensions whose shell ends are open, for a later `resume`.
     suspensions: BTreeMap<SuspensionHandle, Arc<SuspensionRecord>>,
 
-    /// The list of blocks.
-    /// This is a stack; the topmost block is at the end. This is to avoid invalidating block
-    /// indexes during recursive evaluation.
-    block_list: Vec<Block>,
-
     /// The tasks this shell records.
     tasks: TaskTable,
 
@@ -481,7 +480,6 @@ impl Parser {
             job_list: Default::default(),
             wait_handles: Default::default(),
             suspensions: Default::default(),
-            block_list: Default::default(),
             tasks,
             current_task: session_task,
             session_task,
@@ -690,7 +688,9 @@ impl Parser {
         // cause fish to exit.
         let sig = signal_check_cancel();
         if sig != 0 {
-            if self.cancel_behavior == CancelBehavior::Clear && self.block_list.is_empty() {
+            if self.cancel_behavior == CancelBehavior::Clear
+                && self.current_task().blocks().is_empty()
+            {
                 signal_clear_cancel();
             } else {
                 return EvalRes::new(ProcStatus::from_signal(RawSignal::new(sig)));
@@ -745,28 +745,51 @@ impl Parser {
             }
         };
 
-        let op_ctx = &mut self.context();
-        // Propagate our job group.
-        op_ctx.job_group = job_group.cloned();
-        // Replace the context's cancel checker with one that checks the job group's signal.
-        let cancel_checker: CancelChecker = Box::new(move || check_cancel_signal().is_some());
-        op_ctx.cancel_checker = cancel_checker;
-
         // Create a new execution context.
         let mut execution_ctx = if background_job {
             ExecutionContext::new_with_background_job(node.parsed_source_ref(), block_io.clone())
         } else {
             ExecutionContext::new(node.parsed_source_ref(), block_io.clone())
         };
+        execution_ctx.job_group = job_group.cloned();
 
         // Check the exec count so we know if anything got executed.
-        let exec_counts = |ctx: &mut OperationContext<'_>| {
-            let ld = ctx.parser().libdata();
+        let (prev_exec_count, prev_status_count) = {
+            let ld = self.libdata();
             (ld.exec_count, ld.status_count)
         };
-        let (prev_exec_count, prev_status_count) = exec_counts(op_ctx);
-        let reason = execution_ctx.evaluate_frames(op_ctx, &mut frames, initial_frame);
-        let (new_exec_count, new_status_count) = exec_counts(op_ctx);
+
+        let mut pending_initial = Some(initial_frame);
+        let job_group_for_cancel = job_group.cloned();
+        let reason = loop {
+            let mut op_ctx = self.context();
+            op_ctx.job_group = job_group.cloned();
+            let jg = job_group_for_cancel.clone();
+            let cancel_checker: CancelChecker = Box::new(move || {
+                signal_check_cancel() != 0
+                    || jg.as_ref()
+                        .and_then(|group| group.get_cancel_signal())
+                        .is_some()
+            });
+            op_ctx.cancel_checker = cancel_checker;
+
+            let outcome = match pending_initial.take() {
+                Some(initial) => execution_ctx.evaluate_frames(&mut op_ctx, &mut frames, initial),
+                None => execution_ctx.evaluate_frame_stack(&mut op_ctx, &mut frames),
+            };
+            match outcome {
+                EvalOutcome::Completed(reason) => break reason,
+                EvalOutcome::Blocked(reason) => {
+                    let current = self.current_task_id();
+                    self.register_blocked(current, reason);
+                    self.run_scheduler_until(current);
+                }
+            }
+        };
+        let (new_exec_count, new_status_count) = {
+            let ld = self.libdata();
+            (ld.exec_count, ld.status_count)
+        };
         self.restore_frame_stack(frames);
 
         drop(restore_current_node);
@@ -912,12 +935,12 @@ impl Parser {
     // Return an iterator over the blocks, in reverse order.
     // That is, the first block is the innermost block.
     pub fn blocks_iter_rev<'a>(&'a self) -> impl Iterator<Item = &'a Block> {
-        self.block_list.iter().rev()
+        self.current_task().blocks().iter().rev()
     }
 
     // Return the block at a given index, where 0 is the innermost block.
     pub fn block_at_index(&self, index: usize) -> Option<&Block> {
-        let block_list = &self.block_list;
+        let block_list = self.current_task().blocks();
         let block_count = block_list.len();
         if index >= block_count {
             None
@@ -928,7 +951,7 @@ impl Parser {
 
     // Return the block at a given index, where 0 is the innermost block.
     pub fn block_at_index_mut(&mut self, index: usize) -> Option<&mut Block> {
-        let block_list = &mut self.block_list;
+        let block_list = self.current_task_mut().blocks_mut();
         let block_count = block_list.len();
         if index >= block_count {
             None
@@ -939,11 +962,11 @@ impl Parser {
 
     // Return the block with the given id, asserting it exists. Note ids are recycled.
     pub fn block_with_id(&self, id: BlockId) -> &Block {
-        &self.block_list[id.0]
+        &self.current_task().blocks()[id.0]
     }
 
     pub fn blocks_size(&self) -> usize {
-        self.block_list.len()
+        self.current_task().blocks().len()
     }
 
     /// Get the list of jobs.
@@ -1130,6 +1153,104 @@ impl Parser {
         self.current_task().lifecycle()
     }
 
+    /// Record that the task `id` waits for `reason`.
+    pub(crate) fn register_blocked(&mut self, id: TaskId, reason: WaitReason) {
+        self.scheduler.block(id, reason);
+    }
+
+    /// Return whether `reason` is satisfied now.
+    fn wait_reason_ready(&self, reason: WaitReason) -> bool {
+        match reason {
+            WaitReason::Job(job_id) => self
+                .job_with_internal_id(job_id)
+                .is_none_or(|job| job.is_completed()),
+            WaitReason::Descriptor { fd, readiness } => {
+                crate::fd_ready_set::poll_fd_ready(fd, readiness)
+            }
+        }
+    }
+
+    /// Return whether a task can run.
+    pub(crate) fn scheduler_has_runnable_tasks(&self) -> bool {
+        self.scheduler.has_runnable()
+    }
+
+    /// Make every blocked task whose wait is satisfied runnable.
+    pub(crate) fn wake_ready_tasks(&mut self) {
+        let waits: Vec<(TaskId, WaitReason)> = self.scheduler.blocked().collect();
+        for (id, reason) in waits {
+            if !self.wait_reason_ready(reason) {
+                continue;
+            }
+            if id == self.session_task {
+                self.scheduler.forget(id);
+            } else {
+                self.scheduler.wake(id);
+            }
+        }
+    }
+
+    /// Run the scheduler until the blocked task `target` is woken.
+    pub(crate) fn run_scheduler_until(&mut self, target: TaskId) {
+        loop {
+            while let Some(id) = self.take_runnable_task() {
+                if id == self.session_task {
+                    continue;
+                }
+                self.step_stage_task(id);
+            }
+            self.wake_ready_tasks();
+            if self.scheduler.reason(target).is_none() {
+                return;
+            }
+            self.wait_for_events();
+            if self.scheduler.reason(target).is_none() {
+                return;
+            }
+        }
+    }
+
+    /// Reap the children that finished and wake the tasks their completion satisfies.
+    fn reap_and_wake(&mut self) {
+        process_mark_finished_children(self, /*block_ok=*/ false, None);
+        proc_clean_jobs(self);
+        self.wake_ready_tasks();
+    }
+
+    /// Wait for an event that satisfies a blocked task's wait.
+    fn wait_for_events(&mut self) {
+        let waits: Vec<WaitReason> = self.scheduler.blocked().map(|(_, reason)| reason).collect();
+        if waits.is_empty() {
+            return;
+        }
+
+        let blocked_before: Vec<TaskId> =
+            self.scheduler.blocked().map(|(id, _)| id).collect();
+
+        // Act on the events already reported before sleeping, so a notification that arrived while
+        // no task was waiting still wakes its task.
+        self.reap_and_wake();
+        if self.scheduler_has_runnable_tasks()
+            || blocked_before
+                .iter()
+                .any(|id| self.scheduler.reason(*id).is_none())
+        {
+            return;
+        }
+
+        let topic = topic_monitor::principal();
+        let mut fds = FdReadySet::new();
+        fds.add(topic.wakeup_fd(), Readiness::Readable);
+        for reason in waits {
+            if let WaitReason::Descriptor { fd, readiness } = reason {
+                fds.add(fd, readiness);
+            }
+        }
+        fds.check(Timeout::Forever);
+        topic.consume_wakeup();
+        self.reap_and_wake();
+    }
+
     /// Replace the scoped evaluation data, restoring a saved value when a frame finishes.
     pub(crate) fn set_scope(&self, scope: ScopedData) {
         self.scoped_data.set(scope);
@@ -1272,7 +1393,7 @@ impl Parser {
             self.vars().push(new_scope);
         }
 
-        let block_list = &mut self.block_list;
+        let block_list = self.current_task_mut().blocks_mut();
         block_list.push(block);
         BlockId(block_list.len() - 1)
     }
@@ -1280,7 +1401,7 @@ impl Parser {
     /// Remove the outermost block, asserting it's the given one.
     pub fn pop_block(&mut self, expected: BlockId) {
         let block = {
-            let block_list = &mut self.block_list;
+            let block_list = self.current_task_mut().blocks_mut();
             assert_eq!(expected.0, block_list.len() - 1);
             block_list.pop().unwrap()
         };

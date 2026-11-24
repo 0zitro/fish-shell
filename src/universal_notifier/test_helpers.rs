@@ -8,7 +8,7 @@ pub fn test_notifiers(notifiers: &[&dyn UniversalNotifier], fish_variables_path:
         let Some(fd) = n.notification_fd() else {
             return false;
         };
-        if crate::fd_readable_set::poll_fd_readable(fd) {
+        if crate::fd_ready_set::poll_fd_readable(fd) {
             n.notification_fd_became_readable(fd)
         } else {
             false

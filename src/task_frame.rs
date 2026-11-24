@@ -9,12 +9,16 @@
 use crate::ast;
 use crate::env::Statuses;
 use crate::event::Event;
+use crate::exec::{PartialPipes, PendingStage};
 use crate::function::FunctionProperties;
+use crate::io::IoChain;
 use crate::parse_execution::EndExecutionReason;
 use crate::parse_tree::{NodeRef, ParsedSourceRef};
 use crate::parser::{BlockId, ScopedData};
+use crate::proc::Job;
 use crate::timer::PrintElapsedOnDrop;
 use fish_widestring::WString;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// A task's stack of evaluation frames.
@@ -52,6 +56,10 @@ pub(crate) enum Frame {
     SimpleBlockJob(Box<SimpleBlockJobFrame>),
     /// One function call, awaiting the function body.
     FunctionCall(Box<FunctionCallFrame>),
+    /// One job, awaiting its process stages and shell-evaluated stages.
+    Job(Box<JobFrame>),
+    /// One shell-evaluated job stage.
+    Stage(Box<StageFrame>),
     /// A begin or brace block, awaiting its body.
     Begin(BeginFrame),
     /// One if statement, at its current clause or body.
@@ -74,6 +82,8 @@ impl Frame {
             Frame::Statement(frame) => frame.statement.parsed_source_ref(),
             Frame::SimpleBlockJob(frame) => frame.job_node.parsed_source_ref(),
             Frame::FunctionCall(frame) => frame.props.func_node.parsed_source_ref(),
+            Frame::Job(frame) => frame.source.clone(),
+            Frame::Stage(frame) => frame.source.clone(),
             Frame::Begin(frame) => frame.contents.parsed_source_ref(),
             Frame::If(frame) => frame.statement.parsed_source_ref(),
             Frame::While(frame) => frame.header.parsed_source_ref(),
@@ -189,6 +199,114 @@ pub(crate) struct ProfileItemFinish {
 
     /// The command name the profile item records.
     pub(crate) command: WString,
+}
+
+/// The phase of a job frame.
+pub(crate) enum JobPhase {
+    /// The process stages are being launched.
+    Launch,
+
+    /// The job waits for its process stages to complete.
+    Wait,
+}
+
+/// One job, awaiting its process stages and shell-evaluated stages.
+pub(crate) struct JobFrame {
+    /// The job the frame executes.
+    pub(crate) job: Rc<Job>,
+
+    /// The job's node.
+    pub(crate) node: NodeRef<ast::JobPipeline>,
+
+    /// The descriptors of the enclosing block.
+    pub(crate) block_io: IoChain,
+
+    /// The parsed source the job was built from.
+    pub(crate) source: ParsedSourceRef,
+
+    /// The profile entry the job finishes when it completes.
+    pub(crate) profile_item: Option<ProfileItemFinish>,
+
+    /// The stage at which a stream suspension appeared.
+    pub(crate) suspended_at: Option<usize>,
+
+    /// The terminal handoff for the job.
+    pub(crate) handoff: crate::tty_handoff::TtyHandoff,
+
+    /// The index of the next stage to launch.
+    pub(crate) loop_index: usize,
+
+    /// The number of stages launched.
+    pub(crate) procs_launched: usize,
+
+    /// The read end of the pipe the next stage reads.
+    pub(crate) pipe_next_read: Option<std::os::fd::OwnedFd>,
+
+    /// The pipes of the deferred process.
+    pub(crate) deferred_pipes: PartialPipes,
+
+    /// The deferred process, when the job has one.
+    pub(crate) deferred_process: Option<usize>,
+
+    /// Whether the deferred process has been launched.
+    pub(crate) deferred_launched: bool,
+
+    /// Whether the running stage is the deferred process.
+    pub(crate) stage_is_deferred: bool,
+
+    /// The index of the running stage.
+    pub(crate) current_process_index: Option<usize>,
+
+    /// Whether the pipeline was aborted.
+    pub(crate) aborted: bool,
+
+    /// The suspension count when the job started.
+    pub(crate) suspension_count: usize,
+
+    /// Whether a stage frame is running.
+    pub(crate) stage_running: bool,
+
+    /// The control-flow reason a stage reported.
+    pub(crate) stage_result: Option<EndExecutionReason>,
+
+    /// The phase the job frame is in.
+    pub(crate) phase: JobPhase,
+
+    /// Whether the launch state has been initialised.
+    pub(crate) started: bool,
+}
+
+/// One shell-evaluated job stage.
+pub(crate) struct StageFrame {
+    /// The job the stage belongs to.
+    pub(crate) job: Rc<Job>,
+
+    /// The job's node.
+    pub(crate) node: NodeRef<ast::JobPipeline>,
+
+    /// The stage to run.
+    pub(crate) stage: PendingStage,
+
+    /// The block that holds the stage's variable assignments.
+    pub(crate) assignment_block: Option<BlockId>,
+
+    /// Whether the stage's frames have been pushed.
+    pub(crate) started: bool,
+
+    /// The block descriptors before the stage's own chain applied.
+    pub(crate) saved_block_io: Option<IoChain>,
+
+    /// The node that was current before the stage started.
+    pub(crate) saved_node: Option<Option<NodeRef<ast::JobPipeline>>>,
+
+    /// The scoped data before the stage started.
+    pub(crate) saved_scope: Option<ScopedData>,
+
+    /// The job group nested jobs reuse before the stage started.
+    pub(crate) saved_job_group: Option<Option<crate::proc::JobGroupRef>>,
+
+    /// The parsed source the stage was built from.
+    pub(crate) source: ParsedSourceRef,
 }
 
 /// One function call, awaiting the function body.

@@ -16,13 +16,17 @@ use crate::{
     err_fmt,
     event::{self, Event},
     exec::{
-        exec_job, function_prepare_environment, function_restore_environment,
-        run_internal_process_or_short_circuit,
+        PartialPipes, PendingStage, abort_pipeline_from, allow_exec_with_background_jobs,
+        exec_builtin_process, function_prepare_environment, function_restore_environment,
+        get_deferred_process, internal_exec, launch_stage, pop_assignment_block,
+        push_assignment_block, run_internal_process_or_short_circuit,
     },
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
     },
+    fds::{PIPE_ERROR, make_autoclose_pipes},
     flog::flog,
+    flogf,
     function,
     io::{FdOutputStream, IoBufferfill, IoChain, IoStreams, OutputStream, StringOutputStream},
     job_group::JobGroup,
@@ -44,16 +48,16 @@ use crate::{
     prelude::*,
     proc::{
         ConcreteAssignment, Job, JobControl, JobProperties, ProcStatus, Process, ProcessType,
-        TaskStage, get_job_control_mode, job_reap, no_exec,
+        TaskStage, get_job_control_mode, job_reap, no_exec, process_mark_finished_children,
     },
     reader::fish_is_unwinding_for_exit,
     redirection::{RedirectionMode, RedirectionSpec, RedirectionSpecList},
     signal::RawSignal,
-    task::{StageTask, TaskId, TaskLifecycle},
+    task::{StageTask, TaskId, TaskLifecycle, WaitReason},
     task_frame::{
         AndorJobListFrame, BeginFrame, ConjunctionFrame, ForFrame, Frame, FrameStack,
-        FunctionCallFrame, IfFrame, IfStage, JobListFrame, ProfileItemFinish, SimpleBlockJobFrame,
-        StatementFrame, SwitchFrame, WhileFrame, WhileStage,
+        FunctionCallFrame, IfFrame, IfStage, JobFrame, JobListFrame, JobPhase, ProfileItemFinish,
+        SimpleBlockJobFrame, StageFrame, StatementFrame, SwitchFrame, WhileFrame, WhileStage,
     },
     timer::push_timer,
     tokenizer::{PipeOrRedir, TokenType, variable_assignment_equals_pos},
@@ -98,6 +102,9 @@ pub struct ExecutionContext {
 
     /// Whether the next job this context runs starts in the background.
     background_next_job: bool,
+
+    /// The job group nested jobs reuse.
+    pub(crate) job_group: Option<crate::proc::JobGroupRef>,
 }
 
 // Report an error, setting $status to `status`. Always returns
@@ -136,6 +143,18 @@ enum FrameAction {
 
     /// The frame is complete with this reason.
     Done(EndExecutionReason),
+
+    /// The frame waits for an event before it can continue.
+    Block(WaitReason),
+}
+
+/// The outcome of evaluating one task's frames.
+pub(crate) enum EvalOutcome {
+    /// Every frame completed with this reason.
+    Completed(EndExecutionReason),
+
+    /// The evaluation waits for an event; its frame records where it continues.
+    Blocked(WaitReason),
 }
 
 /// Return a push action for `frame`.
@@ -161,6 +180,7 @@ impl ExecutionContext {
             cancel_signal: None,
             block_io,
             background_next_job: false,
+            job_group: None,
         }
     }
 
@@ -180,18 +200,19 @@ impl ExecutionContext {
         self.cancel_signal
     }
 
-    /// Evaluate frames until the stack empties, returning the last frame's outcome.
+    /// Evaluate frames until the stack empties or a frame blocks.
     pub(crate) fn evaluate_frames(
         &mut self,
         ctx: &mut OperationContext<'_>,
         frames: &mut FrameStack,
         initial: Frame,
-    ) -> EndExecutionReason {
+    ) -> EvalOutcome {
         let mut frame = initial;
         let mut child_result = None;
         loop {
             let source = frame.parsed_source();
             self.pstree = source;
+            ctx.job_group = self.job_group.clone();
             match self.step_frame(ctx, &mut frame, child_result.take()) {
                 FrameAction::Push(child) => {
                     frames.push(frame);
@@ -202,8 +223,12 @@ impl ExecutionContext {
                         child_result = Some(reason);
                         frame = parent;
                     }
-                    None => return reason,
+                    None => return EvalOutcome::Completed(reason),
                 },
+                FrameAction::Block(reason) => {
+                    frames.push(frame);
+                    return EvalOutcome::Blocked(reason);
+                }
             }
         }
     }
@@ -213,10 +238,10 @@ impl ExecutionContext {
         &mut self,
         ctx: &mut OperationContext<'_>,
         frames: &mut FrameStack,
-    ) -> EndExecutionReason {
+    ) -> EvalOutcome {
         match frames.pop() {
             Some(initial) => self.evaluate_frames(ctx, frames, initial),
-            None => EndExecutionReason::Ok,
+            None => EvalOutcome::Completed(EndExecutionReason::Ok),
         }
     }
 
@@ -234,11 +259,435 @@ impl ExecutionContext {
             Frame::Statement(frame) => self.step_statement(ctx, frame, child_result),
             Frame::SimpleBlockJob(frame) => self.step_simple_block_job(ctx, frame, child_result),
             Frame::FunctionCall(frame) => self.step_function_call(ctx, frame, child_result),
+            Frame::Job(frame) => self.step_job_frame(ctx, frame, child_result),
+            Frame::Stage(frame) => self.step_stage_frame(ctx, frame, child_result),
             Frame::Begin(frame) => self.step_begin(ctx, frame, child_result),
             Frame::If(frame) => self.step_if(ctx, frame, child_result),
             Frame::While(frame) => self.step_while(ctx, frame, child_result),
             Frame::For(frame) => self.step_for(ctx, frame, child_result),
             Frame::Switch(frame) => self.step_switch(ctx, frame, child_result),
+        }
+    }
+
+    /// Advance a job frame.
+    fn step_job_frame(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut JobFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            frame.stage_running = false;
+            if reason != EndExecutionReason::Ok && frame.stage_result.is_none() {
+                frame.stage_result = Some(reason);
+            }
+
+            let process_index = frame
+                .current_process_index
+                .take()
+                .expect("a completed stage records its process");
+            frame.procs_launched += 1;
+            if frame.suspended_at.is_none()
+                && ctx.parser().suspension_count() != frame.suspension_count
+            {
+                frame.suspended_at = Some(process_index);
+            }
+            let process = &frame.job.processes()[process_index];
+            if process.leads_pgrp && frame.job.group().wants_terminal() {
+                frame.handoff.to_job_group(frame.job.group.as_ref().unwrap());
+            }
+            if frame.stage_is_deferred {
+                frame.stage_is_deferred = false;
+            } else {
+                frame.loop_index += 1;
+            }
+        }
+
+        loop {
+            match frame.phase {
+                JobPhase::Launch => {
+                    if !frame.started {
+                        if frame.job.processes()[0].is_exec() {
+                            return self.launch_exec_job(ctx, frame);
+                        }
+                        frame.deferred_process = get_deferred_process(&frame.job);
+                        frame.suspension_count = ctx.parser().suspension_count();
+                        frame.started = true;
+                    }
+
+                    if frame.loop_index < frame.job.processes().len() {
+                        let index = frame.loop_index;
+                        let process = &frame.job.processes()[index];
+                        let mut proc_pipes = PartialPipes::default();
+                        std::mem::swap(&mut proc_pipes.read, &mut frame.pipe_next_read);
+                        if !process.is_last_in_job {
+                            let Ok(pipes) = make_autoclose_pipes() else {
+                                flog!(warning, wgettext!(PIPE_ERROR));
+                                abort_pipeline_from(&frame.job, index);
+                                frame.aborted = true;
+                                frame.loop_index = frame.job.processes().len();
+                                frame.pipe_next_read = None;
+                                continue;
+                            };
+                            frame.pipe_next_read = Some(pipes.read);
+                            proc_pipes.write = Some(pipes.write);
+                            if Some(index) == frame.deferred_process {
+                                frame.deferred_pipes = proc_pipes;
+                                frame.loop_index += 1;
+                                continue;
+                            }
+                        }
+
+                        let deferred_pipes = &frame.deferred_pipes;
+                        match launch_stage(
+                            ctx.parser(),
+                            &frame.job,
+                            process,
+                            frame.block_io.clone(),
+                            proc_pipes,
+                            deferred_pipes,
+                            false,
+                        ) {
+                            Ok(Some(stage)) => {
+                                frame.current_process_index = Some(index);
+                                frame.stage_running = true;
+                                frame.stage_is_deferred = false;
+                                return Self::push_stage_frame(frame, stage);
+                            }
+                            Ok(None) => {
+                                frame.procs_launched += 1;
+                                if frame.suspended_at.is_none()
+                                    && ctx.parser().suspension_count() != frame.suspension_count
+                                {
+                                    frame.suspended_at = Some(index);
+                                }
+                                if process.leads_pgrp && frame.job.group().wants_terminal() {
+                                    frame.handoff.to_job_group(frame.job.group.as_ref().unwrap());
+                                }
+                                frame.loop_index += 1;
+                                continue;
+                            }
+                            Err(()) => {
+                                frame.aborted = true;
+                                abort_pipeline_from(&frame.job, index);
+                                frame.loop_index = frame.job.processes().len();
+                                frame.pipe_next_read = None;
+                                continue;
+                            }
+                        }
+                    }
+
+                    if !frame.deferred_launched {
+                        frame.deferred_launched = true;
+                        if let Some(dp) = frame.deferred_process {
+                            if frame.aborted {
+                                frame.job.processes()[dp].mark_aborted_before_launch();
+                            } else {
+                                let pipes = std::mem::take(&mut frame.deferred_pipes);
+                                match launch_stage(
+                                    ctx.parser(),
+                                    &frame.job,
+                                    &frame.job.processes()[dp],
+                                    frame.block_io.clone(),
+                                    pipes,
+                                    &PartialPipes::default(),
+                                    true,
+                                ) {
+                                    Ok(Some(stage)) => {
+                                        frame.current_process_index = Some(dp);
+                                        frame.stage_running = true;
+                                        frame.stage_is_deferred = true;
+                                        return Self::push_stage_frame(frame, stage);
+                                    }
+                                    Ok(None) => {
+                                        frame.procs_launched += 1;
+                                        if frame.suspended_at.is_none()
+                                            && ctx.parser().suspension_count()
+                                                != frame.suspension_count
+                                        {
+                                            frame.suspended_at = Some(dp);
+                                        }
+                                    }
+                                    Err(()) => {
+                                        frame.job.processes()[dp].mark_aborted_before_launch()
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    frame.pipe_next_read = None;
+                    if frame.aborted && frame.procs_launched == 0 {
+                        if let Some(statuses) = frame.job.statuses() {
+                            ctx.parser().set_last_statuses(statuses);
+                            ctx.parser().libdata_mut().status_count += 1;
+                        }
+                        remove_job(ctx.parser(), &frame.job);
+                        frame.stage_result.get_or_insert(EndExecutionReason::Error);
+                        return self.finish_job_frame(ctx, frame);
+                    }
+
+                    flogf!(
+                        exec_job_exec,
+                        "Executed job %d from command '%s'",
+                        frame.job.job_id(),
+                        frame.job.command()
+                    );
+                    frame.job.mark_constructed();
+                    if !frame.job.is_foreground()
+                        && let Some(last_pid) = frame.job.last_pid()
+                    {
+                        ctx.parser().set_one(
+                            L!("last_pid"),
+                            ParserEnvSetMode::new(EnvMode::GLOBAL),
+                            last_pid.to_wstring(),
+                        );
+                    }
+                    frame.phase = JobPhase::Wait;
+                }
+                JobPhase::Wait => {
+                    if frame.job.is_initially_background() {
+                        return self.finish_job_frame(ctx, frame);
+                    }
+
+                    if let Some(suspend_index) = frame.suspended_at {
+                        // The stages after the suspending stage are its consumers and run to
+                        // completion; the stages before it produce the suspended stream.
+                        while frame.job.processes()[suspend_index + 1..]
+                            .iter()
+                            .any(|process| !process.is_completed() && !process.is_stopped())
+                        {
+                            ctx.parser().run_runnable_tasks();
+                            process_mark_finished_children(
+                                ctx.parser(),
+                                true,
+                                Some(&frame.block_io),
+                            );
+                        }
+                        crate::proc::read_finished_bufferfills(&frame.block_io);
+                        if let Some(statuses) = frame.job.statuses() {
+                            ctx.parser().set_last_statuses(statuses);
+                            ctx.parser().libdata_mut().status_count += 1;
+                        }
+                        if !frame.job.is_completed() {
+                            frame.job.group().set_is_foreground(false);
+                        }
+                        return self.finish_job_frame(ctx, frame);
+                    }
+
+                    if frame.job.is_completed() {
+                        crate::proc::read_finished_bufferfills(&frame.block_io);
+                        let last_process = frame
+                            .job
+                            .processes()
+                            .last()
+                            .expect("the job records its last stage");
+                        let last_process_status = last_process.status();
+                        let last_process_exited = last_process_status.normal_exited()
+                            || last_process_status.signal_exited();
+                        if last_process_exited
+                            && let Some(statuses) = frame.job.statuses()
+                        {
+                            ctx.parser().set_last_statuses(statuses);
+                            ctx.parser().libdata_mut().status_count += 1;
+                        }
+                        return self.finish_job_frame(ctx, frame);
+                    }
+
+                    if frame.job.is_stopped() || fish_is_unwinding_for_exit() {
+                        if frame.job.is_stopped() {
+                            frame.handoff.save_tty_modes();
+                        }
+                        return self.finish_job_frame(ctx, frame);
+                    }
+
+                    return FrameAction::Block(WaitReason::Job(frame.job.internal_job_id));
+                }
+            }
+        }
+    }
+
+    fn push_stage_frame(frame: &JobFrame, stage: PendingStage) -> FrameAction {
+        let source = match &stage {
+            PendingStage::Builtin { .. } => frame.source.clone(),
+            PendingStage::Function { props, .. } => props.func_node.parsed_source_ref(),
+            PendingStage::Block { statement, .. } => statement.parsed_source_ref(),
+        };
+        push_frame(Frame::Stage(Box::new(StageFrame {
+            job: Rc::clone(&frame.job),
+            node: frame.node.clone(),
+            stage,
+            assignment_block: None,
+            started: false,
+            saved_block_io: None,
+            saved_node: None,
+            saved_scope: None,
+            saved_job_group: None,
+            source,
+        })))
+    }
+
+    /// Launch an exec job: it replaces the shell process and returns only on failure.
+    fn launch_exec_job(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut JobFrame,
+    ) -> FrameAction {
+        if allow_exec_with_background_jobs(ctx.parser()) {
+            for assignment in &frame.job.processes()[0].variable_assignments {
+                ctx.parser().set_var(
+                    &assignment.variable_name,
+                    ParserEnvSetMode::new(EnvMode::LOCAL_EXPORTED),
+                    assignment.values.clone(),
+                );
+            }
+            let parser = ctx.parser();
+            let is_repainting = parser.is_repainting();
+            internal_exec(
+                parser.vars(),
+                is_repainting,
+                &frame.job,
+                frame.block_io.clone(),
+            );
+            let status = if frame.job.flags().negate { 0 } else { 1 };
+            ctx.parser().set_last_statuses(Statuses::just(status));
+        }
+        for process in frame.job.processes().iter() {
+            process.mark_aborted_before_launch();
+        }
+        remove_job(ctx.parser(), &frame.job);
+        frame.stage_result.get_or_insert(EndExecutionReason::Error);
+        self.finish_job_frame(ctx, frame)
+    }
+
+    /// Finish a job frame: record its profile entry, its universal variables and its cancellation.
+    fn finish_job_frame(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut JobFrame,
+    ) -> FrameAction {
+        if let Some(mut profile_item) = frame.profile_item.take() {
+            profile_item.command = frame.job.command().to_owned();
+            finish_profile_item(ctx, profile_item);
+        }
+        ctx.parser()
+            .sync_uvars_and_fire(frame.job.has_external_proc());
+        if self.cancel_signal.is_none() {
+            self.cancel_signal = frame.job.group().get_cancel_signal();
+        }
+        job_reap(ctx.parser(), false, Some(&self.block_io));
+        FrameAction::Done(frame.stage_result.unwrap_or(EndExecutionReason::Ok))
+    }
+
+    /// Advance a shell-evaluated job stage.
+    fn step_stage_frame(
+        &mut self,
+        ctx: &mut OperationContext<'_>,
+        frame: &mut StageFrame,
+        child_result: Option<EndExecutionReason>,
+    ) -> FrameAction {
+        if let Some(reason) = child_result {
+            let chain = stage_chain(&frame.stage).clone();
+            self.restore_stage_scope(ctx, frame);
+            pop_assignment_block(ctx.parser(), frame.assignment_block.take());
+            if let Some(saved) = frame.saved_block_io.take() {
+                self.block_io = saved;
+            }
+
+            let status = ctx.parser().last_status();
+            complete_stage_process(
+                ctx.parser(),
+                &frame.job,
+                stage_process_index(&frame.stage),
+                &chain,
+                status,
+            );
+            return FrameAction::Done(reason);
+        }
+
+        frame.started = true;
+        let chain = stage_chain(&frame.stage).clone();
+        let assignments = match &frame.stage {
+            PendingStage::Builtin {
+                variable_assignments,
+                ..
+            }
+            | PendingStage::Function {
+                variable_assignments,
+                ..
+            }
+            | PendingStage::Block {
+                variable_assignments,
+                ..
+            } => variable_assignments,
+        };
+
+        // The stage runs with its job's node and one more evaluation level, so a diagnostic the
+        // stage reports carries the command line it came from.
+        frame.saved_node = Some(ctx.parser().current_node().replace(Some(frame.node.clone())));
+        let mut scope = ctx.parser().scope();
+        frame.saved_scope = Some(scope.clone());
+        scope.eval_level += 1;
+        ctx.parser().set_scope(scope);
+        frame.saved_job_group = Some(self.job_group.take());
+        self.job_group = frame.job.group.clone();
+
+        frame.assignment_block = push_assignment_block(ctx.parser(), assignments);
+        frame.saved_block_io = Some(std::mem::replace(&mut self.block_io, chain));
+
+        match &frame.stage {
+            PendingStage::Builtin {
+                chain,
+                piped_output_needs_buffering,
+                ..
+            } => {
+                let process_index = stage_process_index(&frame.stage);
+                exec_builtin_process(
+                    ctx.parser(),
+                    &frame.job,
+                    &frame.job.processes()[process_index],
+                    chain,
+                    *piped_output_needs_buffering,
+                )
+                .expect("a builtin stage launches");
+                self.restore_stage_scope(ctx, frame);
+                if let Some(saved) = frame.saved_block_io.take() {
+                    self.block_io = saved;
+                }
+                pop_assignment_block(ctx.parser(), frame.assignment_block.take());
+                FrameAction::Done(EndExecutionReason::Ok)
+            }
+            PendingStage::Function { props, argv, .. } => {
+                push_frame(Frame::FunctionCall(Box::new(FunctionCallFrame {
+                    props: Arc::clone(props),
+                    argv: argv.clone(),
+                    function_block: None,
+                    scope_block: None,
+                    prev_exec_count: 0,
+                    prev_status_count: 0,
+                })))
+            }
+            PendingStage::Block { statement, .. } => {
+                push_frame(Frame::Statement(StatementFrame {
+                    statement: statement.clone(),
+                    associated_block: None,
+                    started: false,
+                }))
+            }
+        }
+    }
+
+    /// Restore the node, evaluation level and job group a stage saved.
+    fn restore_stage_scope(&mut self, ctx: &mut OperationContext<'_>, frame: &mut StageFrame) {
+        if let Some(saved) = frame.saved_scope.take() {
+            ctx.parser().set_scope(saved);
+        }
+        if let Some(saved) = frame.saved_node.take() {
+            ctx.parser().current_node().replace(saved);
+        }
+        if let Some(saved) = frame.saved_job_group.take() {
+            self.job_group = saved;
         }
     }
 
@@ -432,7 +881,7 @@ impl ExecutionContext {
                 },
             ))));
         }
-        JobStep::Completed(self.run_job_leaf(ctx, job_node, associated_block, background_next_job))
+        self.run_job_leaf(ctx, job_node, associated_block, background_next_job)
     }
 
     /// Advance the frame that evaluates a simple block job.
@@ -2112,14 +2561,14 @@ impl ExecutionContext {
         job_node: &ast::JobPipeline,
         associated_block: Option<BlockId>,
         background_next_job: bool,
-    ) -> EndExecutionReason {
+    ) -> JobStep {
         if let Some(ret) = self.check_end_execution(ctx) {
-            return ret;
+            return JobStep::Completed(ret);
         }
 
         // We definitely do not want to execute anything if we're told we're --no-execute!
         if no_exec() {
-            return EndExecutionReason::Ok;
+            return JobStep::Completed(EndExecutionReason::Ok);
         }
 
         // Increment the eval_level for the duration of this command.
@@ -2134,25 +2583,13 @@ impl ExecutionContext {
             .scoped_replace(Some(executing_node));
 
         // Profiling support.
-        let finalize_profile_item = {
+        let profile_item = {
             let profile_item_id = ctx.parser().create_profile_item();
-            let start_time = if profile_item_id.is_some() {
-                ProfileItem::now()
-            } else {
-                0
-            };
-            move |ctx: &mut OperationContext<'_>, cmd: WString, skipped: bool| {
-                let Some(profile_item_id) = profile_item_id else {
-                    return;
-                };
-                let parser = ctx.parser();
-                let eval_level = parser.scope().eval_level;
-                let profile_item = &mut parser.profile_items_mut()[profile_item_id];
-                profile_item.duration = ProfileItem::now() - start_time;
-                profile_item.level = eval_level;
-                profile_item.cmd = cmd;
-                profile_item.skipped = skipped;
-            }
+            profile_item_id.map(|item_id| ProfileItemFinish {
+                item_id,
+                start_time: ProfileItem::now(),
+                command: WString::new(),
+            })
         };
 
         let job_is_background = job_node.bg.is_some() || background_next_job;
@@ -2160,21 +2597,17 @@ impl ExecutionContext {
             let wants_timing = job_node_wants_timing(job_node);
             // It's an error to have 'time' in a background job.
             if wants_timing && job_is_background {
-                return report_error!(
+                return JobStep::Completed(report_error!(
                     self,
                     ctx,
                     STATUS_INVALID_ARGS,
                     job_node,
                     ERROR_TIME_BACKGROUND
-                );
+                ));
             }
             wants_timing.then(push_timer)
         };
 
-        // When we encounter a block construct (e.g. while loop) in the general case, we create a "block
-        // process" containing its node. This allows us to handle block-level redirections.
-        // However, if there are no redirections, then we can just jump into the block directly, which
-        // is significantly faster.
         let mut props = JobProperties {
             initial_background: job_is_background,
             ..Default::default()
@@ -2210,42 +2643,39 @@ impl ExecutionContext {
         // Now that we're done mutating the Job, we can stick it in an Arc
         let job = Rc::new(job);
 
-        if pop_result == EndExecutionReason::Ok {
-            // Give the job to the parser - it will clean it up.
-            {
-                let parser = ctx.parser();
-                parser.job_add(job.clone());
-
-                // Actually execute the job.
-                if !exec_job(parser, &job, self.block_io.clone()) {
-                    // No process in the job successfully launched.
-                    // Ensure statuses are set (#7540).
-                    if let Some(statuses) = job.statuses() {
-                        parser.set_last_statuses(statuses);
-                        parser.libdata_mut().status_count += 1;
-                    }
-                    remove_job(parser, &job);
-                }
-
-                // Update universal variables on external commands.
-                // We only incorporate external changes if we had an external proc, for hysterical raisins.
-                parser.sync_uvars_and_fire(job.has_external_proc() /* always */);
+        if pop_result != EndExecutionReason::Ok {
+            if let Some(mut profile_item) = profile_item {
+                profile_item.command = job.command().to_owned();
+                finish_profile_item(ctx, profile_item);
             }
-
-            // If the job got a SIGINT or SIGQUIT, then we're going to start unwinding.
-            if self.cancel_signal.is_none() {
-                self.cancel_signal = job.group().get_cancel_signal();
-            }
+            return JobStep::Completed(pop_result);
         }
 
-        finalize_profile_item(
-            ctx,
-            job.command().to_owned(),
-            pop_result != EndExecutionReason::Ok,
-        );
-
-        job_reap(ctx.parser(), false, Some(&self.block_io)); // clean up jobs
-        pop_result
+        let frame = JobFrame {
+            job: Rc::clone(&job),
+            node: unsafe { NodeRef::new(Arc::clone(self.pstree()), job_node) },
+            block_io: self.block_io.clone(),
+            source: self.pstree().clone(),
+            profile_item,
+            suspended_at: None,
+            handoff: crate::tty_handoff::TtyHandoff::new(|| {}),
+            loop_index: 0,
+            procs_launched: 0,
+            pipe_next_read: None,
+            deferred_pipes: PartialPipes::default(),
+            deferred_process: None,
+            deferred_launched: false,
+            stage_is_deferred: false,
+            current_process_index: None,
+            aborted: false,
+            suspension_count: 0,
+            stage_running: false,
+            stage_result: None,
+            phase: JobPhase::Launch,
+            started: false,
+        };
+        ctx.parser().job_add(Rc::clone(&job));
+        JobStep::Frame(Box::new(Frame::Job(Box::new(frame))))
     }
 
     fn populate_job_from_job_node(
@@ -2315,8 +2745,7 @@ impl ExecutionContext {
 
         // Return what happened.
         if result == EndExecutionReason::Ok {
-            // A stage of a background job whose command the shell evaluates is a task. A
-            // foreground pipeline stage becomes a task when the scheduler starts it.
+            // Only a background job's shell-evaluated stage records a task.
             if j.is_initially_background() {
                 for proc in processes.iter_mut() {
                     let task_stage = match &proc.typ {
@@ -2501,6 +2930,37 @@ fn job_node_wants_timing(job_node: &ast::JobPipeline) -> bool {
     false
 }
 
+/// Return the descriptors a pending stage runs with.
+fn stage_chain(stage: &PendingStage) -> &IoChain {
+    match stage {
+        PendingStage::Builtin { chain, .. }
+        | PendingStage::Function { chain, .. }
+        | PendingStage::Block { chain, .. } => chain,
+    }
+}
+
+/// Return the index of the process a pending stage records.
+fn stage_process_index(stage: &PendingStage) -> usize {
+    match stage {
+        PendingStage::Builtin { process_index, .. }
+        | PendingStage::Function { process_index, .. }
+        | PendingStage::Block { process_index, .. } => *process_index,
+    }
+}
+
+/// Record that a shell-evaluated stage completed with `status`.
+fn complete_stage_process(
+    parser: &mut Parser,
+    job: &Job,
+    process_index: usize,
+    chain: &IoChain,
+    status: c_int,
+) {
+    let process = &job.processes()[process_index];
+    process.status.set(ProcStatus::from_exit_code(status));
+    run_internal_process_or_short_circuit(parser, job, process, vec![], vec![], chain);
+}
+
 fn remove_job(parser: &mut Parser, job: &Rc<Job>) -> bool {
     let jobs = parser.jobs_mut();
     let num_jobs = jobs.len();
@@ -2514,23 +2974,29 @@ fn remove_job(parser: &mut Parser, job: &Rc<Job>) -> bool {
 }
 
 impl Parser {
-    /// Run every runnable task until none remains runnable.
+    /// Run every runnable task until no task is runnable and none becomes ready.
     pub(crate) fn run_runnable_tasks(&mut self) {
-        while let Some(task_id) = self.take_runnable_task() {
-            self.run_stage_task(task_id);
+        loop {
+            while let Some(task_id) = self.take_runnable_task() {
+                self.step_stage_task(task_id);
+            }
+            self.wake_ready_tasks();
+            if !self.scheduler_has_runnable_tasks() {
+                return;
+            }
         }
     }
 
-    /// Run one stage task to completion and record its stage's completion.
-    fn run_stage_task(&mut self, task_id: TaskId) {
+    /// Advance one stage task by one step; return whether the task finished.
+    pub(crate) fn step_stage_task(&mut self, task_id: TaskId) -> bool {
         let Some(stage) = self.task(task_id).and_then(|task| task.stage()) else {
-            return;
+            return false;
         };
         let source = stage.source.clone();
         let io_chain = stage.io_chain.clone();
         let job_group = stage.job_group.clone();
         let Some(mut frames) = self.take_task_frames(task_id) else {
-            return;
+            return false;
         };
 
         let previous_task = self.current_task_id();
@@ -2540,29 +3006,43 @@ impl Parser {
         }
 
         let mut execution_ctx = ExecutionContext::new(source, io_chain);
-        {
+        execution_ctx.job_group = job_group;
+        let outcome = {
             let mut op_ctx = self.context();
-            op_ctx.job_group = job_group;
-            let _ = execution_ctx.evaluate_frame_stack(&mut op_ctx, &mut frames);
-        }
-
-        let status = self.last_status();
-        // Control flow ends the task, not the tasks that run after it.
-        {
-            let libdata = self.libdata_mut();
-            libdata.returning = false;
-            libdata.loop_status = LoopStatus::Normals;
-        }
-        if let Some(task) = self.task_mut(task_id) {
-            task.set_lifecycle(TaskLifecycle::Finished);
-        }
-        self.set_current_task(previous_task);
-
-        let Some(stage) = self.task_mut(task_id).and_then(|task| task.take_stage()) else {
-            return;
+            execution_ctx.evaluate_frame_stack(&mut op_ctx, &mut frames)
         };
-        self.complete_stage(task_id, stage, status);
-        let _ = self.remove_task(task_id);
+
+        match outcome {
+            EvalOutcome::Blocked(reason) => {
+                if let Some(task) = self.task_mut(task_id) {
+                    *task.frames_mut() = frames;
+                    task.set_lifecycle(TaskLifecycle::Blocked);
+                }
+                self.set_current_task(previous_task);
+                self.register_blocked(task_id, reason);
+                false
+            }
+            EvalOutcome::Completed(_reason) => {
+                let status = self.last_status();
+                // Control flow ends the task, not the tasks that run after it.
+                {
+                    let libdata = self.libdata_mut();
+                    libdata.returning = false;
+                    libdata.loop_status = LoopStatus::Normals;
+                }
+                if let Some(task) = self.task_mut(task_id) {
+                    task.set_lifecycle(TaskLifecycle::Finished);
+                }
+                self.set_current_task(previous_task);
+
+                let Some(stage) = self.task_mut(task_id).and_then(|task| task.take_stage()) else {
+                    return true;
+                };
+                self.complete_stage(task_id, stage, status);
+                let _ = self.remove_task(task_id);
+                true
+            }
+        }
     }
 
     /// Record the completion of the stage `stage` with `status`.

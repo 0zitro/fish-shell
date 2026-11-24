@@ -7,13 +7,15 @@
 //! in the same slot.
 
 use crate::env::{EnvMode, EnvSetMode, EnvStack};
+use crate::fd_ready_set::Readiness;
 use crate::function::FunctionStore;
 use crate::io::{IoBufferfill, IoChain, IoFd};
 use crate::parse_tree::ParsedSourceRef;
+use crate::parser::Block;
 use crate::prelude::*;
 use crate::proc::{InternalJobId, JobGroupRef};
 use crate::task_frame::FrameStack;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::sync::Arc;
 
@@ -239,6 +241,7 @@ pub(crate) struct Task {
     frames: FrameStack,
     lifecycle: TaskLifecycle,
     stage: Option<StageTask>,
+    blocks: Vec<Block>,
 }
 
 impl Task {
@@ -256,10 +259,11 @@ impl Task {
             frames: FrameStack::new(),
             lifecycle: TaskLifecycle::Runnable,
             stage: None,
+            blocks: Vec::new(),
         }
     }
 
-    /// Return a task started from this one: a copy of its store and descriptors.
+    /// Return a task started from this one: a copy of its store, descriptors and blocks.
     pub fn start_from(&self) -> Task {
         Task {
             store: self.store.copy_for_task(),
@@ -267,7 +271,18 @@ impl Task {
             frames: FrameStack::new(),
             lifecycle: TaskLifecycle::Runnable,
             stage: None,
+            blocks: self.blocks.clone(),
         }
+    }
+
+    /// Return this task's block stack.
+    pub fn blocks(&self) -> &Vec<Block> {
+        &self.blocks
+    }
+
+    /// Return this task's block stack for modification.
+    pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
+        &mut self.blocks
     }
 
     /// Return the store this task reads.
@@ -324,16 +339,28 @@ impl Task {
     }
 }
 
-/// The tasks that can run, in the order they were made runnable.
+/// The event a blocked task waits for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaitReason {
+    /// The job `InternalJobId` completes.
+    Job(InternalJobId),
+
+    /// The descriptor reaches the readiness it is watched for.
+    Descriptor { fd: RawFd, readiness: Readiness },
+}
+
+/// The tasks that can run, and the event each blocked task waits for.
 pub(crate) struct Scheduler {
     runnable: VecDeque<TaskId>,
+    blocked: HashMap<TaskId, WaitReason>,
 }
 
 impl Scheduler {
-    /// Return a scheduler with no runnable task.
+    /// Return a scheduler with no runnable and no blocked task.
     pub fn new() -> Scheduler {
         Scheduler {
             runnable: VecDeque::new(),
+            blocked: HashMap::new(),
         }
     }
 
@@ -346,10 +373,44 @@ impl Scheduler {
     pub fn pop(&mut self) -> Option<TaskId> {
         self.runnable.pop_front()
     }
+
+    /// Return whether a runnable task is recorded.
+    pub fn has_runnable(&self) -> bool {
+        !self.runnable.is_empty()
+    }
+
+    /// Record that `id` waits for `reason`.
+    pub fn block(&mut self, id: TaskId, reason: WaitReason) {
+        self.blocked.insert(id, reason);
+    }
+
+    /// Make `id` runnable and forget its wait.
+    pub fn wake(&mut self, id: TaskId) {
+        if self.blocked.remove(&id).is_some() {
+            self.runnable.push_back(id);
+        }
+    }
+
+    /// Forget the wait `id` records without making it runnable.
+    pub fn forget(&mut self, id: TaskId) {
+        self.blocked.remove(&id);
+    }
+
+    /// Return the wait `id` records.
+    pub fn reason(&self, id: TaskId) -> Option<WaitReason> {
+        self.blocked.get(&id).copied()
+    }
+
+    /// Return every blocked task and its wait.
+    pub fn blocked(&self) -> impl Iterator<Item = (TaskId, WaitReason)> + '_ {
+        self.blocked
+            .iter()
+            .map(|(id, reason)| (*id, *reason))
+    }
 }
 
 /// The identity of one task. A slot's generation changes when the slot is reused.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct TaskId {
     index: u32,
     generation: u32,

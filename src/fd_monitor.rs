@@ -1,4 +1,4 @@
-use crate::fd_readable_set::{FdReadableSet, Timeout};
+use crate::fd_ready_set::{FdReadySet, Readiness, Timeout};
 use crate::flog::flog;
 use crate::portable_atomic::AtomicU64;
 use crate::threads::assert_is_background_thread;
@@ -35,6 +35,12 @@ pub struct FdEventSignaller {
     fd: OwnedFd,
     #[cfg(not(have_eventfd))]
     write: OwnedFd,
+}
+
+impl Default for FdEventSignaller {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FdEventSignaller {
@@ -153,7 +159,7 @@ impl FdEventSignaller {
         } else {
             Timeout::ZERO
         };
-        FdReadableSet::is_fd_readable(self.read_fd_raw(), timeout)
+        FdReadySet::is_fd_ready(self.read_fd_raw(), Readiness::Readable, timeout)
     }
 
     /// Return the fd to write to.
@@ -356,7 +362,7 @@ impl BackgroundFdMonitor {
     fn run(self) {
         assert_is_background_thread();
 
-        let mut fds = FdReadableSet::new();
+        let mut fds = FdReadySet::new();
         let mut item_ids: Vec<FdMonitorItemId> = Vec::new();
 
         loop {
@@ -399,7 +405,7 @@ impl BackgroundFdMonitor {
             // Our change_signaller is special-cased.
             fds.clear();
             let change_signal_fd = self.change_signaller.read_fd_raw();
-            fds.add(change_signal_fd);
+            fds.add(change_signal_fd, Readiness::Readable);
 
             // Grab the lock and snapshot the item_ids. Skip items with invalid fds.
             let mut data = self.data.locked.lock().expect("Mutex poisoned!");
@@ -407,7 +413,7 @@ impl BackgroundFdMonitor {
             item_ids.reserve(data.items.len());
             for (item_id, item) in &data.items {
                 if let Some(fd) = &item.fd {
-                    fds.add(fd.as_raw_fd());
+                    fds.add(fd.as_raw_fd(), Readiness::Readable);
                     item_ids.push(*item_id);
                 }
             }
@@ -435,7 +441,7 @@ impl BackgroundFdMonitor {
             //
             // Note that WSLv1 doesn't throw EBADF if the fd is closed is mid-select.
             drop(data);
-            let ret = fds.check_readable(timeout.map_or(Timeout::Forever, Timeout::Duration));
+            let ret = fds.check(timeout.map_or(Timeout::Forever, Timeout::Duration));
             // TODO Cygwin reports ret < 0 && errno == 0 as success. Remove the workaround for msys2-runtime>=3.6.9, see https://github.com/msys2/msys2-runtime/issues/308#issuecomment-4301066343
             let err = Errno::last();
             if ret < 0
@@ -462,14 +468,18 @@ impl BackgroundFdMonitor {
                     // Note there is no risk of an ABA problem because ItemIDs are never recycled.
                     continue;
                 };
-                if item.fd.as_ref().is_some_and(|fd| fds.test(fd.as_raw_fd())) {
+                if item
+                    .fd
+                    .as_ref()
+                    .is_some_and(|fd| fds.test(fd.as_raw_fd(), Readiness::Readable))
+                {
                     item.service();
                 }
             }
 
             // Handle any changes if the change signaller was set. Alternatively, this may be the
             // wait lap, in which case we might want to commit to exiting.
-            let change_signalled = fds.test(change_signal_fd);
+            let change_signalled = fds.test(change_signal_fd, Readiness::Readable);
             if change_signalled || is_wait_lap {
                 // Clear the change signaller before processing incoming changes
                 self.change_signaller.try_consume();

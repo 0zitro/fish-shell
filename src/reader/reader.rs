@@ -40,7 +40,7 @@ use crate::{
     event,
     exec::exec_subshell,
     expand::{self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_tilde},
-    fd_readable_set::poll_fd_readable,
+    fd_ready_set::poll_fd_readable,
     fds::{make_fd_blocking, wopen_cloexec},
     flog::{flog, flogf},
     function,

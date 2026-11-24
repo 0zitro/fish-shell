@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     common::shell_modes,
-    fd_readable_set::Timeout,
+    fd_ready_set::Timeout,
     flog::{FloggableDisplay, flog},
     key::{
         self, Key, Modifiers, ViewportPosition, alt, canonicalize_control_char,

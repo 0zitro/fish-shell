@@ -1,6 +1,6 @@
 use super::ThreadPool;
 use crate::fd_monitor::FdEventSignaller;
-use crate::fd_readable_set;
+use crate::fd_ready_set;
 /// Support for debounced background execution of functions.
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
@@ -168,8 +168,8 @@ impl<R: Send + 'static> Debounce<R> {
 
     /// Take the result, waiting up to `timeout` for a result to be available.
     pub fn take_result_with_timeout(&mut self, timeout: Duration) -> Option<R> {
-        let timeout = fd_readable_set::Timeout::Duration(timeout);
-        if fd_readable_set::is_fd_readable(self.event_signaller.read_fd_raw(), timeout) {
+        let timeout = fd_ready_set::Timeout::Duration(timeout);
+        if fd_ready_set::is_fd_readable(self.event_signaller.read_fd_raw(), timeout) {
             self.take_result()
         } else {
             None

@@ -25,7 +25,7 @@ pub mod event;
 pub mod exec;
 pub mod expand;
 pub mod fd_monitor;
-pub mod fd_readable_set;
+pub mod fd_ready_set;
 pub mod fds;
 pub mod flog;
 pub mod fork_exec;
