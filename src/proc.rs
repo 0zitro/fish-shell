@@ -14,6 +14,7 @@ use crate::{
     io::IoChain,
     job_group::{JobGroup, MaybeJobId},
     parse_tree::NodeRef,
+    parse_tree::ParsedSourceRef,
     parser::{Block, Parser},
     portable_atomic::AtomicU64,
     prelude::*,
@@ -84,6 +85,8 @@ pub enum TaskStage {
     },
     /// A block, conditional, loop or brace block.
     Block(NodeRef<ast::Statement>),
+    /// A builtin command.
+    Builtin,
 }
 
 #[repr(u8)]
@@ -554,6 +557,13 @@ impl Process {
     pub fn is_task_stage(&self) -> bool {
         matches!(self.typ, ProcessType::Task(_))
     }
+    /// Return whether this process evaluates a builtin command, directly or as a task stage.
+    pub fn evaluates_builtin(&self) -> bool {
+        matches!(
+            self.typ,
+            ProcessType::Builtin | ProcessType::Task(TaskStage::Builtin)
+        )
+    }
     pub fn is_external(&self) -> bool {
         matches!(self.typ, ProcessType::External)
     }
@@ -805,6 +815,9 @@ pub struct Job {
     /// messages about job status on the terminal.
     command_str: WString,
 
+    /// The parsed source the job's command was read from.
+    parsed_source: Option<ParsedSourceRef>,
+
     /// All the processes in this job.
     pub processes: Box<[Process]>,
 
@@ -837,6 +850,16 @@ impl Job {
     /// Returns the command.
     pub fn command(&self) -> &wstr {
         &self.command_str
+    }
+
+    /// Return the parsed source the job was read from.
+    pub fn parsed_source(&self) -> Option<&ParsedSourceRef> {
+        self.parsed_source.as_ref()
+    }
+
+    /// Record the parsed source the job was read from.
+    pub fn set_parsed_source(&mut self, parsed_source: ParsedSourceRef) {
+        self.parsed_source = Some(parsed_source);
     }
 
     /// Borrow the job's process list.
@@ -1200,13 +1223,10 @@ pub fn print_exit_warning_for_jobs(jobs: &[Rc<Job>]) {
     printf!("%s\n", wgettext!("There are still jobs active:"));
     printf!("\n   PID  %s\n", wgettext!("Command"));
     for j in jobs {
-        // Unwrap safety: we can't have a background job that doesn't have an external process and
-        // external processes always have a pid set.
-        printf!(
-            "%6d  %s\n",
-            j.external_procs().next().and_then(|p| p.pid()).unwrap(),
-            j.command()
-        );
+        match j.external_procs().next().and_then(|p| p.pid()) {
+            Some(pid) => printf!("%6d  %s\n", pid, j.command()),
+            None => printf!("%6s  %s\n", "-", j.command()),
+        }
     }
     printf!(
         "\n%s\n",

@@ -358,7 +358,19 @@ pub fn function(
 
     // Add any event handlers.
     for ed in &opts.events {
-        event::add_handler(EventHandler::new(ed.clone(), Some(function_name.clone())));
+        let handler_store = if parser.current_task_is_session() {
+            None
+        } else {
+            Some(parser.functions().copy_for_task())
+        };
+        let handler = event::add_handler(EventHandler::new(
+            ed.clone(),
+            Some(function_name.clone()),
+            handler_store,
+        ));
+        if !parser.current_task_is_session() {
+            parser.record_event_handler(handler);
+        }
     }
 
     // If there is an --on-process-exit or --on-job-exit event handler for some pid, and that

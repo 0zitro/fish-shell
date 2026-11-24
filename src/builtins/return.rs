@@ -72,10 +72,15 @@ pub fn r#return(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]
 
     let retval = BuiltinResult::from_dynamic(retval);
 
-    // If we're not in a function, exit the current script (but not an interactive shell).
+    // If we're not in a function, exit the current script (but not an interactive shell) when the
+    // session task evaluates the return; any other task finishes at the return instead.
     if !has_function_block {
-        if !parser.scope().is_interactive {
-            parser.libdata_mut().exit_current_script = true;
+        if parser.current_task_is_session() {
+            if !parser.scope().is_interactive {
+                parser.libdata_mut().exit_current_script = true;
+            }
+        } else {
+            parser.finish_current_task();
         }
         return retval;
     }

@@ -7,10 +7,11 @@
 //! in the same slot.
 
 use crate::env::{EnvMode, EnvSetMode, EnvStack};
+use crate::event::EventHandler;
 use crate::function::FunctionStore;
 use crate::io::{IoBufferfill, IoChain};
 use crate::parse_tree::ParsedSourceRef;
-use crate::parser::Block;
+use crate::parser::{Block, BlockId};
 use crate::prelude::*;
 use crate::proc::{InternalJobId, JobGroupRef};
 use crate::task_frame::FrameStack;
@@ -106,6 +107,9 @@ pub(crate) struct StageTask {
     /// The buffer that holds output piped into a later stage.
     pub(crate) buffered_output: Option<Arc<IoBufferfill>>,
 
+    /// The variable assignments the stage applies while it evaluates.
+    pub(crate) variable_assignments: Vec<crate::proc::ConcreteAssignment>,
+
     /// The parsed source the stage's frames were built from.
     pub(crate) parsed_source: ParsedSourceRef,
 }
@@ -118,6 +122,9 @@ pub(crate) struct Task {
     lifecycle: TaskLifecycle,
     stage: Option<StageTask>,
     blocks: Vec<Block>,
+    assignment_block: Option<BlockId>,
+    event_handlers: Vec<Arc<EventHandler>>,
+    ended: bool,
 }
 
 impl Task {
@@ -133,6 +140,9 @@ impl Task {
             lifecycle: TaskLifecycle::Runnable,
             stage: None,
             blocks: Vec::new(),
+            assignment_block: None,
+            event_handlers: Vec::new(),
+            ended: false,
         }
     }
 
@@ -145,6 +155,9 @@ impl Task {
             lifecycle: TaskLifecycle::Runnable,
             stage: None,
             blocks: self.blocks.clone(),
+            assignment_block: None,
+            event_handlers: Vec::new(),
+            ended: false,
         }
     }
 
@@ -156,6 +169,26 @@ impl Task {
     /// Return this task's block stack for modification.
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
         &mut self.blocks
+    }
+
+    /// Record an event handler the task registers.
+    pub fn record_event_handler(&mut self, handler: Arc<EventHandler>) {
+        self.event_handlers.push(handler);
+    }
+
+    /// Take the event handlers the task registered.
+    pub fn take_event_handlers(&mut self) -> Vec<Arc<EventHandler>> {
+        std::mem::take(&mut self.event_handlers)
+    }
+
+    /// Record that the task's evaluation has ended.
+    pub fn set_ended(&mut self) {
+        self.ended = true;
+    }
+
+    /// Return whether the task's evaluation has ended.
+    pub fn ended(&self) -> bool {
+        self.ended
     }
 
     /// Return the store this task reads.
@@ -187,6 +220,21 @@ impl Task {
     /// Return the job stage this task evaluates.
     pub fn stage(&self) -> Option<&StageTask> {
         self.stage.as_ref()
+    }
+
+    /// Return the block that holds the stage's variable assignments.
+    pub fn assignment_block(&self) -> Option<BlockId> {
+        self.assignment_block
+    }
+
+    /// Record the block that holds the stage's variable assignments.
+    pub fn set_assignment_block(&mut self, assignment_block: BlockId) {
+        self.assignment_block = Some(assignment_block);
+    }
+
+    /// Take the block that holds the stage's variable assignments.
+    pub fn take_assignment_block(&mut self) -> Option<BlockId> {
+        self.assignment_block.take()
     }
 
     /// Record the job stage this task evaluates.

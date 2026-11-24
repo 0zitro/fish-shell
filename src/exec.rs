@@ -654,7 +654,7 @@ fn handle_builtin_output(
     out: &OutputStream,
     err: &OutputStream,
 ) {
-    assert!(p.is_builtin(), "Process is not a builtin");
+    assert!(p.evaluates_builtin(), "Process is not a builtin");
 
     // Figure out any data remaining to write. We may have none, in which case we can short-circuit.
     let outbuff = wcs2bytes(out.contents());
@@ -675,13 +675,16 @@ fn handle_builtin_output(
 /// Executes an external command.
 /// An error return here indicates that the process failed to launch, and the rest of
 /// the pipeline should be cancelled.
-fn exec_external_command(
+pub(crate) fn exec_external_command(
     parser: &mut Parser,
     j: &Job,
     p: &Process,
     proc_io_chain: &IoChain,
 ) -> LaunchResult {
-    assert!(p.is_external(), "Process is not external");
+    assert!(
+        p.is_external() || p.is_exec(),
+        "Process is not an external command"
+    );
     // Get argv and envv before we fork.
     let narrow_argv = p.argv().iter().map(|s| wcs2zstring(s)).collect();
     let argv = OwningNullTerminatedArray::new(narrow_argv);
@@ -832,10 +835,10 @@ fn exec_task_process(
     mut io_chain: IoChain,
     piped_output_needs_buffering: bool,
 ) -> LaunchResult {
-    // A piped task stage writes into a buffer while the next stage launches, as an internal
-    // process does.
+    // A piped shell stage writes into a buffer while the next stage launches, as an internal
+    // process does. A builtin stage buffers its own output, so it needs no bufferfill here.
     let mut buffered_output = None;
-    if piped_output_needs_buffering {
+    if piped_output_needs_buffering && !p.evaluates_builtin() {
         match IoBufferfill::create() {
             Ok(bufferfill) => {
                 io_chain.push(bufferfill.clone());
@@ -866,6 +869,12 @@ fn exec_task_process(
             }));
             (frames, statement.parsed_source_ref())
         }
+        TaskStage::Builtin => (
+            FrameStack::new(),
+            j.parsed_source()
+                .cloned()
+                .expect("a job read from source records its parsed source"),
+        ),
     };
 
     let task_id = parser.create_stage_task(
@@ -875,6 +884,7 @@ fn exec_task_process(
             job: j.internal_job_id,
             job_group: j.group.clone(),
             buffered_output,
+            variable_assignments: p.variable_assignments.clone(),
             parsed_source: source,
         },
     );
@@ -884,7 +894,7 @@ fn exec_task_process(
 }
 
 fn get_performer_for_builtin(p: &Process, j: &Job, io_chain: &IoChain) -> Box<ProcPerformer> {
-    assert!(p.is_builtin(), "Process must be a builtin");
+    assert!(p.evaluates_builtin(), "Process must be a builtin");
 
     // Determine if we have a "direct" redirection for stdin.
     let mut stdin_is_directly_redirected = false;
@@ -965,7 +975,7 @@ pub(crate) fn exec_builtin_process(
     io_chain: &IoChain,
     piped_output_needs_buffering: bool,
 ) -> LaunchResult {
-    assert!(p.is_builtin(), "Process is not a builtin");
+    assert!(p.evaluates_builtin(), "Process is not a builtin");
     let mut out =
         create_output_stream_for_builtin(STDOUT_FILENO, io_chain, piped_output_needs_buffering);
     let mut err =
@@ -1014,6 +1024,20 @@ pub(crate) enum PendingStage {
         piped_output_needs_buffering: bool,
         variable_assignments: Vec<crate::proc::ConcreteAssignment>,
     },
+}
+
+/// Return the descriptors a background job inherits from `block_io`.
+///
+/// A background job does not write into the capture of the evaluation that started it, so the
+/// capture's bufferfill is not inherited.
+pub(crate) fn background_job_io(block_io: &IoChain) -> IoChain {
+    let mut inherited = IoChain::new();
+    for io in &block_io.0 {
+        if io.io_mode() != IoMode::BufferFill {
+            inherited.push(Arc::clone(io));
+        }
+    }
+    inherited
 }
 
 /// Build the descriptors of one stage.
@@ -1075,11 +1099,7 @@ pub(crate) fn launch_stage(
         }
         ProcessType::Exec => panic!("an exec process appeared in a pipeline"),
         ProcessType::Task(stage) => {
-            let block_id = push_assignment_block(parser, &assignments);
-            let result =
-                exec_task_process(parser, j, p, stage, chain, piped_output_needs_buffering);
-            pop_assignment_block(parser, block_id);
-            result?;
+            exec_task_process(parser, j, p, stage, chain, piped_output_needs_buffering)?;
             Ok(None)
         }
         ProcessType::Builtin => Ok(Some(PendingStage::Builtin {

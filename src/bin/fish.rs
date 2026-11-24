@@ -585,6 +585,10 @@ fn throwing_main() -> i32 {
         }
     }
 
+    // A background task that became runnable during the last command runs before the shell leaves,
+    // so a task that starts no blocking operation is not dropped at exit.
+    parser.run_runnable_tasks();
+
     let exit_status = if res.is_err() {
         STATUS_CMD_UNKNOWN
     } else {

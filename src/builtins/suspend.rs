@@ -8,6 +8,7 @@ use crate::parse_tree::parse_source;
 use crate::proc::{
     SuspensionDirection, SuspensionForm, SuspensionRecord, get_login, is_interactive_session,
 };
+use crate::signal::signal_check_cancel;
 use crate::wutil::perror_nix;
 use fish_wcstringutil::join_strings;
 use fish_widestring::{WExt as _, WString};
@@ -564,6 +565,13 @@ fn suspend_command_pipeline(
     }
 
     let eval_res = parser.eval_parsed_source_background(&parsed_source, &io_chain);
+    // The source stages are tasks of the background job; run them to their first blocking point
+    // before the handle is written, so a later resume finds the recorded stream producing.
+    parser.run_runnable_tasks();
+    let cancel_signal = signal_check_cancel();
+    if cancel_signal != 0 {
+        return Err(128 + cancel_signal);
+    }
     if eval_res.status.signal_exited() {
         return BuiltinResult::from_dynamic(eval_res.status.status_value());
     }

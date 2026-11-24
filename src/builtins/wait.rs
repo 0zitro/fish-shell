@@ -61,6 +61,9 @@ fn find_wait_handles(
 
     // Is there a running job match?
     for j in parser.jobs() {
+        if parser.job_contains_calling_task(j) {
+            continue;
+        }
         // We want to set 'matched' to true if we could have matched, even if the job was stopped.
         let provide_handle = can_wait_on_job(j);
         let internal_job_id = j.internal_job_id;
@@ -150,6 +153,10 @@ fn wait_for_targets(
         // Run tasks that can run and collect the jobs that completed before waiting for an event.
         parser.run_runnable_tasks();
         proc_clean_jobs(parser);
+        // A reaped child can satisfy a blocked stage task; that task must run before the wait
+        // sleeps, or the pipe it owns stays open and the waited job never completes.
+        parser.wake_ready_tasks();
+        parser.run_runnable_tasks();
 
         let mut any_observed = false;
         for (index, target) in targets.iter().enumerate() {
@@ -285,16 +292,8 @@ pub fn wait(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) ->
     if w.wopt_index == argc {
         // No operands: observe every waitable background job other than the job of the calling
         // task. A job whose task stage is the calling task cannot complete while that task waits.
-        let current_task = parser.current_task_id();
         for job in parser.jobs() {
-            if !can_wait_on_job(job) {
-                continue;
-            }
-            if job
-                .processes()
-                .iter()
-                .any(|process| process.task_id.get() == Some(&current_task))
-            {
+            if !can_wait_on_job(job) || parser.job_contains_calling_task(job) {
                 continue;
             }
             targets.push(WaitTarget::Job(Rc::clone(job)));
@@ -325,6 +324,12 @@ pub fn wait(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) ->
                     .finish(streams);
                 return Err(STATUS_INVALID_ARGS);
             };
+            if parser.job_contains_calling_task(&job) {
+                err_fmt!("%s: the calling task's own job", item)
+                    .cmd(cmd)
+                    .finish(streams);
+                return Err(STATUS_INVALID_ARGS);
+            }
             targets.push(WaitTarget::Job(job));
         } else if iswnumeric(item) {
             let Ok(pid) = parse_pid(streams, cmd, item) else {

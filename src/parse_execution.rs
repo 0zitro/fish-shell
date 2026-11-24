@@ -17,9 +17,9 @@ use crate::{
     event::{self, Event},
     exec::{
         PartialPipes, PendingStage, abort_pipeline_from, allow_exec_with_background_jobs,
-        exec_builtin_process, function_prepare_environment, function_restore_environment,
-        get_deferred_process, internal_exec, launch_stage, pop_assignment_block,
-        push_assignment_block, run_internal_process_or_short_circuit,
+        exec_builtin_process, exec_external_command, function_prepare_environment,
+        function_restore_environment, get_deferred_process, internal_exec, launch_stage,
+        pop_assignment_block, push_assignment_block, run_internal_process_or_short_circuit,
     },
     expand::{
         self, ExpandFlags, ExpandResultCode, expand_one, expand_string, expand_to_command_and_args,
@@ -308,7 +308,33 @@ impl ExecutionContext {
                 JobPhase::Launch => {
                     if !frame.started {
                         if frame.job.processes()[0].is_exec() {
-                            return self.launch_exec_job(ctx, frame);
+                            if ctx.parser().current_task_is_session() {
+                                return self.launch_exec_job(ctx, frame);
+                            }
+                            // A task's exec starts the command as a process stage and discards the
+                            // task's evaluation.
+                            let process = &frame.job.processes()[0];
+                            if exec_external_command(
+                                ctx.parser(),
+                                &frame.job,
+                                process,
+                                &frame.block_io,
+                            )
+                            .is_err()
+                            {
+                                process.mark_aborted_before_launch();
+                                remove_job(ctx.parser(), &frame.job);
+                                frame.end_reason.get_or_insert(EndExecutionReason::Error);
+                                return self.finish_job_frame(ctx, frame);
+                            }
+                            let _ = process.pid().map(|pid| {
+                                ctx.parser().mut_wait_handles().remove_by_pid(pid);
+                            });
+                            ctx.parser().finish_current_task();
+                            frame.job.mark_constructed();
+                            frame.started = true;
+                            frame.phase = JobPhase::Wait;
+                            continue;
                         }
                         frame.deferred_process = get_deferred_process(&frame.job);
                         frame.suspension_count = ctx.parser().suspension_count();
@@ -2675,6 +2701,7 @@ impl ExecutionContext {
         }
 
         let mut job = Job::new(props, self.node_source_owned(job_node));
+        job.set_parsed_source(self.pstree().clone());
 
         // We are about to populate a job. One possible argument to the job is a command substitution
         // which may be interested in the job that's populating it, via '--on-job-exit caller'. Record
@@ -2706,10 +2733,15 @@ impl ExecutionContext {
             return JobStep::Completed(pop_result);
         }
 
+        let job_block_io = if job_is_background {
+            crate::exec::background_job_io(&self.block_io)
+        } else {
+            self.block_io.clone()
+        };
         let frame = JobFrame {
             job: Rc::clone(&job),
             node: unsafe { NodeRef::new(Arc::clone(self.pstree()), job_node) },
-            block_io: self.block_io.clone(),
+            block_io: job_block_io,
             parsed_source: self.pstree().clone(),
             profile_item,
             suspended_at: None,
@@ -2799,7 +2831,7 @@ impl ExecutionContext {
 
         // Return what happened.
         if result == EndExecutionReason::Ok {
-            // Only a background job's shell-evaluated stage records a task.
+            // Every shell-evaluated stage of a background job records a task.
             if j.is_initially_background() {
                 for proc in processes.iter_mut() {
                     let task_stage = match &proc.typ {
@@ -2809,6 +2841,7 @@ impl ExecutionContext {
                         ProcessType::BlockNode(statement) => {
                             Some(TaskStage::Block(statement.clone()))
                         }
+                        ProcessType::Builtin => Some(TaskStage::Builtin),
                         _ => None,
                     };
                     if let Some(task_stage) = task_stage {
@@ -3065,7 +3098,7 @@ fn remove_job(parser: &mut Parser, job: &Rc<Job>) -> bool {
 
 impl Parser {
     /// Run every runnable task until no task is runnable and none becomes ready.
-    pub(crate) fn run_runnable_tasks(&mut self) {
+    pub fn run_runnable_tasks(&mut self) {
         loop {
             while let Some(task_id) = self.take_runnable_task() {
                 self.step_stage_task(task_id);
@@ -3079,12 +3112,34 @@ impl Parser {
 
     /// Advance one stage task by one step; return whether the task finished.
     pub(crate) fn step_stage_task(&mut self, task_id: TaskId) -> bool {
-        let Some(stage) = self.task(task_id).and_then(|task| task.stage()) else {
+        if self
+            .task(task_id)
+            .is_some_and(|task| task.ended() || task.lifecycle() == TaskLifecycle::Finished)
+        {
+            // `exec` in the task finished its evaluation; complete the stage with the command's
+            // status rather than resuming frames that were discarded.
+            let status = self.last_status();
+            let previous_task = self.current_task_id();
+            self.finish_stage_task(task_id, Some(status), previous_task);
+            return true;
+        }
+        let Some(stage_task) = self.task(task_id).and_then(|task| task.stage()) else {
             return false;
         };
-        let source = stage.parsed_source.clone();
-        let io_chain = stage.io_chain.clone();
-        let job_group = stage.job_group.clone();
+        let source = stage_task.parsed_source.clone();
+        let io_chain = stage_task.io_chain.clone();
+        let job_group = stage_task.job_group.clone();
+        let job_id = stage_task.job;
+        let variable_assignments = stage_task.variable_assignments.clone();
+        let builtin_stage = self
+            .job_with_internal_id(job_id)
+            .and_then(|job| {
+                job.processes()
+                    .iter()
+                    .find(|process| process.task_id.get() == Some(&task_id))
+                    .map(|process| process.evaluates_builtin())
+            })
+            .unwrap_or(false);
         let Some(mut frames) = self.take_task_frames(task_id) else {
             return false;
         };
@@ -3093,6 +3148,36 @@ impl Parser {
         self.set_current_task(task_id);
         if let Some(task) = self.task_mut(task_id) {
             task.set_lifecycle(TaskLifecycle::Running);
+        }
+        if self
+            .task(task_id)
+            .is_some_and(|task| task.assignment_block().is_none())
+            && !variable_assignments.is_empty()
+        {
+            let assignment_block = push_assignment_block(self, &variable_assignments);
+            if let Some(block) = assignment_block
+                && let Some(task) = self.task_mut(task_id)
+            {
+                task.set_assignment_block(block);
+            }
+        }
+
+        if builtin_stage {
+            let job = self
+                .job_with_internal_id(job_id)
+                .expect("the job of a builtin stage task is recorded");
+            let process = job
+                .processes()
+                .iter()
+                .find(|process| process.task_id.get() == Some(&task_id))
+                .expect("the builtin stage records its process");
+            let result =
+                exec_builtin_process(self, &job, process, &io_chain, !process.is_last_in_job);
+            if result.is_err() {
+                process.mark_aborted_before_launch();
+            }
+            self.finish_stage_task(task_id, None, previous_task);
+            return true;
         }
 
         let mut execution_ctx = ExecutionContext::new(source, io_chain);
@@ -3120,19 +3205,31 @@ impl Parser {
                     libdata.returning = false;
                     libdata.loop_status = LoopStatus::Normals;
                 }
-                if let Some(task) = self.task_mut(task_id) {
-                    task.set_lifecycle(TaskLifecycle::Finished);
-                }
                 self.set_current_task(previous_task);
-
-                let Some(stage) = self.task_mut(task_id).and_then(|task| task.take_stage()) else {
-                    return true;
-                };
-                self.complete_stage(task_id, stage, status);
-                let _ = self.remove_task(task_id);
+                self.finish_stage_task(task_id, Some(status), previous_task);
                 true
             }
         }
+    }
+
+    /// Finish a stage task, recording the status of `stage` when it has one.
+    fn finish_stage_task(&mut self, task_id: TaskId, status: Option<c_int>, previous_task: TaskId) {
+        if let Some(task) = self.task_mut(task_id) {
+            task.set_lifecycle(TaskLifecycle::Finished);
+        }
+        self.set_current_task(task_id);
+        let assignment_block = self
+            .task_mut(task_id)
+            .and_then(|task| task.take_assignment_block());
+        pop_assignment_block(self, assignment_block);
+        self.set_current_task(previous_task);
+        let Some(stage) = self.task_mut(task_id).and_then(|task| task.take_stage()) else {
+            return;
+        };
+        if let Some(status) = status {
+            self.complete_stage(task_id, stage, status);
+        }
+        let _ = self.remove_task(task_id);
     }
 
     /// Record the completion of the stage `stage` with `status`.

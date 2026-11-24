@@ -30,14 +30,24 @@ expect_str("alive_after_sigint")
 expect_prompt()
 
 # A blocked function call is a job, so its cancellation records the signal status.
-sendline("function cancel_probe; sleep 5; end")
+sendline("function cancel_task; sleep 5; end")
 expect_prompt()
-sendline("cancel_probe")
+sendline("cancel_task")
 sleep(0.2)
 sp.spawn.kill(signal.SIGINT)
 expect_prompt()
 sendline("echo status=$status")
 expect_str("status=130")
+expect_prompt()
+
+# Exiting with a background job whose only stage is a task warns about the job and
+# keeps the shell alive; it must not panic while printing the warning.
+sendline("begin; sleep 3; end &")
+expect_prompt()
+sendline("exit")
+sleep(0.2)
+sendline("echo alive_after_exit")
+expect_str("alive_after_exit")
 expect_prompt()
 
 # The same restoration applies without a terminal: the process must exit without a

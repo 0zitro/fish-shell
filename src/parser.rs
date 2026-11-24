@@ -1145,9 +1145,18 @@ impl Parser {
             .map(|task| std::mem::take(task.frames_mut()))
     }
 
-    /// Remove the task `id` denotes.
+    /// Remove the task `id` denotes, releasing the event handlers it registered.
     pub(crate) fn remove_task(&mut self, id: TaskId) -> Option<Task> {
-        self.tasks.remove(id)
+        let mut task = self.tasks.remove(id)?;
+        for handler in task.take_event_handlers() {
+            event::remove_handler(&handler);
+        }
+        Some(task)
+    }
+
+    /// Record an event handler the current task registers.
+    pub(crate) fn record_event_handler(&mut self, handler: Arc<event::EventHandler>) {
+        self.current_task_mut().record_event_handler(handler);
     }
 
     /// Return the identity of the task the evaluator runs.
@@ -1173,8 +1182,9 @@ impl Parser {
 
     /// Finish the task the evaluator runs.
     pub(crate) fn finish_current_task(&mut self) {
-        self.current_task_mut()
-            .set_lifecycle(TaskLifecycle::Finished);
+        let task = self.current_task_mut();
+        task.set_lifecycle(TaskLifecycle::Finished);
+        task.set_ended();
     }
 
     /// Return the lifecycle stage of the task the evaluator runs.
@@ -1202,14 +1212,18 @@ impl Parser {
     }
 
     /// Wake every blocked task whose wait is satisfied; the session task leaves the blocked
-    /// registry because its evaluator resumes it directly.
+    /// registry because its evaluator resumes it directly, and a running task is resumed in place
+    /// by its own evaluator rather than queued.
     pub(crate) fn wake_ready_tasks(&mut self) {
         let waits: Vec<(TaskId, WaitReason)> = self.scheduler.blocked().collect();
         for (id, reason) in waits {
             if !self.wait_reason_ready(reason) {
                 continue;
             }
-            if id == self.session_task {
+            let task_is_running = self
+                .task(id)
+                .is_some_and(|task| task.lifecycle() == TaskLifecycle::Running);
+            if id == self.session_task || task_is_running {
                 self.scheduler.forget(id);
             } else {
                 if let Some(task) = self.task_mut(id) {
@@ -1484,14 +1498,27 @@ impl Parser {
         self.jobs_mut().rotate_left(job_pos);
     }
 
-    /// Return the job with the specified job ID. If id is 0 or less, return the last job used.
+    /// Return whether `job` contains the stage the calling task evaluates.
+    pub(crate) fn job_contains_calling_task(&self, job: &Job) -> bool {
+        let current = self.current_task_id();
+        job.processes()
+            .iter()
+            .any(|process| process.task_id.get() == Some(&current))
+    }
+
+    /// Return the job with the specified job ID. If id is none or 0, return the last job used.
     pub fn job_with_id(&self, job_id: MaybeJobId) -> Option<Rc<Job>> {
+        let mut first_match = None;
         for job in self.jobs() {
-            if job_id.is_none() || job_id == job.job_id() {
+            if job_id.is_some() && job_id != job.job_id() {
+                continue;
+            }
+            if job.flags().is_group_root {
                 return Some(job.clone());
             }
+            first_match.get_or_insert_with(|| job.clone());
         }
-        None
+        first_match
     }
 
     /// Returns the job with the given pid.

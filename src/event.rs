@@ -123,12 +123,14 @@ impl From<&EventDescription> for EventType {
     }
 }
 
-#[derive(Debug)]
 pub struct EventHandler {
     /// Properties of the event to match.
     pub desc: EventDescription,
     /// Name of the function to invoke.
     pub function_name: WString,
+    /// The function store that records the handler's function, when the handler was registered by
+    /// a task; the session's handlers resolve in the current store.
+    pub(crate) function_store: Option<crate::function::FunctionStore>,
     /// A flag set when an event handler is removed from the global list.
     /// Once set, this is never cleared.
     pub removed: AtomicBool,
@@ -137,10 +139,15 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    pub fn new(desc: EventDescription, name: Option<WString>) -> Self {
+    pub(crate) fn new(
+        desc: EventDescription,
+        name: Option<WString>,
+        function_store: Option<crate::function::FunctionStore>,
+    ) -> Self {
         Self {
             desc,
             function_name: name.unwrap_or_default(),
+            function_store,
             removed: AtomicBool::new(false),
             fired: AtomicBool::new(false),
         }
@@ -410,16 +417,37 @@ pub fn get_desc(parser: &Parser, evt: &Event) -> WString {
 }
 
 /// Add an event handler.
-pub fn add_handler(eh: EventHandler) {
+pub fn add_handler(eh: EventHandler) -> Arc<EventHandler> {
     if let EventDescription::Signal { signal } = eh.desc {
         signal_handle(signal);
         inc_signal_observed(signal);
     }
 
+    let handler = Arc::new(eh);
     EVENT_HANDLERS
         .lock()
         .expect("event handler list should not be poisoned")
-        .push(Arc::new(eh));
+        .push(Arc::clone(&handler));
+    handler
+}
+
+/// Remove one event handler.
+pub fn remove_handler(handler: &Arc<EventHandler>) {
+    let mut handlers = EVENT_HANDLERS
+        .lock()
+        .expect("event handler list should not be poisoned");
+    let Some(index) = handlers
+        .iter()
+        .position(|candidate| Arc::ptr_eq(candidate, handler))
+    else {
+        return;
+    };
+    if !handler.removed.swap(true, Ordering::Relaxed)
+        && let EventDescription::Signal { signal } = handler.desc
+    {
+        dec_signal_observed(signal);
+    }
+    handlers.remove(index);
 }
 
 /// Remove handlers where `pred` returns true. Simultaneously update our `signal_observed` array.
@@ -513,7 +541,14 @@ fn fire_internal(parser: &mut Parser, event: &Event) {
         );
 
         let b = parser.push_block(Block::event_block(event.clone()));
-        parser.eval(&buffer, &IoChain::new());
+        if let Some(function_store) = &handler.function_store {
+            let saved_functions =
+                std::mem::replace(parser.functions_mut(), function_store.copy_for_task());
+            parser.eval(&buffer, &IoChain::new());
+            *parser.functions_mut() = saved_functions;
+        } else {
+            parser.eval(&buffer, &IoChain::new());
+        }
         parser.pop_block(b);
 
         handler.fired.store(true, Ordering::Relaxed);
