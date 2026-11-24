@@ -65,6 +65,28 @@ end
 # CHECKERR: -> echo inside3
 # CHECKERR: > end if
 
+begin
+    echo block-body
+end
+
+# CHECK: block-body
+
+# CHECKERR: > begin
+# CHECKERR: -> echo block-body
+# CHECKERR: > end begin
+
+begin
+    echo piped-body
+end | /bin/cat
+
+# CHECK: piped-body
+
+# CHECKERR: > /bin/cat
+# CHECKERR: >
+# CHECKERR: -> begin
+# CHECKERR: --> echo piped-body
+# CHECKERR: -> end begin
+
 set -e fish_trace
 # CHECKERR: > set -e fish_trace
 

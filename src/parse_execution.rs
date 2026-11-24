@@ -276,7 +276,6 @@ impl ExecutionContext {
         child_result: Option<EndExecutionReason>,
     ) -> FrameAction {
         if let Some(reason) = child_result {
-            frame.active_stage_running = false;
             if reason != EndExecutionReason::Ok && frame.end_reason.is_none() {
                 frame.end_reason = Some(reason);
             }
@@ -351,7 +350,6 @@ impl ExecutionContext {
                         ) {
                             Ok(Some(stage)) => {
                                 frame.active_process_index = Some(index);
-                                frame.active_stage_running = true;
                                 frame.active_stage_is_deferred = false;
                                 return Self::push_stage_frame(frame, stage);
                             }
@@ -398,7 +396,6 @@ impl ExecutionContext {
                                 ) {
                                     Ok(Some(stage)) => {
                                         frame.active_process_index = Some(dp);
-                                        frame.active_stage_running = true;
                                         frame.active_stage_is_deferred = true;
                                         return Self::push_stage_frame(frame, stage);
                                     }
@@ -427,7 +424,6 @@ impl ExecutionContext {
                             ctx.parser().libdata_mut().status_count += 1;
                         }
                         remove_job(ctx.parser(), &frame.job);
-                        frame.end_reason.get_or_insert(EndExecutionReason::Error);
                         return self.finish_job_frame(ctx, frame);
                     }
 
@@ -529,6 +525,7 @@ impl ExecutionContext {
             node: frame.node.clone(),
             stage,
             assignment_block: None,
+            stage_scope_block: None,
             started: false,
             block_io_before: None,
             node_before: None,
@@ -578,16 +575,10 @@ impl ExecutionContext {
         ctx: &mut OperationContext<'_>,
         frame: &mut JobFrame,
     ) -> FrameAction {
-        if let Some(mut profile_item) = frame.profile_item.take() {
-            profile_item.command = frame.job.command().to_owned();
-            finish_profile_item(ctx, profile_item);
-        }
-        ctx.parser()
-            .sync_uvars_and_fire(frame.job.has_external_proc());
+        let cancel_signal = finish_job_frame_record(ctx.parser(), frame, Some(&self.block_io));
         if self.cancel_signal.is_none() {
-            self.cancel_signal = frame.job.group().get_cancel_signal();
+            self.cancel_signal = cancel_signal;
         }
-        job_reap(ctx.parser(), false, Some(&self.block_io));
         FrameAction::Done(frame.end_reason.unwrap_or(EndExecutionReason::Ok))
     }
 
@@ -602,6 +593,9 @@ impl ExecutionContext {
             let process_index = stage_process_index(&frame.stage);
             let chain = stage_chain(&frame.stage).clone();
             self.restore_stage_scope(ctx, frame);
+            if let Some(stage_scope_block) = frame.stage_scope_block.take() {
+                ctx.parser().pop_block(stage_scope_block);
+            }
             pop_assignment_block(ctx.parser(), frame.assignment_block.take());
             if let Some(saved) = frame.block_io_before.take() {
                 self.block_io = saved;
@@ -687,6 +681,13 @@ impl ExecutionContext {
         self.job_group = frame.job.group.clone();
 
         frame.assignment_block = push_assignment_block(ctx.parser(), assignments);
+        if matches!(
+            &frame.stage,
+            PendingStage::Function { .. } | PendingStage::Block { .. }
+        ) {
+            frame.stage_scope_block =
+                Some(ctx.parser().push_block(Block::scope_block(BlockType::Top)));
+        }
         frame.block_io_before = Some(std::mem::replace(&mut self.block_io, chain));
 
         match &frame.stage {
@@ -718,7 +719,6 @@ impl ExecutionContext {
                     function_block: None,
                     scope_block: None,
                     prev_exec_count: 0,
-                    prev_status_count: 0,
                 })))
             }
             PendingStage::Block { statement, .. } => push_frame(Frame::Statement(StatementFrame {
@@ -964,6 +964,7 @@ impl ExecutionContext {
                 item_id,
                 start_time: ProfileItem::now(),
                 level: ctx.parser().scope().eval_level,
+                skipped: false,
                 command: profiling_cmd_name_for_redirectable_block(&frame.statement, self.pstree()),
             });
         }
@@ -994,7 +995,7 @@ impl ExecutionContext {
         reason: EndExecutionReason,
     ) -> FrameAction {
         if let Some(profile_item) = frame.profile_item.take() {
-            finish_profile_item(ctx, profile_item);
+            finish_profile_item(ctx.parser(), profile_item);
         }
         frame.timer.take();
         let node_before = frame.node_before.take();
@@ -1024,6 +1025,7 @@ impl ExecutionContext {
         let statement: &ast::Statement = &frame.statement;
         match statement {
             Statement::Brace(brace_statement) => {
+                trace_if_enabled(ctx.parser(), L!("begin"));
                 let block_id = ctx
                     .parser()
                     .push_block(Block::scope_block(BlockType::Begin));
@@ -1071,6 +1073,7 @@ impl ExecutionContext {
                     self.run_function_statement(ctx, block_statement.as_ref(), header),
                 ),
                 BlockStatementHeader::Begin(_) => {
+                    trace_if_enabled(ctx.parser(), L!("begin"));
                     let block_id = ctx
                         .parser()
                         .push_block(Block::scope_block(BlockType::Begin));
@@ -1122,7 +1125,6 @@ impl ExecutionContext {
         }
         if !frame.started {
             frame.started = true;
-            trace_if_enabled(ctx.parser(), L!("begin"));
             return push_frame(Frame::JobList(JobListFrame {
                 jobs: frame.contents.clone(),
                 next_conjunction: 0,
@@ -1149,9 +1151,8 @@ impl ExecutionContext {
                 function_restore_environment(ctx.parser(), function_block);
             }
             let libdata = ctx.parser().libdata();
-            let was_empty = reason == EndExecutionReason::Ok
-                && libdata.exec_count == frame.prev_exec_count
-                && libdata.status_count == frame.prev_status_count;
+            let was_empty =
+                reason == EndExecutionReason::Ok && libdata.exec_count == frame.prev_exec_count;
             if was_empty {
                 ctx.parser().set_last_statuses(Statuses::just(EXIT_SUCCESS));
             }
@@ -1159,7 +1160,6 @@ impl ExecutionContext {
         }
 
         frame.prev_exec_count = ctx.parser().libdata().exec_count;
-        frame.prev_status_count = ctx.parser().libdata().status_count;
         frame.function_block = Some(function_prepare_environment(
             ctx.parser(),
             frame.argv.clone(),
@@ -1628,9 +1628,9 @@ impl ExecutionContext {
             switch_values_expanded.remove(0).completion
         };
 
+        trace_if_enabled_with_args(ctx.parser(), L!("switch"), &[&switch_value_expanded]);
         let block_id = ctx.parser().push_block(Block::switch_block());
         frame.block_id = Some(block_id);
-        trace_if_enabled_with_args(ctx.parser(), L!("switch"), &[&switch_value_expanded]);
 
         let mut result = EndExecutionReason::Ok;
         let mut matching_case_item = None;
@@ -2641,6 +2641,7 @@ impl ExecutionContext {
                 item_id,
                 start_time: ProfileItem::now(),
                 level: ctx.parser().scope().eval_level,
+                skipped: false,
                 command: WString::new(),
             })
         };
@@ -2699,7 +2700,8 @@ impl ExecutionContext {
         if pop_result != EndExecutionReason::Ok {
             if let Some(mut profile_item) = profile_item {
                 profile_item.command = job.command().to_owned();
-                finish_profile_item(ctx, profile_item);
+                profile_item.skipped = true;
+                finish_profile_item(ctx.parser(), profile_item);
             }
             return JobStep::Completed(pop_result);
         }
@@ -2722,7 +2724,6 @@ impl ExecutionContext {
             active_process_index: None,
             pipeline_aborted: false,
             suspension_count: 0,
-            active_stage_running: false,
             end_reason: None,
             phase: JobPhase::Launch,
             started: false,
@@ -2887,13 +2888,50 @@ fn if_clause_of(statement: &ast::IfStatement, index: usize) -> Option<&ast::IfCl
 }
 
 /// Record the completion of one profile entry.
-fn finish_profile_item(ctx: &mut OperationContext<'_>, profile_item: ProfileItemFinish) {
-    let parser = ctx.parser();
+fn finish_profile_item(parser: &mut Parser, profile_item: ProfileItemFinish) {
     let item = &mut parser.profile_items_mut()[profile_item.item_id];
     item.duration = ProfileItem::now() - profile_item.start_time;
     item.level = profile_item.level;
     item.cmd = profile_item.command;
-    item.skipped = false;
+    item.skipped = profile_item.skipped;
+}
+
+/// Record a finished job's profile entry, universal variables and child reaping.
+fn finish_job_frame_record(
+    parser: &mut Parser,
+    frame: &mut JobFrame,
+    block_io: Option<&IoChain>,
+) -> Option<RawSignal> {
+    if let Some(mut profile_item) = frame.profile_item.take() {
+        profile_item.command = frame.job.command().to_owned();
+        finish_profile_item(parser, profile_item);
+    }
+    parser.sync_uvars_and_fire(frame.job.has_external_proc());
+    job_reap(parser, false, block_io);
+    frame.job.group().get_cancel_signal()
+}
+
+/// Finish a job frame whose evaluation a cancellation discarded.
+pub(crate) fn finish_abandoned_job_frame(parser: &mut Parser, frame: &mut JobFrame) {
+    let _ = finish_job_frame_record(parser, frame, None);
+}
+
+/// Complete the process of a shell-evaluated stage whose evaluation a cancellation discarded.
+pub(crate) fn abandon_stage_frame(parser: &mut Parser, frame: &mut StageFrame, signal: RawSignal) {
+    if !frame.started {
+        return;
+    }
+    let process_index = stage_process_index(&frame.stage);
+    let process = &frame.job.processes()[process_index];
+    process.status.set(ProcStatus::from_signal(signal));
+    run_internal_process_or_short_circuit(
+        parser,
+        &frame.job,
+        process,
+        vec![],
+        vec![],
+        &IoChain::new(),
+    );
 }
 
 fn statement_is_redirectable_block(node: &ast::Statement) -> bool {
@@ -2992,7 +3030,7 @@ fn stage_chain(stage: &PendingStage) -> &IoChain {
 }
 
 /// Return the index of the process a pending stage records.
-fn stage_process_index(stage: &PendingStage) -> usize {
+pub(crate) fn stage_process_index(stage: &PendingStage) -> usize {
     match stage {
         PendingStage::Builtin { process_index, .. }
         | PendingStage::Function { process_index, .. }

@@ -200,6 +200,9 @@ pub(crate) struct ProfileItemFinish {
     /// The evaluation level the job ran at.
     pub(crate) level: isize,
 
+    /// Whether the profile record omits the job.
+    pub(crate) skipped: bool,
+
     /// The command name the profile item records.
     pub(crate) command: WString,
 }
@@ -209,7 +212,7 @@ pub(crate) enum JobPhase {
     /// The process stages are being launched.
     Launch,
 
-    /// The job waits for its process stages to complete.
+    /// The job observes its launched stages.
     Wait,
 }
 
@@ -266,9 +269,6 @@ pub(crate) struct JobFrame {
     /// The suspension count when the job started.
     pub(crate) suspension_count: usize,
 
-    /// Whether a stage frame is running.
-    pub(crate) active_stage_running: bool,
-
     /// The control-flow reason a stage reported.
     pub(crate) end_reason: Option<EndExecutionReason>,
 
@@ -292,6 +292,9 @@ pub(crate) struct StageFrame {
 
     /// The block that holds the stage's variable assignments.
     pub(crate) assignment_block: Option<BlockId>,
+
+    /// The scope block that holds the stage's evaluation.
+    pub(crate) stage_scope_block: Option<BlockId>,
 
     /// Whether the stage's frames have been pushed.
     pub(crate) started: bool,
@@ -331,9 +334,6 @@ pub(crate) struct FunctionCallFrame {
 
     /// The command counter before the call.
     pub(crate) prev_exec_count: u64,
-
-    /// The status counter before the call.
-    pub(crate) prev_status_count: u64,
 }
 
 /// A begin or brace block, awaiting its body.

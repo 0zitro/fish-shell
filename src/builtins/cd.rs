@@ -31,7 +31,7 @@ fn try_chdir(parser: &mut Parser, dir: &wstr, deref_symlink: bool) -> Result<(),
 
     // We successfully changed directories.
     // Record the descriptor of the task's current directory.
-    parser.task_descriptors_mut().set_cwd_fd(Arc::new(fd));
+    parser.task_working_directory_mut().set_cwd_fd(Arc::new(fd));
 
     let mut new_pwd = norm_dir;
     if deref_symlink {

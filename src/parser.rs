@@ -32,8 +32,8 @@ use crate::{
     reader::fish_is_unwinding_for_exit,
     signal::{RawSignal, signal_check_cancel, signal_clear_cancel},
     task::{
-        DescriptorTable, Scheduler, StageTask, Task, TaskDescriptors, TaskId, TaskLifecycle,
-        TaskTable, WaitReason,
+        Scheduler, StageTask, Task, TaskId, TaskLifecycle, TaskTable, TaskWorkingDirectory,
+        WaitReason,
     },
     task_frame::{Frame, FrameStack, JobListFrame, StatementFrame},
     topic_monitor,
@@ -498,7 +498,7 @@ impl Parser {
 
         match open_dir(c".", BEST_O_SEARCH) {
             Ok(fd) => {
-                result.task_descriptors_mut().set_cwd_fd(Arc::new(fd));
+                result.task_working_directory_mut().set_cwd_fd(Arc::new(fd));
             }
             Err(err) => {
                 perror_nix("Unable to open the current working directory", err);
@@ -721,6 +721,8 @@ impl Parser {
 
         // Start it up
         let scope_block = self.push_block(Block::scope_block(block_type));
+        let block_count_at_entry = self.blocks_size();
+        let scoped_data_at_entry = self.scope();
 
         // Restore the current pipeline node.
         let restore_current_node = self.current_node.scoped_replace(None);
@@ -762,8 +764,10 @@ impl Parser {
 
         let mut pending_initial = Some(initial_frame);
         let job_group_for_cancel = job_group.cloned();
+        let mut abandoned = false;
         let reason = loop {
             if signal_check_cancel() != 0 || fish_is_unwinding_for_exit() {
+                abandoned = true;
                 break EndExecutionReason::Error;
             }
             let mut op_ctx = self.context();
@@ -795,6 +799,39 @@ impl Parser {
             let ld = self.libdata();
             (ld.exec_count, ld.status_count)
         };
+        if abandoned {
+            // A cancelled evaluation discards its frames without running their completion steps, so
+            // the state those frames pushed is restored from the entry record.
+            let cancel_signal = signal_check_cancel();
+            while let Some(frame) = frames.pop() {
+                match frame {
+                    Frame::Stage(mut stage_frame) if cancel_signal != 0 => {
+                        crate::parse_execution::abandon_stage_frame(
+                            self,
+                            stage_frame.as_mut(),
+                            RawSignal::new(cancel_signal),
+                        );
+                    }
+                    Frame::Job(mut job_frame) => {
+                        crate::parse_execution::finish_abandoned_job_frame(
+                            self,
+                            job_frame.as_mut(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            debug_assert!(frames.pop().is_none());
+            self.set_scope(scoped_data_at_entry);
+            while self.blocks_size() > block_count_at_entry {
+                let outermost_block = BlockId(self.blocks_size() - 1);
+                self.pop_block(outermost_block);
+            }
+            self.scheduler.forget(self.current_task_id());
+            let libdata = self.libdata_mut();
+            libdata.returning = false;
+            libdata.loop_status = LoopStatus::Normals;
+        }
         self.restore_frame_stack(frames);
 
         drop(restore_current_node);
@@ -1051,28 +1088,15 @@ impl Parser {
         self.current_task_mut().store_mut().functions_mut()
     }
 
-    /// Get the descriptors recorded for the current task.
+    /// Get the working directory recorded for the current task.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn task_descriptors(&self) -> &TaskDescriptors {
-        self.current_task().descriptors()
+    pub(crate) fn task_working_directory(&self) -> &TaskWorkingDirectory {
+        self.current_task().working_directory()
     }
 
-    /// Get the descriptors recorded for the current task for modification.
-    pub(crate) fn task_descriptors_mut(&mut self) -> &mut TaskDescriptors {
-        self.current_task_mut().descriptors_mut()
-    }
-
-    /// Get the descriptor table of the current task.
-    pub(crate) fn descriptor_table(&self) -> &DescriptorTable {
-        self.current_task().descriptors().descriptor_table()
-    }
-
-    /// Get the descriptor table of the current task for modification.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn descriptor_table_mut(&mut self) -> &mut DescriptorTable {
-        self.current_task_mut()
-            .descriptors_mut()
-            .descriptor_table_mut()
+    /// Get the working directory recorded for the current task for modification.
+    pub(crate) fn task_working_directory_mut(&mut self) -> &mut TaskWorkingDirectory {
+        self.current_task_mut().working_directory_mut()
     }
 
     /// Remove the current task's frame stack for evaluation.
@@ -1088,9 +1112,6 @@ impl Parser {
     /// Create a task that evaluates a job stage's `frames`.
     pub(crate) fn create_stage_task(&mut self, frames: FrameStack, stage: StageTask) -> TaskId {
         let mut task = self.current_task().start_from();
-        task.descriptors_mut()
-            .descriptor_table_mut()
-            .record_from_chain(&stage.io_chain);
         *task.frames_mut() = frames;
         task.set_stage(stage);
         self.tasks.insert(task)
@@ -1098,6 +1119,9 @@ impl Parser {
 
     /// Record the task `id` as runnable.
     pub(crate) fn schedule_runnable_task(&mut self, id: TaskId) {
+        if let Some(task) = self.task_mut(id) {
+            task.set_lifecycle(TaskLifecycle::Runnable);
+        }
         self.scheduler.push(id);
     }
 
@@ -1135,7 +1159,7 @@ impl Parser {
     pub(crate) fn set_current_task(&mut self, id: TaskId) {
         self.current_task = id;
         // The process's current directory follows the task it evaluates.
-        if let Some(cwd_fd) = self.task_descriptors().cwd_fd() {
+        if let Some(cwd_fd) = self.task_working_directory().cwd_fd() {
             if let Err(err) = nix::unistd::fchdir(cwd_fd.as_ref()) {
                 perror_nix("fchdir", err);
             }
@@ -1177,7 +1201,8 @@ impl Parser {
         self.scheduler.has_runnable()
     }
 
-    /// Make every blocked task whose wait is satisfied runnable.
+    /// Wake every blocked task whose wait is satisfied; the session task leaves the blocked
+    /// registry because its evaluator resumes it directly.
     pub(crate) fn wake_ready_tasks(&mut self) {
         let waits: Vec<(TaskId, WaitReason)> = self.scheduler.blocked().collect();
         for (id, reason) in waits {
@@ -1187,6 +1212,9 @@ impl Parser {
             if id == self.session_task {
                 self.scheduler.forget(id);
             } else {
+                if let Some(task) = self.task_mut(id) {
+                    task.set_lifecycle(TaskLifecycle::Runnable);
+                }
                 self.scheduler.wake(id);
             }
         }

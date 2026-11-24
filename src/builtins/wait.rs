@@ -1,7 +1,7 @@
 use super::prelude::*;
 use crate::err_fmt;
 use crate::job_group::{JobId, MaybeJobId};
-use crate::proc::{InternalJobId, Job, Pid, ProcStatus, proc_clean_jobs, proc_wait_any};
+use crate::proc::{InternalJobId, Job, Pid, proc_clean_jobs, proc_wait_any};
 use crate::signal::SigChecker;
 use crate::wait_handle::{WaitHandleRef, WaitHandleStore};
 use std::num::NonZeroU32;
@@ -106,9 +106,7 @@ impl WaitTarget {
             WaitTarget::Job(job) => job
                 .is_completed()
                 .then(|| job.statuses().map_or(0, |statuses| statuses.status)),
-            WaitTarget::Handle(handle) => handle
-                .status()
-                .map(|raw| ProcStatus::from_waitpid(raw).status_value()),
+            WaitTarget::Handle(handle) => handle.status(),
         }
     }
 

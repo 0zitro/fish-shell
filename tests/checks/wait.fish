@@ -25,6 +25,19 @@ wait true false
 jobs
 # CHECK: jobs: There are no jobs
 
+# A process operand reports the child's own exit status.
+sh -c 'exit 42' &
+set waited_pid $last_pid
+wait $waited_pid
+echo waited=$status
+# CHECK: waited=42
+
+sh -c 'exit 42' &
+set emitted_pid $last_pid
+wait --emit $emitted_pid | string collect >/dev/null
+echo emitted_status=$pipestatus[1]
+# CHECK: emitted_status=42
+
 # Ensure on-process-exit works for exited jobs.
 command false &
 set pid $last_pid

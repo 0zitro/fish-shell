@@ -7,13 +7,11 @@ use crate::builtins::{
     ErrorCode, STATUS_CMD_ERROR, STATUS_CMD_UNKNOWN, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
     builtin_run,
 };
-use crate::env::{EnvMode, EnvSetMode, EnvStack, Environment as _, READ_BYTE_LIMIT, Statuses};
+use crate::env::{EnvMode, EnvSetMode, EnvStack, Environment as _, READ_BYTE_LIMIT};
 #[cfg(have_posix_spawn)]
 use crate::env_dispatch::use_posix_spawn;
-use crate::fds::{
-    BorrowedFdFile, PIPE_ERROR, make_autoclose_pipes, make_fd_blocking, open_cloexec,
-};
-use crate::flog::{flog, flogf};
+use crate::fds::{BorrowedFdFile, make_fd_blocking, open_cloexec};
+use crate::flog::flogf;
 #[cfg(have_posix_spawn)]
 use crate::fork_exec::spawn::PosixSpawner;
 use crate::fork_exec::{
@@ -30,28 +28,23 @@ use crate::io::{
 };
 use crate::nix::isatty;
 use crate::null_terminated_array::OwningNullTerminatedArray;
-use crate::parser::{Block, BlockId, BlockType, EvalRes, Parser, ParserEnvSetMode};
+use crate::parser::{Block, BlockId, BlockType, Parser, ParserEnvSetMode};
 use crate::prelude::*;
 use crate::proc::{
     InternalProc, Job, JobGroupRef, Pid, ProcStatus, Process, ProcessType, TaskStage, hup_jobs,
-    is_interactive_session, jobs_requiring_warning_on_exit, no_exec, print_exit_warning_for_jobs,
-    process_mark_finished_children,
+    is_interactive_session, jobs_requiring_warning_on_exit, print_exit_warning_for_jobs,
 };
 use crate::reader::{reader_run_count, restore_term_mode};
 use crate::redirection::{Dup2List, dup2_list_resolve_chain};
-use crate::signal::RawSignal;
 use crate::task::StageTask;
 use crate::task_frame::{Frame, FrameStack, FunctionCallFrame, StatementFrame};
 use crate::threads::{ThreadPool, is_forked_child};
 use crate::trace::trace_if_enabled_with_args;
-use crate::tty_handoff::TtyHandoff;
 use crate::wutil::{fish_wcstol, perror_nix};
 use crate::{ast, parse_tree::NodeRef};
 use fish_common::{ScopeGuard, exit_without_destructors, truncate_at_nul, write_loop};
 use fish_widestring::{ToWString as _, bytes2wcstring, wcs2bytes, wcs2zstring};
-use libc::{
-    EXIT_FAILURE, EXIT_SUCCESS, SIGINT, SIGQUIT, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO,
-};
+use libc::{EXIT_FAILURE, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use nix::{
     errno::Errno,
     fcntl::OFlag,
@@ -81,229 +74,6 @@ fn exec_thread_pool() -> &'static Arc<ThreadPool> {
     static EXEC_THREAD_POOL: LazyLock<Arc<ThreadPool>> =
         LazyLock::new(|| ThreadPool::new(1, usize::MAX));
     &EXEC_THREAD_POOL
-}
-
-/// Execute the processes specified by `j` in the parser \p.
-/// On a true return, the job was successfully launched and the parser will take responsibility for
-/// cleaning it up. On a false return, the job could not be launched and the caller must clean it
-/// up.
-pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
-    // If fish was invoked with -n or --no-execute, then no_exec will be set and we do nothing.
-    if no_exec() {
-        return true;
-    }
-
-    // A task's descriptors are the base of every process it starts; the block's and the command's
-    // redirections are applied over them. A background job does not write into the enclosing
-    // command substitution's capture.
-    let mut task_io = parser.descriptor_table().to_io_chain();
-    if job.is_initially_background() {
-        let mut inherited = IoChain::new();
-        for data in &block_io.0 {
-            if data.io_mode() != IoMode::BufferFill {
-                inherited.push(std::sync::Arc::clone(data));
-            }
-        }
-        task_io.append(&inherited);
-    } else {
-        task_io.append(&block_io);
-    }
-    let block_io = task_io;
-
-    // Handle an exec call.
-    if job.processes()[0].is_exec() {
-        // If we are interactive, perhaps disallow exec if there are background jobs.
-        if !allow_exec_with_background_jobs(parser) {
-            for p in job.processes().iter() {
-                p.mark_aborted_before_launch();
-            }
-            return false;
-        }
-
-        // Apply foo=bar variable assignments
-        for assignment in &job.processes()[0].variable_assignments {
-            parser.set_var(
-                &assignment.variable_name,
-                ParserEnvSetMode::new(EnvMode::LOCAL_EXPORTED),
-                assignment.values.clone(),
-            );
-        }
-
-        internal_exec(parser.vars(), parser.is_repainting(), job, block_io);
-        // internal_exec only returns if it failed to set up redirections.
-        // In case of an successful exec, this code is not reached.
-        let status = if job.flags().negate { 0 } else { 1 };
-        parser.set_last_statuses(Statuses::just(status));
-
-        // A false return tells the caller to remove the job from the list.
-        for p in job.processes().iter() {
-            p.mark_aborted_before_launch();
-        }
-        return false;
-    }
-
-    // Get the deferred process, if any. We will have to remember its pipes.
-    let mut deferred_pipes = PartialPipes::default();
-    let deferred_process = get_deferred_process(job);
-    let suspension_count = parser.suspension_count();
-    let mut suspended_at = None;
-
-    // We may want to transfer tty ownership to the pgroup leader.
-    let mut handoff = TtyHandoff::new(|| {});
-
-    // This loop loops over every process_t in the job, starting it as appropriate. This turns out
-    // to be rather complex, since a process_t can be one of many rather different things.
-    //
-    // The loop also has to handle pipelining between the jobs.
-    //
-    // We can have up to three pipes "in flight" at a time:
-    //
-    // 1. The pipe the current process should read from (courtesy of the previous process)
-    // 2. The pipe that the current process should write to
-    // 3. The pipe that the next process should read from (courtesy of us)
-    //
-    // Lastly, a process may experience a pipeline-aborting error, which prevents launching
-    // further processes in the pipeline.
-    let mut pipe_next_read: Option<OwnedFd> = None;
-    let mut aborted_pipeline = false;
-    let mut procs_launched = 0;
-    for i in 0..job.processes().len() {
-        let p = &job.processes()[i];
-        // proc_pipes is the pipes applied to this process. That is, it is the read end
-        // containing the output of the previous process (if any), plus the write end that will
-        // output to the next process (if any).
-        let mut proc_pipes = PartialPipes::default();
-        std::mem::swap(&mut proc_pipes.read, &mut pipe_next_read);
-        if !p.is_last_in_job {
-            let Ok(pipes) = make_autoclose_pipes() else {
-                flog!(warning, wgettext!(PIPE_ERROR));
-                aborted_pipeline = true;
-                abort_pipeline_from(job, i);
-                break;
-            };
-            pipe_next_read = Some(pipes.read);
-            proc_pipes.write = Some(pipes.write);
-
-            // Save any deferred process for last. By definition, the deferred process can
-            // never be the last process in the job, so it's safe to nest this in the outer
-            // `if (!p->is_last_in_job)` block, which makes it clear that `proc_next_read` will
-            // always be assigned when we `continue` the loop.
-            if Some(i) == deferred_process {
-                deferred_pipes = proc_pipes;
-                continue;
-            }
-        }
-
-        // Regular process.
-        if exec_process_in_job(
-            parser,
-            p,
-            job,
-            block_io.clone(),
-            proc_pipes,
-            &deferred_pipes,
-            false,
-        )
-        .is_err()
-        {
-            aborted_pipeline = true;
-            abort_pipeline_from(job, i);
-            break;
-        }
-        procs_launched += 1;
-        if suspended_at.is_none() && parser.suspension_count() != suspension_count {
-            suspended_at = Some(i);
-        }
-
-        // Transfer tty?
-        if p.leads_pgrp && job.group().wants_terminal() {
-            handoff.to_job_group(job.group.as_ref().unwrap());
-        }
-    }
-    drop(pipe_next_read);
-
-    // If our pipeline was aborted before any process was successfully launched, then there is
-    // nothing to reap, and we can perform an early return.
-    // Note we must never return false if we have launched even one process, since it will not be
-    // properly reaped; see #7038.
-    if aborted_pipeline && procs_launched == 0 {
-        return false;
-    }
-
-    // Ok, at least one thing got launched.
-    // Handle any deferred process.
-    if let Some(dp) = deferred_process {
-        if
-        // Some other process already aborted our pipeline.
-        aborted_pipeline
-            // The deferred proc itself failed to launch.
-            || exec_process_in_job(
-                parser,
-                &job.processes()[dp],
-                job,
-                block_io.clone(),
-                deferred_pipes,
-                &PartialPipes::default(),
-                true,
-            )
-            .is_err()
-        {
-            job.processes()[dp].mark_aborted_before_launch();
-        }
-        if suspended_at.is_none() && parser.suspension_count() != suspension_count {
-            suspended_at = Some(dp);
-        }
-    }
-
-    flogf!(
-        exec_job_exec,
-        "Executed job %d from command '%s'",
-        job.job_id(),
-        job.command()
-    );
-
-    job.mark_constructed();
-
-    // If exec_error then a backgrounded job would have been terminated before it was ever assigned
-    // a pgroup, so error out before setting last_pid.
-    if !job.is_foreground() {
-        if let Some(last_pid) = job.last_pid() {
-            parser.set_one(
-                L!("last_pid"),
-                ParserEnvSetMode::new(EnvMode::GLOBAL),
-                last_pid.to_wstring(),
-            );
-        }
-    }
-
-    if !job.is_initially_background() {
-        if let Some(suspend_index) = suspended_at {
-            // The stages after the suspending stage are its consumers and run to completion; the
-            // stages before it produce the suspended stream and keep running, and a later `resume`
-            // waits for that stream.
-            while job.processes()[suspend_index + 1..]
-                .iter()
-                .any(|p| !p.is_completed() && !p.is_stopped())
-            {
-                parser.run_runnable_tasks();
-                process_mark_finished_children(parser, true, Some(&block_io));
-            }
-            if let Some(statuses) = job.statuses() {
-                parser.set_last_statuses(statuses);
-                parser.libdata_mut().status_count += 1;
-            }
-            if !job.is_completed() {
-                job.group().set_is_foreground(false);
-            }
-        } else {
-            job.continue_job(parser, Some(&block_io));
-        }
-    }
-
-    if job.is_stopped() {
-        handoff.save_tty_modes();
-    }
-    true
 }
 
 /// Evaluate a command.
@@ -1053,115 +823,6 @@ pub(crate) fn function_restore_environment(parser: &mut Parser, block: BlockId) 
 type ProcPerformer =
     dyn FnOnce(&mut Parser, Option<&mut OutputStream>, Option<&mut OutputStream>) -> ProcStatus;
 
-// Return a function which may be to run the given block node process 'p'.
-fn get_performer_for_block_node(p: &Process, job: &Job, io_chain: &IoChain) -> Box<ProcPerformer> {
-    let ProcessType::BlockNode(node) = &p.typ else {
-        panic!("Expected a block node process");
-    };
-
-    // We want to capture the job group.
-    let job_group = job.group.clone();
-    let io_chain = io_chain.clone();
-    let node = node.clone();
-    Box::new(move |parser: &mut Parser, _out, _err| {
-        parser
-            .eval_node(&node, &io_chain, job_group.as_ref(), BlockType::Top, false)
-            .status
-    })
-}
-
-// Return a performer for the given process 'p'.
-fn get_performer_for_function(p: &Process, job: &Job, io_chain: &IoChain) -> Box<ProcPerformer> {
-    assert!(p.is_function());
-    // We want to capture the job group.
-    let job_group = job.group.clone();
-    let io_chain = io_chain.clone();
-    let ProcessType::Function { props } = &p.typ else {
-        panic!();
-    };
-    let props = props.as_ref().unwrap().clone();
-    let argv = p.argv().clone();
-    Box::new(move |parser: &mut Parser, _out, _err| {
-        // Pull out the job list from the function.
-        let fb = function_prepare_environment(parser, argv, &props);
-        let body_node = props.func_node.child_ref(|n| &n.jobs);
-        let mut res = parser.eval_node(
-            &body_node,
-            &io_chain,
-            job_group.as_ref(),
-            BlockType::Top,
-            false,
-        );
-        function_restore_environment(parser, fb);
-
-        // If the function did not execute anything, treat it as success.
-        if res.was_empty {
-            res = EvalRes::new(ProcStatus::from_exit_code(EXIT_SUCCESS));
-        }
-        res.status
-    })
-}
-
-/// Execute a block node or function "process".
-/// `piped_output_needs_buffering` if true, buffer the output.
-fn exec_block_or_func_process(
-    parser: &mut Parser,
-    j: &Job,
-    p: &Process,
-    mut io_chain: IoChain,
-    piped_output_needs_buffering: bool,
-) -> LaunchResult {
-    assert!(p.is_block_node() || p.is_function());
-    // Create an output buffer if we're piping to another process.
-    let mut block_output_bufferfill = None;
-    if piped_output_needs_buffering {
-        // Be careful to handle failure, e.g. too many open fds.
-        match IoBufferfill::create() {
-            Ok(tmp) => {
-                // Teach the job about its bufferfill, and add it to our io chain.
-                io_chain.push(tmp.clone());
-                block_output_bufferfill = Some(tmp);
-            }
-            Err(_) => return Err(()),
-        }
-    }
-
-    let performer = if p.is_block_node() {
-        get_performer_for_block_node(p, j, &io_chain)
-    } else {
-        get_performer_for_function(p, j, &io_chain)
-    };
-    let status = performer(parser, None, None);
-    p.status.set(status);
-    // Match the behavior of handle_child_status to cancel a job group.
-    if status.signal_exited() {
-        let sig = status.signal_code();
-        if is_interactive_session() && [SIGINT, SIGQUIT].contains(&sig) {
-            j.group().cancel_with_signal(RawSignal::new(sig));
-        }
-    }
-
-    // If we have a block output buffer, populate it now.
-    let mut buffer_contents = vec![];
-    if let Some(block_output_bufferfill) = block_output_bufferfill {
-        // Remove our write pipe and forget it. This may close the pipe, unless another thread has
-        // claimed it (background write) or another process has inherited it.
-        io_chain.remove(&*block_output_bufferfill);
-        buffer_contents = IoBufferfill::finish(block_output_bufferfill).newline_serialized();
-    }
-
-    run_internal_process_or_short_circuit(
-        parser,
-        j,
-        p,
-        buffer_contents,
-        vec![], /* errdata */
-        &io_chain,
-    );
-
-    Ok(())
-}
-
 /// Schedule a task stage: build its frames and make its task runnable.
 fn exec_task_process(
     parser: &mut Parser,
@@ -1193,7 +854,6 @@ fn exec_task_process(
                 function_block: None,
                 scope_block: None,
                 prev_exec_count: 0,
-                prev_status_count: 0,
             })));
             (frames, props.func_node.parsed_source_ref())
         }
@@ -1326,162 +986,7 @@ pub(crate) struct PartialPipes {
     pub(crate) write: Option<OwnedFd>,
 }
 
-/// Executes a process \p `in` `job`, using the pipes `pipes` (which may have invalid fds if this
-/// is the first or last process).
-/// `deferred_pipes` represents the pipes from our deferred process; if set ensure they get closed
-/// in any child. If `is_deferred_run` is true, then this is a deferred run; this affects how
-/// certain buffering works.
-/// An error return here indicates that the process failed to launch, and the rest of
-/// the pipeline should be cancelled.
-fn exec_process_in_job(
-    parser: &mut Parser,
-    p: &Process,
-    j: &Job,
-    block_io: IoChain,
-    pipes: PartialPipes,
-    deferred_pipes: &PartialPipes,
-    is_deferred_run: bool,
-) -> LaunchResult {
-    // The write pipe (destined for stdout) needs to occur before redirections. For example,
-    // with a redirection like this:
-    //
-    //   `foo 2>&1 | bar`
-    //
-    // what we want to happen is this:
-    //
-    //    dup2(pipe, stdout)
-    //    dup2(stdout, stderr)
-    //
-    // so that stdout and stderr both wind up referencing the pipe.
-    //
-    // The read pipe (destined for stdin) is more ambiguous. Imagine a pipeline like this:
-    //
-    //   echo alpha | cat < beta.txt
-    //
-    // Should cat output alpha or beta? bash and ksh output 'beta', tcsh gets it right and
-    // complains about ambiguity, and zsh outputs both (!). No shells appear to output 'alpha',
-    // so we match bash here. That would mean putting the pipe first, so that it gets trumped by
-    // the file redirection.
-    //
-    // However, eval does this:
-    //
-    //   echo "begin; $argv "\n" ;end <&3 3<&-" | source 3<&0
-    //
-    // which depends on the redirection being evaluated before the pipe. So the write end of the
-    // pipe comes first, the read pipe of the pipe comes last. See issue #966.
-
-    // Maybe trace this process.
-    // TODO: 'and' and 'or' will not show.
-    trace_if_enabled_with_args(parser, L!(""), p.argv());
-
-    // The IO chain for this process.
-    let mut process_net_io_chain = block_io;
-
-    if let Some(fd) = pipes.write {
-        process_net_io_chain.push(Arc::new(IoPipe::new(
-            p.pipe_write_fd,
-            false, /* not input */
-            fd,
-        )));
-    }
-
-    // Append IOs from the process's redirection specs.
-    // This may fail, e.g. a failed redirection.
-    if !process_net_io_chain
-        .append_from_specs(p.redirection_specs(), &parser.vars().get_pwd_slash())
-    {
-        return Err(());
-    }
-
-    // Read pipe goes last.
-    if let Some(fd) = pipes.read {
-        let pipe_read = Arc::new(IoPipe::new(STDIN_FILENO, true /* input */, fd));
-        process_net_io_chain.push(pipe_read);
-    }
-
-    // If we have stashed pipes, make sure those get closed in the child.
-    for afd in [&deferred_pipes.read, &deferred_pipes.write]
-        .into_iter()
-        .flatten()
-    {
-        process_net_io_chain.push(Arc::new(IoClose::new(afd.as_raw_fd())));
-    }
-
-    if !p.evaluates_block_statement() {
-        // A simple `begin ... end` should not be considered an execution of a command.
-        parser.libdata_mut().exec_count += 1;
-    }
-
-    let mut block_id = None;
-    if !p.variable_assignments.is_empty() {
-        block_id = Some(parser.push_block(Block::variable_assignment_block()));
-    }
-    let parser = &mut **ScopeGuard::new(parser, |parser| {
-        if let Some(block_id) = block_id {
-            parser.pop_block(block_id);
-        }
-    });
-    for assignment in &p.variable_assignments {
-        parser.set_var(
-            &assignment.variable_name,
-            ParserEnvSetMode::new(EnvMode::LOCAL_EXPORTED),
-            assignment.values.clone(),
-        );
-    }
-
-    // Decide if outputting to a pipe may deadlock.
-    // This happens if fish pipes from an internal process into another internal process:
-    //    echo $big | string match...
-    // Here fish will only run one process at a time, so the pipe buffer may overfill.
-    // It may also happen when piping internal -> external:
-    //    echo $big | external_proc
-    // fish wants to run `echo` before launching external_proc, so the pipe may deadlock.
-    // However if we are a deferred run, it means that we are piping into an external process
-    // which got launched before us!
-    let piped_output_needs_buffering = !p.is_last_in_job && !is_deferred_run;
-
-    // Execute the process.
-    p.check_generations_before_launch();
-    match &p.typ {
-        ProcessType::Function { .. } | ProcessType::BlockNode(_) => exec_block_or_func_process(
-            parser,
-            j,
-            p,
-            process_net_io_chain,
-            piped_output_needs_buffering,
-        ),
-        ProcessType::Task(stage) => exec_task_process(
-            parser,
-            j,
-            p,
-            stage,
-            process_net_io_chain,
-            piped_output_needs_buffering,
-        ),
-        ProcessType::Builtin => exec_builtin_process(
-            parser,
-            j,
-            p,
-            &process_net_io_chain,
-            piped_output_needs_buffering,
-        ),
-        ProcessType::External => {
-            exec_external_command(parser, j, p, &process_net_io_chain)?;
-            // It's possible (though unlikely) that this is a background process which recycled a
-            // pid from another, previous background process. Forget any such old process.
-            parser.mut_wait_handles().remove_by_pid(p.pid().unwrap());
-            Ok(())
-        }
-        ProcessType::Exec => {
-            // We should have handled exec up above.
-            panic!(
-                "process_type_t::exec process found in pipeline, where it should never be. Aborting."
-            );
-        }
-    }
-}
-
-/// One shell-evaluated stage whose process the evaluator runs from frames.
+/// One shell-evaluated stage that its job's frames evaluate instead of a separate task.
 pub(crate) enum PendingStage {
     /// A builtin command.
     Builtin {
