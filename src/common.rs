@@ -326,8 +326,8 @@ mod tests {
     use crate::tests::prelude::*;
     use fish_util::get_seeded_rng;
     use fish_widestring::{
-        ENCODE_DIRECT_BASE, ENCODE_DIRECT_END, L, WString, bytes2wcstring, decode_with_replacement,
-        wcs2bytes, wstr,
+        BRACE_BEGIN, BRACE_END, BRACE_SEP, ENCODE_DIRECT_BASE, ENCODE_DIRECT_END, L, WString,
+        bytes2wcstring, decode_with_replacement, wcs2bytes, wstr,
     };
     use rand::{Rng as _, RngExt as _};
     use std::fmt::Write as _;
@@ -377,6 +377,32 @@ mod tests {
                 "In unescaping {input:?}, expected {expected:?} but got {output:?}\n"
             );
         }
+    }
+
+    #[test]
+    fn test_unescape_brace_separator_positions() {
+        // A shortening escape before a brace group makes the output position
+        // differ from the input position.  Separator bookkeeping must use the
+        // output position, or the enclosing brace loses its separator and is
+        // emitted literally.
+        let style = UnescapeStringStyle::Script(super::UnescapeFlags {
+            special: true,
+            ..Default::default()
+        });
+        let output =
+            unescape_string(L!("\\x61{,{,Z}}"), style).expect("the input is a valid script escape");
+
+        let mut expected = WString::new();
+        expected.push('a');
+        expected.push(BRACE_BEGIN);
+        expected.push(BRACE_SEP);
+        expected.push(BRACE_BEGIN);
+        expected.push(BRACE_SEP);
+        expected.push('Z');
+        expected.push(BRACE_END);
+        expected.push(BRACE_END);
+
+        assert_eq!(output, expected);
     }
 
     #[test]

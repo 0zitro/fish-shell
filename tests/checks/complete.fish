@@ -765,6 +765,10 @@ complete -c foo -a "foo\\"
 complete -C
 # CHECKERR: complete: Can not get commandline in non-interactive mode
 
+complete -C'\ufdd2foo' >/dev/null
+echo $status
+# CHECK: 0
+
 if string match -rq -- '^[a-z]+$' $USER
     set -l first_letter_wrong_case (string sub -l 1 -- $USER | string upper)
     string match -rq -- "$USER\t.*" (complete -C "echo ~$first_letter_wrong_case")

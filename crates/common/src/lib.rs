@@ -597,7 +597,7 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
                         && input.char_at(input_position + 1) == '(';
                     if !is_cmdsub {
                         to_append_or_none = Some(VARIABLE_EXPAND);
-                        vars_or_seps.push(input_position);
+                        vars_or_seps.push(result.len());
                     }
                 }
                 '{' if unescape_special => {
@@ -647,7 +647,7 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
                 }
                 ',' if unescape_special && brace_count > 0 => {
                     to_append_or_none = Some(BRACE_SEP);
-                    vars_or_seps.push(input_position);
+                    vars_or_seps.push(result.len());
                     potential_word_start = Some(input_position + 1);
                 }
                 ' ' if unescape_special && brace_count > 0 => {
@@ -739,7 +739,7 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
                 }
                 '$' if unescape_special => {
                     to_append_or_none = Some(VARIABLE_EXPAND_SINGLE);
-                    vars_or_seps.push(input_position);
+                    vars_or_seps.push(result.len());
                 }
                 '[' if unescape_special => {
                     to_append_or_none = Some(SLICE_BEGIN);
