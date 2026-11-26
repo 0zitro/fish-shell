@@ -1520,6 +1520,7 @@ pub fn expand_cmdsubst(
             }
 
             let mut status_source = WString::new();
+            status_source.push('$');
             status_source.push('(');
             status_source.push_utfstr(L!("builtin echo; "));
             append_reified_status_chain(&mut status_source, statuses);
