@@ -195,6 +195,28 @@ Minimum Supported Rust Version (MSRV) Policy
 
 We support at least the version of ``rustc`` available in Debian Stable.
 
+Building
+========
+
+fish has two build systems. ``cargo build`` builds the binaries with the default features into ``target/debug``; it needs no CMake step.
+
+CMake builds
+------------
+
+CMake builds the binaries by invoking Cargo and installs them with fish's manual pages and data files. ``CMAKE_BUILD_TYPE`` selects the Cargo profile:
+
+- ``Debug`` selects the ``debug`` profile.
+- ``RelWithDebInfo``, the default build type, selects ``release-with-debug``.
+- ``Release`` selects ``release``.
+
+``release-with-debug`` and ``release`` enable the cross-crate LTO set by ``[profile.release]``; ``debug`` does not, which makes it the profile for the edit-and-test cycle.
+
+The CMake build sets ``CARGO_TARGET_DIR`` to ``${CMAKE_BINARY_DIR}/cargo``, passes ``--target`` with the resolved target triple, and passes ``--no-default-features`` with the features it configures: ``localize-messages`` unless ``-DWITH_MESSAGE_LOCALIZATION=OFF``, and ``tsan`` with ``-DTSAN=1``. ``-DASAN=1`` and ``-DTSAN=1`` also pass ``-Z build-std``.
+
+The ``fish`` target builds the ``fish`` binary at ``${CMAKE_BINARY_DIR}/cargo/<target-triple>/<profile>/fish``, where ``<profile>`` is ``debug``, ``release-with-debug`` or ``release``, and copies it to ``${CMAKE_BINARY_DIR}/fish``. The ``fish_indent`` and ``fish_key_reader`` targets are links to that file (busybox-style).
+
+README.rst, "Building from source with CMake", documents the installation commands.
+
 Testing
 =======
 
@@ -246,9 +268,24 @@ The tests can be run on your local system::
 Here, the first argument to test_driver.py refers to a directory with ``fish``, ``fish_indent`` and ``fish_key_reader`` in it.
 In this example we're in the root of the workspace and have run ``cargo build`` without ``--release``, so it's a debug build.
 
-To run all tests and linters, use::
+Running the checks
+------------------
 
-    cargo xtask check
+To run all tests and linters, use ``cargo xtask check``, which invokes ``build_tools/check.sh``; the script can also be run directly as ``sh build_tools/check.sh``. The script builds the workspace with ``--workspace --all-targets --features=fluent-extract,gettext-extract``, then runs:
+
+- the unit tests, the doctests and the system tests through ``tests/test_driver.py``;
+- the Fluent checks;
+- unless ``FISH_CHECK_LINT=false``: the format checks, ShellCheck (when installed), clippy for the default, ``--no-default-features`` and ``--all-features`` feature sets, ``cargo-deny`` (when installed), ``cargo doc`` and the gettext checks.
+
+The system tests run against the Cargo ``debug`` binaries. A binary built by CMake is not tested by the script.
+
+The script reads these environment variables:
+
+- ``FISH_CHECK_LINT``: ``false`` skips the format, ShellCheck, clippy, ``cargo-deny``, gettext and documentation steps.
+- ``FISH_CHECK_CARGO_ARGS``: arguments added to every Cargo invocation in the script.
+- ``FISH_CHECK_TARGET_TRIPLE``: the target passed to Cargo. The system tests then run against ``target/<triple>/debug``, or ``$CARGO_TARGET_DIR/<triple>/debug`` when ``CARGO_TARGET_DIR`` is set.
+- ``FISH_TEST_MAX_CONCURRENCY``: sets ``RUST_TEST_THREADS`` and ``CARGO_BUILD_JOBS``.
+- ``FISH_CHECK_DEPENDENCY_VERSIONS``: a value other than ``false`` runs the updatecli dependency checks, which require ``curl``, ``jq``, ``rustup``, ``uv`` and ``updatecli``.
 
 .. _localization:
 
