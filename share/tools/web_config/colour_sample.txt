@@ -1,0 +1,193 @@
+#!/usr/bin/env fish
+
+# A sample of fish source, drawn by fish_config's colour page and classified by the shell's
+# own highlighting pass.  Nothing sources it, so the names it declares are not names the
+# shell has; one line states an escape no code point answers, and the last line is still
+# being typed, which is why the file does not parse.
+
+
+#region the guard a library opens with
+# @fish-lsp-disable-next-line 4004
+if not { status stack-trace | read --local -- __ }
+  echo -- 'This file is a library, meant to be sourced.' >&2
+  exit 1
+end
+#endregion
+
+
+#region TrailingNLSafety
+# A capture adds one newline the text did not have; this filter drops it, so a value carried
+# through `(…)` is the value and not the value plus a line break.
+function __trim_1trailing_nl
+  cat | gawk 'NR > 1 { printf "\n" } { printf "%s", $0 }'
+end
+
+# A base's entry point is a symlink to this file, so the path the file is *called* by is the
+# one that locates it: `status current-filename` states that path as invoked, already
+# absolute when fish found the file, and only a relative one is made absolute -- lexically,
+# without touching the link, because resolving it would point every base here.
+set --local -- filename (status current-filename | __trim_1trailing_nl | string collect --no-trim-newlines)
+if not string match --quiet -- '/*' "$filename"
+  set -- filename "$PWD/$filename"
+end
+set -- filename (path normalize -- "$filename" | __trim_1trailing_nl | string collect --no-trim-newlines)
+set --local -- dirname (path dirname -- "$filename" | __trim_1trailing_nl | string collect --no-trim-newlines)
+
+functions --erase -- '__trim_1trailing_nl'
+#endregion
+
+
+set --global --export RELEASES_ROOT "$__fish_config_dir/../releases"
+set --path RELEASES_MIRROR ~deploy/mirror
+set --universal --export RELEASES_HOST ci.example.com
+set --universal --export RELEASES_TARGETS aarch64 x86_64 arm64 amd64
+
+
+#region definitions
+function __release__root
+  set --local -- base "$RELEASES_ROOT"
+  if ! test -d "$base"
+    echo -n -- "releases: no such root :: \`$base\`" >&2
+    return 2
+  end
+  echo -- "$base"
+end
+
+
+function __release__triple --argument-names target
+  switch "$target"
+    case aarch64 arm64
+      echo -- aarch64-linux-gnu
+    case x86_64 amd64
+      echo -- x86_64-linux-gnu
+    case '*'
+      echo -- "$target"
+  end
+end
+
+
+# `-S` shares the caller's scope, so a helper can write the caller's list.
+function __release__stage -S \
+      --description='Append one target to the caller\'s staged list' \
+      --argument-names target \
+;
+  set --append -- staged "$target"
+end
+
+
+# A step either runs for its status or states itself, and the two are the same words:
+# `string escape` makes them one command line, and `builtin eval` runs it.  The `builtin` is
+# not decoration -- a function wrapping `eval` could shadow it.
+function __release__run --argument-names dry
+  set --local -- escaped (string escape -- $argv[2..-1])
+  if test "$dry" = '1'
+    echo -- "+ $escaped"
+  else
+    builtin eval $escaped
+  end
+end
+
+
+# Reading a log back with its newlines intact: the collector keeps them, and the trimmer
+# above is what a capture would otherwise need.
+function __release__capture --argument-names path
+  command cat -- "$path" | builtin string collect --no-trim-newlines
+end
+
+
+# An event handler is a definition too, and `%self` names this shell's own process, so this
+# one runs when the shell exits.
+function __release__on_exit --on-process-exit %self
+  command rm --force -- "$__release__stamp"
+end
+#endregion
+
+
+#region publishing one built target
+function __release__publish \
+      --description='Copy one built binary set into the release root' \
+      --argument-names target dry \
+;
+  set --local -- root (__release__root)
+  test -n "$target"; or set -- target (random choice -- $RELEASES_TARGETS)
+  set --local -- triple (__release__triple "$target")
+  set --local -- out "$root/"(date --utc '+%Y%m%d-%H%M%S')"/$triple"
+
+  # `(…)` keeps the newlines a command substitution trims; `"$(…)"` trims them.  The
+  # eventual form is the one a value travels through.
+  set --local -- captured (__release__capture "$out/manifest")
+  set --local -- trimmed "$(__release__capture "$out/manifest")"
+
+  # A block is a command: its steps share one set of streams, and the append target names a
+  # file the next run adds to.
+  __release__run "$dry" command mkdir --parents -- "$out"
+    or begin
+      echo -n -- "releases: could not create \`$out\`" >&2
+      return 1
+    end
+  { command cp --archive -- "build/$triple/bin/". "$out/";
+    and command ln --symbolic -- "$out" "$root/latest" } >>published.log 2>&1
+  test -e "$out" && echo -- "published $target" || echo -- "nothing to publish for $target"
+
+  # A pipe takes the descriptor written before it: stdout into tee, and tee's stderr into the
+  # sink, so the manifest reaches the terminal and stays out of the log.
+  command cat -- "$out/manifest" \
+    1>| command tee /dev/stderr \
+        2>| command tee -- /dev/null
+  emit -- 'releases::published' "$out"
+
+  # A job that must not read the terminal, and the builtin the shipped `wait` wraps.
+  command sleep -- 1 < /dev/null &
+  builtin wait $last_pid
+
+  # A step writes its manifest after it returns, so the loop waits for the file to appear.
+  while true
+    test -e "$out/manifest"; and break
+    command sleep -- 0.05
+  end
+
+  set --local -- staged 0
+  for release in $captured
+    test -z "$release"; and continue
+    echo -- "$release" >/dev/null
+    set -- staged (math -- "($staged) + 1")
+  end
+  return 0
+end
+#endregion
+
+
+#region at the prompt
+set --local -- escape \x1b
+set --local -- byte \101
+set --local -- control \ca
+set --local -- dry_run false
+if status is-interactive
+  time command releases (string split -- ' ' $argv[1..-1])
+  or exec echo -n -- "$escape"\[1m"failed""$escape"\[0m >&2
+end
+
+# A bare directory is a command: the word becomes the `cd` it spells.
+..; and ls -1
+
+for archive in ~deploy/mirror/*.{tar,gz}
+  test -e "$archive"; and cp --archive -- "$archive" (__release__root) &>/dev/null &
+  test -e "$RELEASES_MIRROR/.stop"; and break
+end
+wait
+
+set --local -- name of the release root
+echo -- "the newest is at $$name/latest" >&2
+if test "$x" -gt -1
+  echo -- \U110000
+end
+
+# The shapes that fail, drawn so the page shows what it reports: a command that fails, a
+# directory no `cd` enters, and a log whose directory does not exist.
+false; or echo -n -- 'as expected' >&2
+cd /nonexistent/releases; or echo -n -- 'unreachable' >&2
+echo -- 'unreachable' >/nonexistent/releases/published.log
+#endregion
+
+
+echo -n -- 'a quote you are still typing

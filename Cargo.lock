@@ -343,6 +343,7 @@ dependencies = [
  "fish-localization",
  "fish-printf",
  "fish-tempfile",
+ "fish-token-scope",
  "fish-util",
  "fish-wcstringutil",
  "fish-wgetopt",
@@ -510,6 +511,21 @@ version = "0.0.0"
 dependencies = [
  "nix 0.31.3",
  "rand",
+]
+
+[[package]]
+name = "fish-token-scope"
+version = "0.0.0"
+dependencies = [
+ "fish-token-scope-macros",
+ "fish-widestring",
+]
+
+[[package]]
+name = "fish-token-scope-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
 ]
 
 [[package]]
@@ -1750,6 +1766,7 @@ dependencies = [
  "fish-build-helper",
  "fish-common",
  "fish-tempfile",
+ "fish-token-scope",
  "fish-widestring",
  "fluent-ftl-tools",
  "fluent-syntax",

@@ -5,7 +5,7 @@ use crate::{
     builtins::Error,
     common::valid_var_name,
     err_fmt, err_raw, err_str,
-    highlight::{colorize, highlight_and_colorize, highlight_shell},
+    highlight::{colorize_text, highlight_and_colorize, highlight_shell},
     input::{Binding, BindingSet, KeyNameStyle, bindings, input_function_get_names},
     key::{
         self, KEY_NAMES, Key, MAX_FUNCTION_KEY, Modifiers, char_to_symbol, function_key, parse_keys,
@@ -225,9 +225,15 @@ impl BuiltinBind {
                     streams.out.append(&if streams.out_is_redirected {
                         out
                     } else {
-                        let mut colors = Vec::new();
-                        highlight_shell(&out, &mut colors, &mut parser.context(), false, None);
-                        let colored = colorize(&out, &colors, parser.vars());
+                        let mut classifications = Vec::new();
+                        highlight_shell(
+                            &out,
+                            &mut classifications,
+                            &mut parser.context(),
+                            false,
+                            None,
+                        );
+                        let colored = colorize_text(&out, &classifications, parser.vars());
                         bytes2wcstring(&colored)
                     });
                     cur_file = Some(def_file);

@@ -209,6 +209,32 @@ def better_color(c1, c2):
     return c1
 
 
+def classify_text(text):
+    """Classify `text` by the highlighting pass itself.
+
+    Each piece is a run of characters the pass gave one scope, so the page colours and
+    picks by what fish reports rather than by a second classification.  The pass resolves
+    commands and paths the way the command line does, and each piece states the scopes
+    that enclose it and the attributes it carries, so the page composes the style the
+    terminal would draw."""
+    out, err = run_fish_cmd(
+        "printf %s {} | fish_indent --pygments --io".format(escape_fish_cmd(text))
+    )
+    assert err == "", err
+    pieces = []
+    for line in out.splitlines():
+        start, end, path, enclosing, attributes = line.split(",", 4)
+        pieces.append(
+            {
+                "text": text[int(start) : int(end)],
+                "path": path,
+                "enclosing": enclosing.split("+") if enclosing else [],
+                "attributes": attributes.split("+") if attributes else [],
+            }
+        )
+    return pieces
+
+
 def parse_colors(colors_str):
     for words in map(shlex.split, colors_str.splitlines()):
         assert re.match(
@@ -226,6 +252,23 @@ def parse_colors(colors_str):
     }
 
 
+def current_theme_for_webconfig(colors_str, terminal_color_theme):
+    """The theme in force, in the shape the page reads a theme in."""
+    return {
+        "theme": "Current",
+        "by_color_theme": {
+            # Hack-ish: we don't know about the light/dark variants.
+            "unknown": parse_colors(colors_str)
+            | {
+                "preferred_background": "white"
+                if terminal_color_theme == "light"
+                else "black",
+            }
+        },
+        "terminal_color_theme": terminal_color_theme,
+    }
+
+
 def parse_color(comps):
     """A basic function to parse a color string, for example, ['red', '--bold']."""
     color = ""
@@ -237,10 +280,13 @@ def parse_color(comps):
     strikethrough = False
     dim = False
     reverse = False
+    reset = False
     i = 0
     while i < len(comps):
         comp = comps[i]
-        if comp == "--bold" or comp == "-o":
+        if comp == "--reset" or comp == "-R":
+            reset = True
+        elif comp == "--bold" or comp == "-o":
             bold = True
         elif comp == "--underline" or comp == "-u":
             underline = "single"
@@ -315,6 +361,7 @@ def parse_color(comps):
         "dim": dim,
         "reverse": reverse,
         "strikethrough": strikethrough,
+        "reset": reset,
     }
 
 
@@ -341,6 +388,8 @@ def unparse_color(col):
         ret += " --background=" + col["background"]
     if col["underline-color"]:
         ret += " --underline-color=" + col["underline-color"]
+    if col["reset"]:
+        ret += " --reset"
     return ret
 
 
@@ -798,10 +847,30 @@ class FishConfigTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
 
 
 class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
+    # The page aborts a request when it reloads, navigates or reclassifies the line while a
+    # request is in flight, and the socket then closes under the answer.  A client that
+    # stopped listening is not an error for the server, and the thread that serves the
+    # request has nothing left to do, so the connection is dropped quietly.
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
     def write_to_wfile(self, txt):
         self.wfile.write(txt.encode("utf-8"))
 
+    # Every answer states a file or the machine's state as it is at the moment it is asked, and
+    # loading the page again is how a change to either is taken up, so no answer is worth storing.
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_get_colors(self):
+        """The colours of the theme in force, which the page paints with.
+
+        The page needs only this one theme to draw itself, and dumping it is a fraction of the
+        work of exporting every theme the shell ships: the catalogue is `do_get_themes`."""
         out, err = run_fish_cmd(
             ""
             + "if set -q __fish_initialized && test $__fish_initialized -lt 4300\n"
@@ -812,28 +881,31 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                 TERMINAL_COLOR_THEME
             )
             + "or __fish_color_theme=unknown __fish_apply_theme\n"
-            + "__fish_theme_export_for_webconfig",
+            + '__fish_posix_quote "$(fish_config theme dump)"',
+            env=os.environ | {"__fish_force_load_default_theme": "1"},
+        )
+        assert err == "", err
+
+        return [
+            current_theme_for_webconfig(
+                next(iter(shlex.split(out))), TERMINAL_COLOR_THEME
+            )
+        ]
+
+    def do_get_themes(self):
+        """The themes the shell ships, for the page's list of themes to write instead.
+
+        Exporting every theme states each one's colours through the shell itself, which takes
+        seconds: the page asks for this after it has painted, not before."""
+        out, err = run_fish_cmd(
+            "__fish_theme_export_for_webconfig",
             env=os.environ | {"__fish_force_load_default_theme": "1"},
         )
         assert err == "", err
 
         words = iter(shlex.split(out))
-        current = next(words)
-        themes = [
-            {
-                "theme": "Current",
-                "by_color_theme": {
-                    # Hack-ish: we don't know about the light/dark variants.
-                    "unknown": parse_colors(current)
-                    | {
-                        "preferred_background": "white"
-                        if TERMINAL_COLOR_THEME == "light"
-                        else "black",
-                    }
-                },
-                "terminal_color_theme": TERMINAL_COLOR_THEME,
-            }
-        ]
+        next(words)  # The theme in force, which `do_get_colors` states.
+        themes = []
         while True:
             try:
                 theme_name = next(words)
@@ -859,6 +931,22 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             theme["by_color_theme"] = by_color_theme
             themes += [theme]
         return themes
+
+    def do_get_colour_sample(self):
+        """The colour sample, classified by the highlighting pass itself."""
+        sample_path = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "colour_sample.txt"
+        )
+        with open(sample_path, encoding="utf-8") as sample_file:
+            return classify_text(sample_file.read())
+
+    def do_get_code_styles(self, text):
+        """A snippet the page holds, classified by the highlighting pass itself.
+
+        The page draws its own theme statement with it, so the statement is coloured by
+        the same pass that colours the sample, from the theme the page is editing rather
+        than from one saved on disk."""
+        return classify_text(text)
 
     def do_get_functions(self):
         out, err = run_fish_cmd("functions")
@@ -960,8 +1048,13 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             result.pop()  # trim off the trailing element
         return result
 
-    def do_set_color_for_variable(self, name, color):
-        "Sets a color for a fish color name, like 'fish_color_autosuggestion'"
+    def colour_line_for_variable(self, name, color):
+        """The `set --global` line one variable's value makes, and why it is refused.
+
+        The line is what :func:`__fish_theme_freeze` writes into the frozen theme, and fish
+        sources that file: the variable and the value therefore have to be words fish reads
+        as a statement, or the line would be code in a file every shell runs.  A refused
+        entry states its reason for the page that sent it."""
         if not name:
             raise ValueError
         if not color and not color == "":
@@ -969,14 +1062,12 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         else:
             color = unparse_color(color)
         name = name.strip()
-        if not re.match("^[a-zA-Z0-9_]+$", name):
-            print("Refusing to use variable name: '", name, "'")
-            return
+        if not re.match(r"^[a-zA-Z0-9_]+$", name):
+            return None, "not a fish variable name: " + name
         color = color.strip()
-        if not re.match("^[a-zA-Z0-9_= -]*$", color):
-            print("Refusing to use color value: ", color)
-            return
-        return name + " " + color
+        if not re.match(r"^[a-zA-Z0-9_= -]*$", color):
+            return None, "not a value for set_color: " + color
+        return name + (" " + color if color else ""), None
 
     def do_get_function(self, func_name):
         out, err = run_fish_cmd("functions " + func_name + " | fish_indent --html")
@@ -1155,6 +1246,13 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
 
         if p == "/colors/":
             output = self.do_get_colors()
+        elif p == "/themes/":
+            output = self.do_get_themes()
+        elif p == "/colour_sample/":
+            output = self.do_get_colour_sample()
+        elif p.startswith("/code_styles/"):
+            query = parse_qs(p.partition("?")[2])
+            output = self.do_get_code_styles(query.get("text", [""])[0])
         elif p == "/functions/":
             output = self.do_get_functions()
         elif p == "/variables/":
@@ -1219,31 +1317,41 @@ class FishConfigHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
 
         if p == "/set_color/":
             print("# Colorscheme: " + postvars.get("theme"))
-            output = ""
             theme_contents = []
+            refused = []
             for item in postvars.get("colors"):
                 what = item.get("what")
                 color = item.get("color")
-                if what:
-                    theme_contents += [self.do_set_color_for_variable(what, color)]
+                if not what:
+                    continue
+                line, refusal = self.colour_line_for_variable(what, color)
+                if line is None:
+                    print("Refusing to use color value: " + str(color))
+                    refused.append({"variable": what, "refusal": refusal})
+                else:
+                    theme_contents.append(line)
 
-            varname = "__fish_webconfig_theme_notification"
-            out, err = run_fish_cmd(
-                "__fish_theme_freeze 'fish_config' {}\n".format(
-                    " ".join(escape_fish_cmd(x) for x in theme_contents)
+            # The freeze rewrites the whole file, so a request with nothing to write would
+            # clear the theme; the refusals alone are then the answer.
+            if theme_contents:
+                varname = "__fish_webconfig_theme_notification"
+                out, err = run_fish_cmd(
+                    "__fish_theme_freeze 'fish_config' {}\n".format(
+                        " ".join(escape_fish_cmd(x) for x in theme_contents)
+                    )
+                    + "begin\n"
+                    + "    set -l i 0\n"
+                    + "    if not set -q {}\n".format(varname)
+                    + "        or string match -qr -- '^set-theme-v1-#(?<i>\\d+)$' ${}\n".format(
+                        varname
+                    )
+                    + "        set -U {} set-theme-v1-#(math $i + 1)\n".format(varname)
+                    + "    end\n"
+                    + "end\n"
                 )
-                + "begin\n"
-                + "    set -l i 0\n"
-                + "    if not set -q {}\n".format(varname)
-                + "        or string match -qr -- '^set-theme-v1-#(?<i>\\d+)$' ${}\n".format(
-                    varname
-                )
-                + "        set -U {} set-theme-v1-#(math $i + 1)\n".format(varname)
-                + "    end\n"
-                + "end\n"
-            )
-            assert out == "", out
-            assert err == "", err
+                assert out == "", out
+                assert err == "", err
+            output = {"written": len(theme_contents), "refused": refused}
 
         elif p == "/get_function/":
             what = postvars.get("what")

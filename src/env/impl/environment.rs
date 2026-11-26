@@ -1,6 +1,7 @@
 use super::var::{ELECTRIC_VARIABLES, ElectricVar, is_read_only};
 use crate::env::{
-    EnvMode, EnvSetMode, EnvStackSetResult, EnvVar, EnvVarFlags, PATH_ARRAY_SEP, Statuses, VarTable,
+    EnvMode, EnvSetMode, EnvStackSetResult, EnvVar, EnvVarFlags, PATH_ARRAY_SEP, Statuses,
+    VarTable, VariableScope,
 };
 use crate::env_universal_common::EnvUniversal;
 use crate::flog::flog;
@@ -80,7 +81,7 @@ fn set_umask(list_val: &[WString]) -> EnvStackSetResult {
 
 /// A query for environment variables.
 struct Query {
-    /// Whether any scopes were specified.
+    /// Whether the mode names a scope, which a search does not.
     pub has_scope: bool,
 
     /// Whether to search local, function, global, universal scopes.
@@ -112,7 +113,8 @@ impl From<EnvSetMode> for Query {
 impl Query {
     /// Creates a `Query` from env mode flags.
     fn new(mode: EnvMode, user: bool) -> Self {
-        let has_scope = mode.local || mode.function || mode.global || mode.universal;
+        // A query that names no scope searches every scope.
+        let has_scope = mode.write_scope().is_some();
         Query {
             has_scope,
             local: !has_scope || mode.local,
@@ -619,41 +621,44 @@ impl EnvStackImpl {
         }
 
         let mut result = ModResult::new(EnvStackSetResult::Ok);
-        if query.has_scope {
-            // The user requested a particular scope.
-            // If we don't have uvars, fall back to using globals.
-            if query.universal && !UVAR_SCOPE_IS_GLOBAL.load() {
-                self.set_universal(key, val, query);
-                result.uvar_modified = true;
-            } else if query.global || (query.universal && UVAR_SCOPE_IS_GLOBAL.load()) {
-                Self::set_in_node(&mut self.base.globals, key, val, flags);
-                result.global_modified = true;
-            } else if query.local {
-                assert!(
-                    !self.base.locals.ptr_eq(&self.base.globals),
-                    "Locals should not be globals"
-                );
-                Self::set_in_node(&mut self.base.locals, key, val, flags);
-            } else if query.function {
-                // "Function" scope is:
-                // Either the topmost local scope of the nearest function,
-                // or the top-level local scope if no function exists.
-                //
-                // This is distinct from the unspecified scope,
-                // which is the global scope if no function exists.
-                let mut node = self.base.locals.clone();
-                while let Some(next_node) = node.next() {
-                    node = next_node;
-                    // The first node that introduces a new scope is ours.
-                    // If this doesn't happen, we go on until we've reached the
-                    // topmost local scope.
-                    if node.borrow().new_scope {
-                        break;
-                    }
+        if let Some(scope) = mode.mode.write_scope() {
+            // The user requested a particular scope; a universal write that cannot be
+            // honoured falls back on the global scope.
+            match scope {
+                VariableScope::Universal if !UVAR_SCOPE_IS_GLOBAL.load() => {
+                    self.set_universal(key, val, query);
+                    result.uvar_modified = true;
                 }
-                Self::set_in_node(&mut node, key, val, flags);
-            } else {
-                panic!("Unknown scope");
+                VariableScope::Universal | VariableScope::Global => {
+                    Self::set_in_node(&mut self.base.globals, key, val, flags);
+                    result.global_modified = true;
+                }
+                VariableScope::Local => {
+                    assert!(
+                        !self.base.locals.ptr_eq(&self.base.globals),
+                        "Locals should not be globals"
+                    );
+                    Self::set_in_node(&mut self.base.locals, key, val, flags);
+                }
+                VariableScope::Function => {
+                    // "Function" scope is:
+                    // Either the topmost local scope of the nearest function,
+                    // or the top-level local scope if no function exists.
+                    //
+                    // This is distinct from the unspecified scope,
+                    // which is the global scope if no function exists.
+                    let mut node = self.base.locals.clone();
+                    while let Some(next_node) = node.next() {
+                        node = next_node;
+                        // The first node that introduces a new scope is ours.
+                        // If this doesn't happen, we go on until we've reached the
+                        // topmost local scope.
+                        if node.borrow().new_scope {
+                            break;
+                        }
+                    }
+                    Self::set_in_node(&mut node, key, val, flags);
+                }
             }
         } else if let Some(mut node) = Self::find_in_chain(&self.base.locals, key) {
             // Existing local variable.
