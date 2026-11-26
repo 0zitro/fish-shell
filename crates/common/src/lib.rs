@@ -113,6 +113,8 @@ pub struct UnescapeFlags {
     pub incomplete: bool,
     /// Don't handle backslash escapes.
     pub no_backslashes: bool,
+    /// Begin unescaping inside a double-quoted string.
+    pub initial_double_quotes: bool,
 }
 /// Replace special characters with backslash escape sequences. Newline is replaced with `\n`, etc.
 pub fn escape(s: &wstr) -> WString {
@@ -527,7 +529,11 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
         SingleQuotes,
         DoubleQuotes,
     }
-    let mut mode = Mode::Unquoted;
+    let mut mode = if flags.initial_double_quotes {
+        Mode::DoubleQuotes
+    } else {
+        Mode::Unquoted
+    };
 
     let mut input_position = 0;
     while input_position < input.len() && !errored {
