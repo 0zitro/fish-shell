@@ -1073,6 +1073,31 @@ When using indirect variable expansion with multiple ``$`` (``$$name``), you hav
     > echo $$name[1..-1][1..3] # or $$name[1][1..3], since $name only has one element.
     1 2 3
 
+The variable reference may also be produced by a command substitution.  A
+command substitution is the base case with no extra indirection; each
+additional ``$`` before it adds one dereference::
+
+    > set x 123
+    > echo $$(echo x)      # $x -> 123
+    > set x a b c
+    > echo $$(echo 'x[1]') # $x[1] -> a
+
+    > set x y
+    > set y z
+    > set z 123
+    > echo $$(echo x)      # $x  -> y
+    > echo $$$(echo x)     # $$x -> z
+    > echo $$$$(echo x)    # $$$x -> 123
+
+``$$(...)`` therefore has one dereference, ``$$$(...)`` two, and so on.  The
+substitution must produce exactly one variable reference: a valid name,
+optionally followed by one slice group.  Empty output, several lines, multiple
+slice groups, quotes, statement separators, or other source syntax is an
+expansion error.  Slice indices are literal slice syntax; they are not
+re-expanded.  The produced reference is parsed and its optional slice is
+applied before the remaining dereferences.  The form is a variable expansion
+and is allowed in command position.
+
 .. _expand-home:
 
 Home directory expansion

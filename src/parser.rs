@@ -317,6 +317,11 @@ pub struct LibraryData {
     /// This is set by the 'return' command.
     pub returning: bool,
 
+    /// The block-stack depth at which the innermost in-process pipeline stage
+    /// started, or `None` outside a pipeline stage.  A `return` targets the
+    /// stage when no function or substitution block was entered inside it.
+    pub pipeline_stage_depth: Option<usize>,
+
     /// Whether we should stop executing.
     /// This is set by the 'exit' command, and unset after 'reader_read'.
     /// Note this only exits up to the "current script boundary." That is, a call to exit within a
@@ -1145,7 +1150,7 @@ impl Parser {
         profile_items.clear();
     }
 
-    pub fn get_backtrace(&self, src: &wstr, errors: &ParseErrorList) -> WString {
+    pub fn get_backtrace(&self, src: &wstr, errors: &[ParseError]) -> WString {
         let Some(err) = errors.first() else {
             return WString::new();
         };
@@ -1585,8 +1590,12 @@ mod tests {
         );
 
         assert!(
-            detect_errors!("exec ls|less").is_err() && detect_errors!("echo|return").is_err(),
+            detect_errors!("exec ls|less").is_err(),
             "Invalid pipe command undetected"
+        );
+        assert!(
+            detect_errors!("echo|return").is_ok(),
+            "'return' in a pipeline rejected"
         );
 
         assert!(

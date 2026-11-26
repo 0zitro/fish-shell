@@ -2,7 +2,7 @@
 
 use std::ops::ControlFlow;
 
-use crate::{builtins::Error, err_fmt, err_str};
+use crate::{builtins::Error, err_fmt, err_str, parser::BlockType};
 
 use super::prelude::*;
 
@@ -58,8 +58,6 @@ pub fn r#return(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]
         ControlFlow::Break(result) => return result,
     };
 
-    let has_function_block = parser.blocks_iter_rev().any(|b| b.is_function_call());
-
     // *nix does not support negative return values, but our `return` builtin happily accepts being
     // called with negative literals (e.g. `return -1`).
     // Map negative values to (256 - their absolute value). This prevents `return -1` from
@@ -72,17 +70,38 @@ pub fn r#return(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]
 
     let retval = BuiltinResult::from_dynamic(retval);
 
-    // If we're not in a function, exit the current script (but not an interactive shell).
-    if !has_function_block {
-        if !parser.scope().is_interactive {
-            parser.libdata_mut().exit_current_script = true;
-        }
+    // The return target is the innermost enclosing boundary among a function
+    // call, a command substitution and a pipeline stage.  A pipeline stage is
+    // in-process for builtins and blocks, so it is compared by its block-stack
+    // depth: a boundary block entered inside the stage is inner to it.
+    let block_count = parser.blocks_size();
+    let return_boundary_depth =
+        parser
+            .blocks_iter_rev()
+            .enumerate()
+            .find_map(|(depth_from_top, block)| {
+                (block.is_function_call() || block.typ() == BlockType::Subst)
+                    .then_some(block_count - 1 - depth_from_top)
+            });
+    let stage_is_innermost = parser
+        .libdata()
+        .pipeline_stage_depth
+        .is_some_and(|stage_depth| {
+            return_boundary_depth.is_none_or(|boundary_depth| boundary_depth < stage_depth)
+        });
+
+    if stage_is_innermost || return_boundary_depth.is_some() {
+        // A function call, command substitution or pipeline stage consumes the
+        // signal at its own boundary.
+        parser.libdata_mut().returning = true;
         return retval;
     }
 
-    // Mark a return in the libdata.
-    parser.libdata_mut().returning = true;
-
+    // Outside those boundaries, exit the current script (but not an
+    // interactive shell).
+    if !parser.scope().is_interactive {
+        parser.libdata_mut().exit_current_script = true;
+    }
     retval
 }
 

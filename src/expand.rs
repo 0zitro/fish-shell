@@ -3,24 +3,34 @@
 //! from using a more clever memory allocation scheme, perhaps an evil combination of talloc,
 //! string buffers and reference counting.
 
-use std::ops::DerefMut as _;
+use std::ops::{DerefMut as _, Range};
 
 use crate::{
+    ast::{self, Kind as AstKind, Leaf as _},
     builtins::{
         STATUS_CMD_ERROR, STATUS_CMD_UNKNOWN, STATUS_EXPAND_ERROR, STATUS_ILLEGAL_CMD,
         STATUS_INVALID_ARGS, STATUS_NOT_EXECUTABLE, STATUS_READ_TOO_MUCH,
         STATUS_UNMATCHED_WILDCARD,
     },
-    common::valid_var_name_char,
+    common::{valid_var_name, valid_var_name_char},
     complete::{Completion, CompletionList, CompletionReceiver},
-    env::{EnvVar, Environment},
+    env::{EnvVar, Environment, Statuses},
     exec::exec_subshell_for_expand,
     history::{History, history_id},
     operation_context::OperationContext,
-    parse_constants::{ParseError, ParseErrorCode, ParseErrorList, SOURCE_LOCATION_UNKNOWN},
-    parse_util::{expand_variable_error, locate_cmdsubst_range},
+    parse_constants::{
+        ERROR_DYNAMIC_VARIABLE_REFERENCE, ERROR_MISMATCHED_PARENTHESIS, ERROR_SLICE_INVALID_INDEX,
+        ERROR_SLICE_ZERO_INDEX, ParseError, ParseErrorCode, ParseErrorList,
+        SOURCE_LOCATION_UNKNOWN, SourceRange,
+    },
+    parse_util::{
+        cmdsub_dollar_run, ends_in_open_variable_reference, expand_variable_error,
+        first_source_char, locate_cmdsubst_range, program_has_barrier_dependency, source_tokens,
+        word_has_forwarded_substitution,
+    },
     path::path_apply_working_directory,
     prelude::*,
+    tokenizer::{Tok, TokenType, variable_assignment_equals_pos},
     wildcard::{WildcardResult, wildcard_expand_string, wildcard_has_internal},
     wutil::{normalize_path, wcstoi, wcstoi_partial},
 };
@@ -33,8 +43,9 @@ use fish_util::wcsfilecmp_glob;
 use fish_wcstringutil::{join_strings, trim};
 use fish_widestring::{
     ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, BRACE_BEGIN, BRACE_END, BRACE_SEP, BRACE_SPACE,
-    HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, SLICE_BEGIN, SLICE_END,
-    VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE, osstr2wcstring,
+    HOME_DIRECTORY, INTERNAL_SEPARATOR, PROCESS_EXPAND_SELF, QUOTED_BOUNDARY, SLICE_BEGIN,
+    SLICE_END, UNQUOTED_BOUNDARY, VARIABLE_EXPAND, VARIABLE_EXPAND_EMPTY, VARIABLE_EXPAND_SINGLE,
+    osstr2wcstring, wcs2bytes,
 };
 use nix::unistd::{User, getpid};
 
@@ -63,6 +74,15 @@ impl CmdsubstMode {
             }
         )
     }
+}
+
+/// The source form `expand_cmdsubst` writes for each substitution site.
+#[derive(Copy, Clone, PartialEq)]
+pub enum CmdsubstRendering {
+    /// Insert the expanded elements into the surrounding word.
+    Expansion,
+    /// Emit a command substitution that reproduces the site's elements and status.
+    Reification,
 }
 
 /// Do expansions specifically to support cd. This means using CDPATH as a list of potential
@@ -469,16 +489,24 @@ enum ParseSliceError {
     InvalidIndex,
 }
 
-/// Parse an array slicing specification Returns 0 on success. If a parse error occurs, returns the
-/// index of the bad token. Note that 0 can never be a bad index because the string always starts
-/// with [.
+enum SliceMode {
+    Extent,
+    Resolve(usize),
+}
+
+/// Parse the slice at the start of `input`, returning the number of characters
+/// it consumes and, in `SliceMode::Resolve`, the indices it selects against that
+/// array size.
 fn parse_slice(
     input: &wstr,
-    idx: &mut Vec<i64>,
-    array_size: usize,
+    mode: SliceMode,
     unescaped: bool,
-) -> Result<usize, (usize, ParseSliceError)> {
-    let size = i64::try_from(array_size).unwrap();
+) -> Result<(usize, Vec<i64>), (usize, ParseSliceError)> {
+    let size = match mode {
+        SliceMode::Extent => None,
+        SliceMode::Resolve(size) => Some(i64::try_from(size).unwrap()),
+    };
+    let mut idx = vec![];
     let mut pos = 1; // skip past the opening square bracket
     let end_char = if unescaped { SLICE_END } else { ']' };
 
@@ -523,7 +551,7 @@ fn parse_slice(
             }
         };
 
-        let mut i1 = if tmp > -1 { tmp } else { size + tmp + 1 };
+        let i1 = size.map(|size| if tmp > -1 { tmp } else { size + tmp + 1 });
         while input.char_at(pos) == INTERNAL_SEPARATOR {
             pos += 1;
         }
@@ -561,6 +589,10 @@ fn parse_slice(
                 }
             };
 
+            let Some(size) = size else {
+                continue;
+            };
+            let mut i1 = i1.unwrap();
             let mut i2 = if tmp1 > -1 { tmp1 } else { size + tmp1 + 1 };
             // Skip sequences that are entirely outside.
             // This means "17..18" expands to nothing if there are less than 17 elements.
@@ -587,10 +619,12 @@ fn parse_slice(
             continue;
         }
 
-        idx.push(i1);
+        if let Some(i1) = i1 {
+            idx.push(i1);
+        }
     }
 
-    Ok(pos)
+    Ok((pos, idx))
 }
 
 /// Expand all environment variables in the string *ptr.
@@ -709,11 +743,11 @@ fn expand_variables(
         }
         match parse_slice(
             &instr[slice_start..],
-            &mut var_idx_list,
-            effective_val_count,
+            SliceMode::Resolve(effective_val_count),
             true,
         ) {
-            Ok(offset) => {
+            Ok((offset, indices)) => {
+                var_idx_list = indices;
                 var_name_and_slice_stop = slice_start + offset;
             }
             Err((bad_pos, error)) => {
@@ -722,11 +756,17 @@ fn expand_variables(
                         append_syntax_error!(
                             errors,
                             slice_start + bad_pos,
-                            "array indices start at 1, not 0."
+                            "%s",
+                            wgettext!(ERROR_SLICE_ZERO_INDEX)
                         );
                     }
                     ParseSliceError::InvalidIndex => {
-                        append_syntax_error!(errors, slice_start + bad_pos, "Invalid index value");
+                        append_syntax_error!(
+                            errors,
+                            slice_start + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_INVALID_INDEX)
+                        );
                     }
                 }
                 return ExpandResult::make_error(STATUS_EXPAND_ERROR);
@@ -778,15 +818,7 @@ fn expand_variables(
             }
         } else {
             let all_var_items = var.as_ref().unwrap().as_list();
-            for item_index in var_idx_list {
-                // Check that we are within array bounds. If not, skip the element. Note:
-                // Negative indices (`echo $foo[-1]`) are already converted to positive ones
-                // here, So tmp < 1 means it's definitely not in.
-                // Note we are 1-based.
-                if item_index >= 1 && item_index <= all_var_items.len() {
-                    var_item_list.push(all_var_items[item_index - 1].clone());
-                }
-            }
+            var_item_list = select_slice(all_var_items, var_idx_list);
         }
     }
 
@@ -964,13 +996,336 @@ fn expand_braces(
     ExpandResult::ok()
 }
 
+/// Select 1-based indices from `items`, skipping out-of-range entries.
+fn select_slice<T: Clone, I>(items: &[T], indices: I) -> Vec<T>
+where
+    I: IntoIterator<Item = usize>,
+{
+    indices
+        .into_iter()
+        .filter_map(|index| items.get(index.checked_sub(1)?).cloned())
+        .collect()
+}
+
+/// Apply a slice to command-substitution output lines.
+///
+/// `lines` is replaced by the selected lines. Returns the number of characters
+/// consumed from `slice`, which must start at `[`.
+fn apply_cmdsubst_slice(
+    slice: &wstr,
+    lines: &mut Vec<WString>,
+) -> Result<usize, (usize, ParseSliceError)> {
+    let (offset, indices) = parse_slice(slice, SliceMode::Resolve(lines.len()), false)?;
+    *lines = select_slice(
+        lines,
+        indices
+            .into_iter()
+            .filter_map(|index| usize::try_from(index).ok()),
+    );
+    Ok(offset)
+}
+
+/// The number of characters the slice syntax at the start of `slice` consumes.
+///
+/// This is the grammar check without an array to resolve against.
+fn slice_consumed_len(slice: &wstr) -> Result<usize, (usize, ParseSliceError)> {
+    parse_slice(slice, SliceMode::Extent, false).map(|(offset, _)| offset)
+}
+
+fn escape_unquoted_cmdsubst(output: &wstr) -> WString {
+    escape_string(
+        output,
+        EscapeStringStyle::Script(EscapeFlags {
+            comma: true,
+            ..Default::default()
+        }),
+    )
+}
+
+fn escape_quoted_cmdsubst(lines: &[WString]) -> WString {
+    let mut joined = WString::new();
+    for line in lines {
+        joined.push_utfstr(&escape_string_for_double_quotes(line));
+        joined.push('\n');
+    }
+    let mut len = joined.len();
+    while len > 0 && joined.as_char_slice()[len - 1] == '\n' {
+        len -= 1;
+    }
+    joined.truncate(len);
+    joined
+}
+
+/// Append the status chain a reified substitution ends with.
+///
+/// The chain sets the substitution's status and pipestatus to the captured
+/// values: a single captured status is one `return`, and several statuses are
+/// one `return` per pipeline stage.
+fn append_reified_status_chain(source: &mut WString, statuses: &Statuses) {
+    let statuses_to_return: &[libc::c_int] = if statuses.pipestatus.is_empty() {
+        std::slice::from_ref(&statuses.status)
+    } else {
+        &statuses.pipestatus
+    };
+    for (index, pipestatus) in statuses_to_return.iter().enumerate() {
+        if index > 0 {
+            source.push_utfstr(L!(" | "));
+        }
+        source.push_utfstr(L!("return "));
+        let status = if index + 1 == statuses_to_return.len() {
+            statuses.status
+        } else {
+            *pipestatus
+        };
+        source.push_utfstr(&status.to_wstring());
+    }
+}
+
+/// Append one element to a reified substitution's `for` list.
+///
+/// The loop word's value is the `printf '%b'` argument.  A printable ASCII
+/// byte other than `\` and `'` is literal; the backslash and the quote
+/// delimiter are escaped because the single-quoted word or the `%b` argument
+/// would interpret them; every other byte is a hex escape so the source word
+/// contains no control byte and NUL never reaches the builtin's argument.
+/// `%` stays literal because the format is a fixed `%b`.
+fn append_reified_loop_word(source: &mut WString, element: &wstr) {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    source.push('\'');
+    for byte in wcs2bytes(element) {
+        match byte {
+            b'\\' => source.push_utfstr(L!("\\\\")),
+            b'\'' => source.push_utfstr(L!("\\x27")),
+            0x20..=0x7e => source.push(byte as char),
+            _ => {
+                source.push_utfstr(L!("\\x"));
+                source.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+                source.push(HEX_DIGITS[(byte & 0xf) as usize] as char);
+            }
+        }
+    }
+    source.push('\'');
+}
+
+/// The reified substitution for one eager element site.
+///
+/// The substitution writes the captured elements as explicitly separated
+/// output and ends with the captured status chain, so it reproduces the site's
+/// elements and statuses at its position in the emitted program.
+fn reified_element_substitution(elements: &[WString], statuses: &Statuses) -> WString {
+    let mut source = WString::new();
+    source.push_utfstr(L!("$(for __ in"));
+    for element in elements {
+        source.push(' ');
+        append_reified_loop_word(&mut source, element);
+    }
+    source.push_utfstr(L!(
+        "; builtin printf '%b' \"$__\" | builtin string collect -aN; end; "
+    ));
+    append_reified_status_chain(&mut source, statuses);
+    source.push(')');
+    source
+}
+
+fn dynamic_variable_reference(operand: &wstr) -> bool {
+    let Some(bracket) = operand.chars().position(|c| c == '[') else {
+        return valid_var_name(operand);
+    };
+    if !valid_var_name(&operand[..bracket]) {
+        return false;
+    }
+    match slice_consumed_len(&operand[bracket..]) {
+        Ok(offset) => bracket + offset == operand.len(),
+        Err(_) => false,
+    }
+}
+
+/// Serialise one source span by copying bytes outside tokens and rendering
+/// every string token that is not inside a barrier span.
+pub(crate) fn serialized_source(
+    source: &wstr,
+    source_start: usize,
+    barrier_spans: &[SourceRange],
+    mut render_word: impl FnMut(&[Tok], usize, &wstr, usize) -> Result<Vec<WString>, ExpandResult>,
+) -> Result<WString, ExpandResult> {
+    let tokens = source_tokens(source);
+    let mut output = WString::new();
+    let mut cursor = 0;
+    for (index, token) in tokens.iter().enumerate() {
+        let offset = token.offset as usize;
+        let end = offset + token.length as usize;
+        output.push_utfstr(&source[cursor..offset]);
+        let in_barrier_span = barrier_spans
+            .iter()
+            .any(|span| span.start() <= source_start + offset && source_start + end <= span.end());
+        if token.type_ != TokenType::String || in_barrier_span {
+            output.push_utfstr(&source[offset..end]);
+            cursor = end;
+            continue;
+        }
+
+        let rendered = render_word(&tokens, index, &source[offset..end], source_start + offset)?;
+        for (variant_index, variant) in rendered.iter().enumerate() {
+            if variant_index > 0 {
+                output.push(' ');
+            }
+            output.push_utfstr(variant);
+        }
+        cursor = end;
+    }
+    output.push_utfstr(&source[cursor..]);
+    Ok(output)
+}
+
+/// Render one word with every command-substitution site reified.
+///
+/// The word is source around its sites: a site is replaced by the loop that
+/// reproduces its elements and status, and a forwarded site stays source.
+pub(crate) fn reified_word_source(
+    word: &wstr,
+    ctx: &mut OperationContext<'_>,
+    errors: &mut Option<&mut ParseErrorList>,
+) -> Result<Vec<WString>, ExpandResult> {
+    let mut receiver = CompletionReceiver::new(ctx.expansion_limit);
+    let result = expand_cmdsubst(
+        word.to_owned(),
+        ctx,
+        &mut receiver,
+        errors,
+        CmdsubstRendering::Reification,
+    );
+    if result.failed() {
+        return Err(result);
+    }
+    Ok(receiver
+        .take()
+        .into_iter()
+        .map(|completion| completion_to_source(&completion.completion))
+        .collect())
+}
+
+/// Render one word by expanding it into its literal argv words.
+fn expanded_word_source(
+    word: &wstr,
+    ctx: &mut OperationContext<'_>,
+    errors: &mut Option<&mut ParseErrorList>,
+) -> Result<Vec<WString>, ExpandResult> {
+    let mut completions = CompletionList::new();
+    let result = expand_string(
+        word.to_owned(),
+        &mut completions,
+        ExpandFlags::default(),
+        ctx,
+        errors.as_deref_mut(),
+    );
+    if result.failed() {
+        return Err(result);
+    }
+    Ok(completions
+        .into_iter()
+        .map(|completion| completion_to_source(&completion.completion))
+        .collect())
+}
+
+/// Serialise the program of a forwarded command substitution.
+///
+/// A barrier span is copied with its body.  Every other token is expanded:
+/// an assignment value becomes a reified list, a redirection target expands to
+/// one operand, and a word containing a forwarded site keeps that site while
+/// its other command substitutions are reified.  A word without a forwarded
+/// site expands into literal argv words.
+fn serialize_forwarded_program(
+    program: &wstr,
+    ctx: &mut OperationContext<'_>,
+    errors: &mut Option<&mut ParseErrorList>,
+) -> Result<WString, ExpandResult> {
+    let ast = ast::parse(program, Default::default(), None);
+    let barrier_spans = ast.top().barrier_block_spans();
+    let assignment_ranges: Vec<Range<usize>> = ast
+        .walk()
+        .filter_map(|node| match node.kind() {
+            AstKind::VariableAssignment(assignment) => {
+                assignment.range().map(|range| range.start()..range.end())
+            }
+            _ => None,
+        })
+        .collect();
+    serialized_source(
+        program,
+        0,
+        &barrier_spans,
+        |tokens, index, token_source, source_offset| {
+            let token_end = source_offset + token_source.len();
+            let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+            let rendered = if word_has_forwarded_substitution(token_source) {
+                reified_word_source(token_source, ctx, errors)?
+            } else if assignment_ranges
+                .iter()
+                .any(|range| range.start == source_offset && range.end == token_end)
+            {
+                let equals = variable_assignment_equals_pos(token_source)
+                    .expect("a parsed assignment word contains an equals sign");
+                let mut completions = CompletionList::new();
+                let result = expand_string(
+                    token_source[equals + 1..].to_owned(),
+                    &mut completions,
+                    ExpandFlags::default(),
+                    ctx,
+                    errors.as_deref_mut(),
+                );
+                if result.failed() {
+                    return Err(result);
+                }
+                let elements: Vec<WString> = completions
+                    .into_iter()
+                    .map(|completion| completion.completion)
+                    .collect();
+                let mut source = WString::new();
+                source.push_utfstr(&token_source[..equals + 1]);
+                source.push_utfstr(&reified_element_substitution(&elements, &Statuses::just(0)));
+                vec![source]
+            } else if index > 0 && tokens[index - 1].type_ == TokenType::Redirect {
+                let mut target = token_source.to_owned();
+                if !expand_one(
+                    &mut target,
+                    ExpandFlags::default(),
+                    ctx,
+                    errors.as_deref_mut(),
+                ) || target.is_empty()
+                {
+                    append_syntax_error!(
+                        errors,
+                        source_offset,
+                        "Invalid redirection target: %s",
+                        token_source
+                    );
+                    return Err(ExpandResult::make_error(STATUS_EXPAND_ERROR));
+                }
+                vec![completion_to_source(&target)]
+            } else {
+                expanded_word_source(token_source, ctx, errors)?
+            };
+            if let Some(errors) = errors.as_mut() {
+                for error in errors.iter_mut().skip(prior_errors) {
+                    if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                        error.source_start += source_offset;
+                    }
+                }
+            }
+            Ok(rendered)
+        },
+    )
+}
+
 /// Expand a command substitution `input`, executing on `ctx`, and inserting the results into
-/// `out_list`, or any errors into `errors`. Return an expand result.
+/// `out`, or any errors into `errors`. Return an expand result.
 pub fn expand_cmdsubst(
     input: WString,
     ctx: &mut OperationContext,
     out: &mut CompletionReceiver,
     errors: &mut Option<&mut ParseErrorList>,
+    rendering: CmdsubstRendering,
 ) -> ExpandResult {
     let mut cursor = 0;
     let mut is_quoted = false;
@@ -983,7 +1338,12 @@ pub fn expand_cmdsubst(
         Some(&mut has_dollar),
     ) {
         Err(()) => {
-            append_syntax_error!(errors, SOURCE_LOCATION_UNKNOWN, "Mismatched parenthesis");
+            append_syntax_error!(
+                errors,
+                SOURCE_LOCATION_UNKNOWN,
+                "%s",
+                wgettext!(ERROR_MISMATCHED_PARENTHESIS)
+            );
             return ExpandResult::make_error(STATUS_EXPAND_ERROR);
         }
         Ok(None) => {
@@ -994,6 +1354,74 @@ pub fn expand_cmdsubst(
         }
         Ok(Some(cmdsub)) => cmdsub,
     };
+
+    if rendering == CmdsubstRendering::Reification
+        && program_has_barrier_dependency(&input[cmdsub.command_range()])
+    {
+        let opening = cmdsub.opening_paren_offset();
+        let site_start = opening - cmdsub_dollar_run(&input, opening);
+        let mut site_end = cmdsub.end();
+        if input.as_char_slice().get(site_end) == Some(&'[') {
+            if let Ok(slice_length) = slice_consumed_len(&input[site_end..]) {
+                site_end += slice_length;
+            }
+        }
+
+        let program_range = cmdsub.command_range();
+        let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+        let serialized_program =
+            match serialize_forwarded_program(&input[program_range.clone()], ctx, errors) {
+                Ok(serialized) => serialized,
+                Err(result) => return result,
+            };
+        if let Some(errors) = errors.as_mut() {
+            for error in errors.iter_mut().skip(prior_errors) {
+                if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                    error.source_start += program_range.start;
+                }
+            }
+        }
+        let mut site_source = WString::new();
+        site_source.push_utfstr(&input[site_start..opening + 1]);
+        site_source.push_utfstr(&serialized_program);
+        site_source.push_utfstr(&input[cmdsub.closing_paren_range().start..site_end]);
+
+        let mut tail_input = input[site_end..].to_owned();
+        if is_quoted {
+            tail_input.insert(0, '"');
+        }
+
+        let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+        let mut tail_recv = out.subreceiver();
+        let tail_result = expand_cmdsubst(tail_input, ctx, &mut tail_recv, errors, rendering);
+        if let Some(errors) = errors.as_mut() {
+            let shift = site_end.saturating_sub(usize::from(is_quoted));
+            for error in errors.iter_mut().skip(prior_errors) {
+                if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                    error.source_start += shift;
+                }
+            }
+        }
+        if tail_result.failed() {
+            return tail_result;
+        }
+
+        for tail_item in tail_recv.take() {
+            let mut whole_item = WString::new();
+            whole_item.push_utfstr(&input[..site_start]);
+            whole_item.push_utfstr(&site_source);
+            if is_quoted {
+                whole_item.push(INTERNAL_SEPARATOR);
+                whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
+            } else {
+                whole_item.push_utfstr(&tail_item.completion);
+            }
+            if out.add(whole_item).is_err() {
+                return append_overflow_error(errors, None);
+            }
+        }
+        return ExpandResult::ok();
+    }
 
     let mut sub_res = vec![];
     let job_group = ctx.job_group.clone();
@@ -1053,45 +1481,134 @@ pub fn expand_cmdsubst(
         return ExpandResult::make_error(subshell_status);
     }
 
+    let reified_statuses =
+        (rendering == CmdsubstRendering::Reification).then(|| ctx.parser().last_statuses());
+
+    let opening = cmdsub.opening_paren_offset();
+    let dollar_count = cmdsub_dollar_run(&input, opening);
+    if dollar_count >= 2 {
+        let valid = sub_res.len() == 1 && dynamic_variable_reference(&sub_res[0]);
+        if !valid {
+            append_syntax_error!(
+                errors,
+                opening,
+                "%s",
+                wgettext!(ERROR_DYNAMIC_VARIABLE_REFERENCE)
+            );
+            return ExpandResult::make_error(STATUS_EXPAND_ERROR);
+        }
+        if rendering == CmdsubstRendering::Reification {
+            let statuses = reified_statuses
+                .as_ref()
+                .expect("reification captures the site's statuses");
+
+            let mut reference_source = input[..opening - dollar_count].to_owned();
+            for _ in 1..dollar_count {
+                reference_source.push('$');
+            }
+            reference_source.push_utfstr(&sub_res[0]);
+
+            // The produced operand is a complete variable reference; following source
+            // must not extend its name.
+            let tail_start = cmdsub.end();
+            if first_source_char(&input[tail_start..]).is_some_and(valid_var_name_char) {
+                reference_source.push(if is_quoted {
+                    QUOTED_BOUNDARY
+                } else {
+                    UNQUOTED_BOUNDARY
+                });
+            }
+
+            let mut status_source = WString::new();
+            status_source.push('$');
+            status_source.push('(');
+            status_source.push_utfstr(L!("builtin echo; "));
+            append_reified_status_chain(&mut status_source, statuses);
+            status_source.push(')');
+
+            let mut tail_input = input[tail_start..].to_owned();
+            if is_quoted {
+                tail_input.insert(0, '"');
+            }
+
+            let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+            let mut tail_recv = out.subreceiver();
+            let tail_result = expand_cmdsubst(tail_input, ctx, &mut tail_recv, errors, rendering);
+            if let Some(errors) = errors.as_mut() {
+                let shift = tail_start.saturating_sub(usize::from(is_quoted));
+                for error in errors.iter_mut().skip(prior_errors) {
+                    if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                        error.source_start += shift;
+                    }
+                }
+            }
+            if tail_result.failed() {
+                return tail_result;
+            }
+
+            for tail_item in tail_recv.take() {
+                let mut whole_item = reference_source.clone();
+                whole_item.push_utfstr(&status_source);
+                if is_quoted {
+                    whole_item.push(INTERNAL_SEPARATOR);
+                    whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
+                } else {
+                    whole_item.push_utfstr(&tail_item.completion);
+                }
+                if out.add(whole_item).is_err() {
+                    return append_overflow_error(errors, None);
+                }
+            }
+            return ExpandResult::ok();
+        }
+
+        let mut result = input[..opening - dollar_count].to_owned();
+        for _ in 1..dollar_count {
+            result.push('$');
+        }
+        result.push_utfstr(&sub_res[0]);
+        // The produced operand is a complete variable reference; following source
+        // must not extend its name.
+        let tail = &input[cmdsub.end()..];
+        if first_source_char(tail).is_some_and(valid_var_name_char) {
+            result.push(if is_quoted {
+                QUOTED_BOUNDARY
+            } else {
+                UNQUOTED_BOUNDARY
+            });
+        }
+        result.push_utfstr(tail);
+        return expand_cmdsubst(result, ctx, out, errors, rendering);
+    }
+
     // Expand slices like (cat /var/words)[1]
     let mut tail_begin = cmdsub.end();
     if input.as_char_slice().get(tail_begin) == Some(&'[') {
-        let mut slice_idx = vec![];
         let slice_begin = tail_begin;
-        let slice_end =
-            match parse_slice(&input[slice_begin..], &mut slice_idx, sub_res.len(), false) {
-                Ok(offset) => slice_begin + offset,
-                Err((bad_pos, error)) => {
-                    match error {
-                        ParseSliceError::ZeroIndex => {
-                            append_syntax_error!(
-                                errors,
-                                slice_begin + bad_pos,
-                                "array indices start at 1, not 0."
-                            );
-                        }
-                        ParseSliceError::InvalidIndex => {
-                            append_syntax_error!(
-                                errors,
-                                slice_begin + bad_pos,
-                                "Invalid index value"
-                            );
-                        }
+        match apply_cmdsubst_slice(&input[slice_begin..], &mut sub_res) {
+            Ok(offset) => tail_begin = slice_begin + offset,
+            Err((bad_pos, error)) => {
+                match error {
+                    ParseSliceError::ZeroIndex => {
+                        append_syntax_error!(
+                            errors,
+                            slice_begin + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_ZERO_INDEX)
+                        );
                     }
-                    return ExpandResult::make_error(STATUS_EXPAND_ERROR);
+                    ParseSliceError::InvalidIndex => {
+                        append_syntax_error!(
+                            errors,
+                            slice_begin + bad_pos,
+                            "%s",
+                            wgettext!(ERROR_SLICE_INVALID_INDEX)
+                        );
+                    }
                 }
-            };
-
-        let mut sub_res2 = vec![];
-        tail_begin = slice_end;
-        for idx in slice_idx {
-            if idx as usize > sub_res.len() || idx < 1 {
-                continue;
+                return ExpandResult::make_error(STATUS_EXPAND_ERROR);
             }
-            // -1 to convert from 1-based slice index to 0-based vector index.
-            sub_res2.push(sub_res[idx as usize - 1].clone());
         }
-        sub_res = sub_res2;
     }
 
     // Recursively call ourselves to expand any remaining command substitutions. The result of this
@@ -1104,29 +1621,40 @@ pub fn expand_cmdsubst(
         tail.insert(0, '"');
     }
 
-    _ = expand_cmdsubst(tail, ctx, &mut tail_expand_recv, errors); // TODO: offset error locations
+    let prior_errors = errors.as_ref().map_or(0, |list| list.len());
+    let tail_result = expand_cmdsubst(tail, ctx, &mut tail_expand_recv, errors, rendering);
+    if let Some(errors) = errors.as_mut() {
+        let shift = tail_begin.saturating_sub(usize::from(is_quoted));
+        for error in errors.iter_mut().skip(prior_errors) {
+            if error.source_start != SOURCE_LOCATION_UNKNOWN {
+                error.source_start += shift;
+            }
+        }
+    }
+    if tail_result.failed() {
+        return tail_result;
+    }
     let tail_expand = tail_expand_recv.take();
 
     // Combine the result of the current command substitution with the result of the recursive tail
     // expansion.
 
+    let value_boundary = boundary_separator(
+        &input[..cmdsub.opening_paren_offset() - usize::from(has_dollar)],
+        is_quoted,
+    );
+
     if is_quoted {
         // Awkwardly reconstruct the command output.
-        let approx_size = sub_res.iter().map(|sub_item| sub_item.len() + 1).sum();
-        let mut sub_res_joined = WString::new();
-        sub_res_joined.reserve(approx_size);
-        for line in sub_res {
-            sub_res_joined.push_utfstr(&escape_string_for_double_quotes(&line));
-            sub_res_joined.push('\n');
-        }
-        // Mimic POSIX shells by stripping all trailing newlines.
-        if !sub_res_joined.is_empty() {
-            let mut i = sub_res_joined.len();
-            while i > 0 && sub_res_joined.as_char_slice()[i - 1] == '\n' {
-                i -= 1;
-            }
-            sub_res_joined.truncate(i);
-        }
+        let sub_res_joined = match rendering {
+            CmdsubstRendering::Expansion => escape_quoted_cmdsubst(&sub_res),
+            CmdsubstRendering::Reification => reified_element_substitution(
+                &sub_res,
+                reified_statuses
+                    .as_ref()
+                    .expect("reification captures the site's statuses"),
+            ),
+        };
         // Instead of performing cartesian product expansion, we directly insert the command
         // substitution output into the current expansion results.
         for tail_item in tail_expand {
@@ -1141,7 +1669,7 @@ pub fn expand_cmdsubst(
             whole_item.push_utfstr(
                 &input[..cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 }],
             );
-            whole_item.push(INTERNAL_SEPARATOR);
+            whole_item.push(value_boundary);
             whole_item.push_utfstr(&sub_res_joined);
             whole_item.push(INTERNAL_SEPARATOR);
             whole_item.push_utfstr(&tail_item.completion["\"".len()..]);
@@ -1153,14 +1681,20 @@ pub fn expand_cmdsubst(
         return ExpandResult::ok();
     }
 
-    for sub_item in sub_res {
-        let sub_item2 = escape_string(
-            &sub_item,
-            EscapeStringStyle::Script(EscapeFlags {
-                comma: true,
-                ..Default::default()
-            }),
-        );
+    let sub_items: Vec<WString> = match rendering {
+        CmdsubstRendering::Expansion => sub_res
+            .iter()
+            .map(|item| escape_unquoted_cmdsubst(item))
+            .collect(),
+        CmdsubstRendering::Reification => vec![reified_element_substitution(
+            &sub_res,
+            reified_statuses
+                .as_ref()
+                .expect("reification captures the site's statuses"),
+        )],
+    };
+
+    for sub_item2 in sub_items {
         for tail_item in &*tail_expand {
             let mut whole_item = WString::new();
             whole_item.reserve(
@@ -1173,7 +1707,7 @@ pub fn expand_cmdsubst(
             whole_item.push_utfstr(
                 &input[..cmdsub.opening_paren_offset() - if has_dollar { 1 } else { 0 }],
             );
-            whole_item.push(INTERNAL_SEPARATOR);
+            whole_item.push(value_boundary);
             whole_item.push_utfstr(&sub_item2);
             whole_item.push(INTERNAL_SEPARATOR);
             whole_item.push_utfstr(&tail_item.completion);
@@ -1243,11 +1777,44 @@ fn expand_percent_self(input: &mut WString) {
     }
 }
 
+/// The separator that preserves a source value boundary at `source`.
+fn boundary_separator(source: &wstr, is_quoted: bool) -> char {
+    if !ends_in_open_variable_reference(source) {
+        INTERNAL_SEPARATOR
+    } else if is_quoted {
+        QUOTED_BOUNDARY
+    } else {
+        UNQUOTED_BOUNDARY
+    }
+}
+
+/// Remove every expansion-boundary marker.
+fn remove_internal_separators(s: &mut WString) {
+    s.retain(|c| !matches!(c, INTERNAL_SEPARATOR | QUOTED_BOUNDARY | UNQUOTED_BOUNDARY));
+}
+
+/// Render one eager-expansion completion as fish source.
+///
+/// `expand_cmdsubst` marks every substituted value boundary; the capture path
+/// turns the boundaries that need a source quote into `""` or `''` and drops
+/// the rest.
+pub(crate) fn completion_to_source(completion: &wstr) -> WString {
+    let mut source = WString::with_capacity(completion.len());
+    for c in completion.chars() {
+        match c {
+            QUOTED_BOUNDARY => source.push_utfstr(L!("\"\"")),
+            UNQUOTED_BOUNDARY => source.push_utfstr(L!("''")),
+            INTERNAL_SEPARATOR => {}
+            _ => source.push(c),
+        }
+    }
+    source
+}
+
 /// Remove any internal separators. Also optionally convert wildcard characters to regular
 /// equivalents. This is done to support skip_wildcards.
 fn remove_internal_separator(s: &mut WString, conv: bool) {
-    // Remove all instances of INTERNAL_SEPARATOR.
-    s.retain(|c| c != INTERNAL_SEPARATOR);
+    remove_internal_separators(s);
 
     // If conv is true, replace all instances of ANY_STRING with '*',
     // ANY_STRING_RECURSIVE with '*'.
@@ -1429,7 +1996,13 @@ impl<'a, 'b, 'c> Expander<'a, 'b, 'c> {
             self.ctx.has_parser(),
             "Must have a parser to expand command substitutions"
         );
-        expand_cmdsubst(input, self.ctx, out, self.errors)
+        expand_cmdsubst(
+            input,
+            self.ctx,
+            out,
+            self.errors,
+            CmdsubstRendering::Expansion,
+        )
     }
 
     // We pass by value to match other stages. NOLINTNEXTLINE(performance-unnecessary-value-param)

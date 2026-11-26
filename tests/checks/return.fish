@@ -49,3 +49,49 @@ $fish -c "return abc"
 # CHECKERR: {{^}}return abc
 # CHECKERR: {{^}}^
 # CHECKERR: (Type 'help return' for related documentation)
+
+# In a function, return exits the function and not its caller.
+function return_from_function
+    echo in-function
+    return 7
+    echo unreachable
+end
+return_from_function
+# CHECK: in-function
+echo $status
+# CHECK: 7
+
+# In a command substitution, return ends the substitution, keeps its output,
+# and the enclosing function continues.
+function return_in_substitution
+    set -l value (echo inner; return 7; echo unreachable)
+    echo value=$value
+end
+return_in_substitution
+# CHECK: value=inner
+
+# A pipeline stage's return sets the stage status and does not end the
+# enclosing function.
+function return_in_pipeline
+    echo pre
+    true | return 7
+    echo post status=$status
+end
+return_in_pipeline
+# CHECK: pre
+# CHECK: post status=7
+
+# Return in a pipeline at the top level does not exit the script.
+$fish -c 'echo before; true | return 7; echo after status=$status'
+# CHECK: before
+# CHECK: after status=7
+
+# A variable-assignment substitution is validated like an argument: the
+# accepted return chain reproduces the captured statuses, and the rejected
+# pipeline command is reported.
+$fish -c 'value=(echo start; true | return 7) echo value=$value status=$status count=(count $pipestatus)'
+# CHECK: value=start status=7 count=2
+$fish -c 'value=(break | true) echo after'
+# CHECKERR: fish: The 'break' command can not be used in a pipeline
+# CHECKERR: {{.*}}
+# CHECKERR: {{.*}}

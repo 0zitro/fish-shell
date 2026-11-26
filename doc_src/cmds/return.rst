@@ -17,7 +17,11 @@ It is often added inside of a conditional block such as an :doc:`if <if>` statem
 
 If invoked outside of a function by a non-interactive shell, or inside :doc:`source <source>`, it is equivalent to :doc:`exit <exit>`, meaning it it will stop execution of the current script.
 
-If invoked outside of a function by an interactive shell shell, execution will continue as normal.
+If invoked outside of a function by an interactive shell, execution will continue as normal.
+
+Inside a command substitution, :program:`return` ends that substitution with the given status. The substitution's output written before the return is kept, and the enclosing function or script continues.
+
+In a pipeline, :program:`return` sets the status of its pipeline stage. The enclosing function or script continues, and the stage's status appears in :envvar:`pipestatus`.
 
 The **-h** or **--help** option displays help about using this command.
 
