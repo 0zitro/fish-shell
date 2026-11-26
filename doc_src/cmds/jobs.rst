@@ -47,6 +47,9 @@ If the output of ``jobs`` is redirected or if it is part of a command substituti
 
 The exit status of ``jobs`` is ``0`` if there are running background jobs and ``1`` otherwise.
 
+A job whose stream was suspended with :doc:`suspend <suspend>` keeps running in the background and is listed while it runs.
+Its suspension handle stays usable after the job finishes, until :doc:`resume <resume>` consumes it.
+
 Example
 -------
 

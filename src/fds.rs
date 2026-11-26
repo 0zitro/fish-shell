@@ -146,6 +146,25 @@ pub fn wopen_cloexec(
     open_cloexec(wcs2zstring(pathname).as_c_str(), flags, mode)
 }
 
+/// Read from `fd`, retrying `EINTR` only while no cancellation is pending.
+///
+/// A pending cancellation returns `EINTR` before the read starts or after an
+/// interrupted read. The caller returns the shell's interrupted status instead
+/// of waiting for data that may never arrive.
+pub fn read_blocked_cancellable(fd: RawFd, buf: &mut [u8]) -> nix::Result<usize> {
+    if signal_check_cancel() != 0 {
+        return Err(nix::Error::EINTR);
+    }
+
+    loop {
+        let result = nix::unistd::read(unsafe { BorrowedFd::borrow_raw(fd) }, buf);
+        match result {
+            Err(nix::Error::EINTR) if signal_check_cancel() == 0 => continue,
+            result => return result,
+        }
+    }
+}
+
 /// Narrow versions of wopen_cloexec().
 pub fn open_cloexec(path: &CStr, flags: OFlag, mode: nix::sys::stat::Mode) -> nix::Result<File> {
     // Port note: the C++ version of this function had a fallback for platforms where
@@ -282,6 +301,13 @@ impl AsRawFd for BorrowedFdFile {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
+    }
+}
+
+impl AsFd for BorrowedFdFile {
+    #[inline]
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.as_fd()
     }
 }
 

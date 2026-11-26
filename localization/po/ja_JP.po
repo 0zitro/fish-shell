@@ -434,6 +434,9 @@ msgstr "複数の正規表現パターンを指定することはできません
 msgid "Cannot specify multiple set-cursor options"
 msgstr "複数の set-cursor オプションを指定することはできません"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr "スライスへの代入時に --append または --prepend を使用することはできません"
 
@@ -475,6 +478,9 @@ msgstr "コマンド名が無効でした"
 
 msgid "Conditionally run blocks of code"
 msgstr "条件に応じてコードブロックを実行"
+
+msgid "Consume a suspended stream"
+msgstr ""
 
 msgid "Continue previously stopped process"
 msgstr "以前に停止されたプロセスを再開します"
@@ -1132,6 +1138,9 @@ msgstr "内部(フォークされていない)プロセスの回収"
 msgid "Refcell dynamic borrowing"
 msgstr "RefCell の動的借用"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "正規表現のコンパイルエラー: %s"
@@ -1264,6 +1273,13 @@ msgstr "現在評価中の関数を停止"
 
 msgid "Stop the innermost loop"
 msgstr "最も内側のループを停止"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "同期されたファイルアクセス"
@@ -1504,6 +1520,9 @@ msgstr "緊急のソケット状態(SIGURG)"
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "ジョブを終了させずにリストから削除するには 'disown PID' を使用してください"
 
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
+
 msgid "User defined signal 1"
 msgstr "ユーザー定義シグナル 1(SIGUSR1)"
 
@@ -1734,6 +1753,20 @@ msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr "または ctrl-%c か ctrl-%c を連続して2回押してください"
 
 #, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
+
+msgid "resume: the suspension records no stream"
+msgstr ""
+
+#, c-format
 msgid "rows %u to %u of %u"
 msgstr "%u 行中 %u から %u 行目"
 
@@ -1761,6 +1794,47 @@ msgstr "サブコマンドはオプションを取りません"
 #, c-format
 msgid "successfully set universal '%s'; but a global by that name shadows it"
 msgstr "ユニバーサル変数 '%s' の設定に成功しましたが、同名のグローバル変数がそれを覆い隠しています(シャドウイング)"
+
+#, c-format
+msgid "suspend: %s: cannot open"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: descriptor bound twice"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: direction unsupported by backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: expected FD[:in|out|inout][=BACKEND]"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: inout requires a backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: invalid pair descriptor"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: standard descriptors are suspended already"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: unknown backend"
+msgstr ""
+
+msgid "suspend: --fd requires a source pipeline"
+msgstr ""
+
+msgid "suspend: the command form is not a pipeline stage"
+msgstr ""
+
+msgid "suspend: the joined source is not one foreground pipeline"
+msgstr ""
 
 #, c-format
 msgid "switch: Expected at most one argument, got %u"
@@ -3428,9 +3502,6 @@ msgstr "文字列が一致しない"
 
 msgid "Suppress function and builtin lookup"
 msgstr "関数および組み込みコマンドの検索を抑制"
-
-msgid "Suspend the current shell."
-msgstr "現在のシェルを中断(suspend)"
 
 msgid "TRAP handler: debug prompt"
 msgstr "トラップハンドラ: デバッグプロンプト"

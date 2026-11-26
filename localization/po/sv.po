@@ -432,6 +432,9 @@ msgstr ""
 msgid "Cannot specify multiple set-cursor options"
 msgstr ""
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr ""
 
@@ -472,6 +475,9 @@ msgid "Commandname was invalid"
 msgstr ""
 
 msgid "Conditionally run blocks of code"
+msgstr ""
+
+msgid "Consume a suspended stream"
 msgstr ""
 
 msgid "Continue previously stopped process"
@@ -1130,6 +1136,9 @@ msgstr ""
 msgid "Refcell dynamic borrowing"
 msgstr ""
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr ""
@@ -1262,6 +1271,13 @@ msgstr "Avbryt den nuvarande funktionen"
 
 msgid "Stop the innermost loop"
 msgstr "Avbryt den innersta loopen"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr ""
@@ -1502,6 +1518,9 @@ msgstr "Viktig socket-situation"
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr ""
 
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
+
 msgid "User defined signal 1"
 msgstr "Användardefinerad signal 1"
 
@@ -1732,6 +1751,20 @@ msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr ""
 
 #, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
+
+msgid "resume: the suspension records no stream"
+msgstr ""
+
+#, c-format
 msgid "rows %u to %u of %u"
 msgstr ""
 
@@ -1758,6 +1791,47 @@ msgstr ""
 
 #, c-format
 msgid "successfully set universal '%s'; but a global by that name shadows it"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: cannot open"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: descriptor bound twice"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: direction unsupported by backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: expected FD[:in|out|inout][=BACKEND]"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: inout requires a backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: invalid pair descriptor"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: standard descriptors are suspended already"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: unknown backend"
+msgstr ""
+
+msgid "suspend: --fd requires a source pipeline"
+msgstr ""
+
+msgid "suspend: the command form is not a pipeline stage"
+msgstr ""
+
+msgid "suspend: the joined source is not one foreground pipeline"
 msgstr ""
 
 #, c-format
@@ -3421,9 +3495,6 @@ msgid "Strings are not identical"
 msgstr ""
 
 msgid "Suppress function and builtin lookup"
-msgstr ""
-
-msgid "Suspend the current shell."
 msgstr ""
 
 msgid "TRAP handler: debug prompt"

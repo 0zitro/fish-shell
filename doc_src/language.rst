@@ -294,6 +294,10 @@ If you instead want to put a suspended job into the background, use the :doc:`bg
 To get a listing of all currently started jobs, use the :doc:`jobs <cmds/jobs>` command.
 These listed jobs can be removed with the :doc:`disown <cmds/disown>` command.
 
+A pipeline's output can be suspended: ``command | suspend`` records the shell's end of the pipeline's output and writes a suspension handle, and :doc:`resume <cmds/resume>` consumes the handle to pass the stream on.
+The command form ``suspend SOURCE…`` starts the source as one pipeline with its standard descriptors suspended, and ``--fd`` binds further descriptors.
+The pipeline keeps running in the background between the two commands, and ``resume`` waits for it while it consumes the stream.
+
 At the moment, functions cannot be started in the background. Functions that are stopped and then restarted in the background using the :doc:`bg <cmds/bg>` command will not execute correctly.
 
 If the ``&`` character is followed by a non-separating character, it is not interpreted as background operator. Separating characters are whitespace and the characters ``;<>&|``.

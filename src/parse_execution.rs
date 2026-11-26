@@ -90,6 +90,9 @@ pub struct ExecutionContext {
     /// The block IO chain.
     /// For example, in `begin; foo ; end < file.txt` this would have the 'file.txt' IO.
     block_io: IoChain,
+
+    /// Whether the next job this context runs starts in the background.
+    background_next_job: bool,
 }
 
 // Report an error, setting $status to `status`. Always returns
@@ -151,6 +154,15 @@ impl ExecutionContext {
             pstree,
             cancel_signal: None,
             block_io,
+            background_next_job: false,
+        }
+    }
+
+    /// Construct a context whose next job starts in the background.
+    pub fn new_with_background_job(pstree: ParsedSourceRef, block_io: IoChain) -> Self {
+        Self {
+            background_next_job: true,
+            ..Self::new(pstree, block_io)
         }
     }
 
@@ -1713,6 +1725,8 @@ impl ExecutionContext {
             return EndExecutionReason::Ok;
         }
 
+        let background_next_job = std::mem::take(&mut self.background_next_job);
+
         // Increment the eval_level for the duration of this command.
         let _saved_eval_level = ctx.parser().push_scope(|s| s.eval_level += 1);
 
@@ -1746,7 +1760,7 @@ impl ExecutionContext {
             }
         };
 
-        let job_is_background = job_node.bg.is_some();
+        let job_is_background = job_node.bg.is_some() || background_next_job;
         let _timer = {
             let wants_timing = job_node_wants_timing(job_node);
             // It's an error to have 'time' in a background job.
@@ -1766,7 +1780,7 @@ impl ExecutionContext {
         // process" containing its node. This allows us to handle block-level redirections.
         // However, if there are no redirections, then we can just jump into the block directly, which
         // is significantly faster.
-        if self.job_is_simple_block(job_node) {
+        if self.job_is_simple_block(job_node) && !background_next_job {
             let mut block = None;
             let mut result =
                 self.apply_variable_assignments(ctx, None, &job_node.variables, &mut block);

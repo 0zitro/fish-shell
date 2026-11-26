@@ -90,6 +90,7 @@ cmds/pwd
 cmds/random
 cmds/read
 cmds/realpath
+cmds/resume
 cmds/return
 cmds/set
 cmds/set_color

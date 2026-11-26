@@ -435,6 +435,9 @@ msgstr "No se pueden especificar múltiples patrones de regex"
 msgid "Cannot specify multiple set-cursor options"
 msgstr "No se pueden especificar múltiples opciones de set-cursor"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr "No se puede usar --append o --prepend al asignar a una porción (*slice*)"
 
@@ -476,6 +479,9 @@ msgstr "El nombre del comando era inválido"
 
 msgid "Conditionally run blocks of code"
 msgstr "Ejecutar bloques de código condicionalmente"
+
+msgid "Consume a suspended stream"
+msgstr ""
 
 msgid "Continue previously stopped process"
 msgstr "Continuar el proceso detenido previamente"
@@ -1133,6 +1139,9 @@ msgstr "Recolectando procesos internos (sin fork)"
 msgid "Refcell dynamic borrowing"
 msgstr "Préstamo dinámico de refcell"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "Error al compilar la expresión regular: %s"
@@ -1265,6 +1274,13 @@ msgstr "Detener la función actualmente evaluada"
 
 msgid "Stop the innermost loop"
 msgstr "Detener el bucle más interno"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "Acceso sincronizado a archivos"
@@ -1505,6 +1521,9 @@ msgstr "Condición urgente de socket"
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "Usa ‘disown PID’ para remover trabajos de la lista sin terminarlos."
 
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
+
 msgid "User defined signal 1"
 msgstr "Señal definida por el usuario 1"
 
@@ -1735,6 +1754,20 @@ msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr "o presiona ctrl-%c o ctrl-%c dos veces seguidas."
 
 #, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
+
+msgid "resume: the suspension records no stream"
+msgstr ""
+
+#, c-format
 msgid "rows %u to %u of %u"
 msgstr "filas %u a %u de %u"
 
@@ -1762,6 +1795,47 @@ msgstr "el subcomando no admite opciones"
 #, c-format
 msgid "successfully set universal '%s'; but a global by that name shadows it"
 msgstr "se configuró correctamente el universal '%s'; pero una variable global con ese nombre lo oculta"
+
+#, c-format
+msgid "suspend: %s: cannot open"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: descriptor bound twice"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: direction unsupported by backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: expected FD[:in|out|inout][=BACKEND]"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: inout requires a backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: invalid pair descriptor"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: standard descriptors are suspended already"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: unknown backend"
+msgstr ""
+
+msgid "suspend: --fd requires a source pipeline"
+msgstr ""
+
+msgid "suspend: the command form is not a pipeline stage"
+msgstr ""
+
+msgid "suspend: the joined source is not one foreground pipeline"
+msgstr ""
 
 #, c-format
 msgid "switch: Expected at most one argument, got %u"
@@ -3424,9 +3498,6 @@ msgid "Strings are not identical"
 msgstr ""
 
 msgid "Suppress function and builtin lookup"
-msgstr ""
-
-msgid "Suspend the current shell."
 msgstr ""
 
 msgid "TRAP handler: debug prompt"

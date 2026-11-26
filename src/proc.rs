@@ -21,7 +21,7 @@ use crate::{
     signal::{RawSignal, signal_set_handlers_once},
     topic_monitor::{self, GenerationsList, Topic},
     wait_handle::{WaitHandle, WaitHandleRef, WaitHandleStore},
-    wutil::{perror_nix, wbasename},
+    wutil::{fish_wcstoul, perror_nix, wbasename},
 };
 use fish_common::{Timepoint, escape, timef};
 use fish_widestring::ToWString;
@@ -39,10 +39,11 @@ use nix::{
 };
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
+    collections::BTreeMap,
     fs,
     io::Write as _,
     num::NonZeroU32,
-    os::fd::RawFd,
+    os::fd::{OwnedFd, RawFd},
     rc::Rc,
     sync::{
         Arc, LazyLock, Mutex, OnceLock,
@@ -607,6 +608,104 @@ pub struct JobFlags {
 /// Every job has a unique positive value for this.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct InternalJobId(u64);
+
+/// A shell-local identifier for one suspension, written as `^N`. A value is never reused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SuspensionHandle(u64);
+
+impl SuspensionHandle {
+    /// Return the handle this shell assigns next.
+    fn allocate() -> Self {
+        static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+        SuspensionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Parse a word of the form `^N`; return `None` for any other word.
+    pub fn parse(word: &wstr) -> Option<Self> {
+        let digits = word.strip_prefix('^')?;
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        fish_wcstoul(digits).ok().map(SuspensionHandle)
+    }
+}
+
+impl ToWString for SuspensionHandle {
+    fn to_wstring(&self) -> WString {
+        let mut result = L!("^").to_owned();
+        result.push_utfstr(&self.0.to_wstring());
+        result
+    }
+}
+
+/// The descriptors a suspension records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuspensionForm {
+    /// One pipeline stage's input stream, recorded as descriptor 0.
+    Stream,
+    /// A command pipeline's descriptors 0, 1 and 2.
+    Command,
+}
+
+/// Which side of a recorded descriptor the suspended pipeline uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuspensionDirection {
+    /// The suspended command reads the descriptor; the shell holds the write end.
+    In,
+    /// The suspended command writes the descriptor; the shell holds the read end.
+    Out,
+    /// The suspended command reads and writes the descriptor; the shell holds a
+    /// duplex descriptor.
+    InOut,
+}
+
+/// The shell's ends of the pipes whose other ends a suspended command has, for each descriptor the
+/// command had there.
+pub struct Suspension {
+    /// The handle a later `resume` consumes.
+    pub handle: SuspensionHandle,
+    /// The descriptors the suspension records.
+    pub form: SuspensionForm,
+    /// The shell's end of the pipe and the side the suspended command uses, for each suspended
+    /// descriptor.
+    descriptors: BTreeMap<RawFd, (SuspensionDirection, OwnedFd)>,
+}
+
+impl Suspension {
+    /// Record a new suspension of `form`, with no descriptor yet.
+    pub fn new(form: SuspensionForm) -> Self {
+        Suspension {
+            handle: SuspensionHandle::allocate(),
+            form,
+            descriptors: BTreeMap::new(),
+        }
+    }
+
+    /// Record the shell's end of the pipe for `descriptor_fd`.
+    pub fn record_descriptor(
+        &mut self,
+        descriptor_fd: RawFd,
+        direction: SuspensionDirection,
+        shell_end: OwnedFd,
+    ) {
+        self.descriptors
+            .insert(descriptor_fd, (direction, shell_end));
+    }
+
+    /// Take the shell's end of the pipe for `descriptor_fd` and the side the suspended command
+    /// uses.
+    pub fn take_descriptor(
+        &mut self,
+        descriptor_fd: RawFd,
+    ) -> Option<(SuspensionDirection, OwnedFd)> {
+        self.descriptors.remove(&descriptor_fd)
+    }
+
+    /// Take every recorded descriptor of this suspension.
+    pub fn take_all_descriptors(&mut self) -> BTreeMap<RawFd, (SuspensionDirection, OwnedFd)> {
+        std::mem::take(&mut self.descriptors)
+    }
+}
 
 /// A struct representing a job. A job is a pipeline of one or more processes.
 #[derive(Default)]
@@ -1190,7 +1289,11 @@ static DISOWNED_PIDS: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
 /// See if any reapable processes have exited, and mark them accordingly.
 /// \param block_ok if no reapable processes have exited, block until one is (or until we receive a
 /// signal).
-fn process_mark_finished_children(parser: &mut Parser, block_ok: bool, block_io: Option<&IoChain>) {
+pub(crate) fn process_mark_finished_children(
+    parser: &mut Parser,
+    block_ok: bool,
+    block_io: Option<&IoChain>,
+) {
     // Get the exit and signal generations of all reapable processes.
     // The exit generation tells us if we have an exit; the signal generation allows for detecting
     // SIGHUP and SIGINT.
@@ -1642,3 +1745,18 @@ pub static HAVE_PROC_STAT: LazyLock<bool> =
 
 /// The signals that signify crashes to us.
 const CRASHSIGNALS: [libc::c_int; 6] = [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS];
+
+#[cfg(test)]
+mod tests {
+    use super::SuspensionHandle;
+    use fish_widestring::{L, ToWString as _};
+
+    #[test]
+    fn test_suspension_handle_parse_and_render() {
+        let handle = SuspensionHandle::parse(L!("^12")).expect("a handle word");
+        assert_eq!(handle.to_wstring(), L!("^12"));
+        assert_eq!(SuspensionHandle::parse(L!("12")), None);
+        assert_eq!(SuspensionHandle::parse(L!("^")), None);
+        assert_eq!(SuspensionHandle::parse(L!("^1x")), None);
+    }
+}

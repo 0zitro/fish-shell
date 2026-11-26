@@ -27,6 +27,9 @@ Scripting improvements
 - ``begin`` accepts a ``-b`` (or ``--barrier``) option that marks the block as code for the program a quoted capture produces: an enclosing capture emits the block verbatim and leaves its command substitutions unexpanded, so they run when the emitted program executes the block.  ``-b`` composes with a quoted mode to defer it (``-b -q`` expands the body when the program runs, ``-b -qq`` emits it as raw data then), and a bare barrier block executes its body without introducing a variable scope.  A command substitution that would execute a barrier block, directly or through a forwarded site in one of its words, is not evaluated by the capture: its barrier spans are copied and every other word and redirection target is expanded at capture, with an environment-override list reified as the loop that reproduces it.
 - A run of dollar signs before ``$(command substitution)`` treats the output as a variable reference and performs one fewer dereference than dollars: ``$$(...)`` has one, ``$$$(...)`` two, and slices in the produced reference are applied.
 - ``return`` is accepted in pipelines and command substitutions.  In a pipeline it sets the status of its stage; in a command substitution it ends the substitution with the given status, and the enclosing function or script continues.  Variable-assignment values are now validated like arguments.
+- ``suspend`` now records the stream on its standard input when that input is redirected, writes a suspension handle, and leaves the pipeline running in the background.
+- The new ``resume`` builtin consumes a suspension handle and links the suspended stream to its own output.
+- ``suspend`` now starts a command pipeline as one job with its standard descriptors suspended, with ``--fd FD[:in|out]`` binding further descriptors, and ``resume`` connects each recorded descriptor to its own descriptor of the same number.
 
 Regression fixes:
 -----------------

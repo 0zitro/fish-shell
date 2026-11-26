@@ -61,6 +61,7 @@ nix = { git = "https://github.com/nix-rust/nix", rev = "90c3b73392e221425b29a0aa
   "signal",
   "term",
   "user",
+  "zerocopy",
 ] }
 num-traits = "0.2.19"
 once_cell = "1.19.0"

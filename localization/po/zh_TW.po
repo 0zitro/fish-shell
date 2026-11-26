@@ -429,6 +429,9 @@ msgstr "不能指定多個正則表示式模式"
 msgid "Cannot specify multiple set-cursor options"
 msgstr "不能指定多次 set-cursor 選項"
 
+msgid "Cannot suspend a closed standard input"
+msgstr ""
+
 msgid "Cannot use --append or --prepend when assigning to a slice"
 msgstr "指派給切片時不能使用 --append 或 --prepend"
 
@@ -470,6 +473,9 @@ msgstr "命令名稱無效"
 
 msgid "Conditionally run blocks of code"
 msgstr "有條件地執行程式碼區塊"
+
+msgid "Consume a suspended stream"
+msgstr ""
 
 msgid "Continue previously stopped process"
 msgstr "繼續先前停止的行程"
@@ -1128,6 +1134,9 @@ msgstr "收割內部（非分叉的）行程"
 msgid "Refcell dynamic borrowing"
 msgstr "Refcell 動態借用"
 
+msgid "Refusing to suspend interactive login shell."
+msgstr ""
+
 #, c-format
 msgid "Regular expression compile error: %s"
 msgstr "正則表示式編譯錯誤：%s"
@@ -1260,6 +1269,13 @@ msgstr "停止目前執行的函式"
 
 msgid "Stop the innermost loop"
 msgstr "停止最內層的迴圈"
+
+msgid "Suspend the current shell"
+msgstr ""
+
+#, c-format
+msgid "Suspending %d: run kill -CONT %d from another terminal to resume"
+msgstr ""
 
 msgid "Synchronized file access"
 msgstr "同步檔案存取"
@@ -1500,6 +1516,9 @@ msgstr "緊急插口狀況"
 msgid "Use 'disown PID' to remove jobs from the list without terminating them."
 msgstr "使用「disown PID」從列表中移除作業而不將其終止。"
 
+msgid "Use --force to override. This might hang your terminal."
+msgstr ""
+
 msgid "User defined signal 1"
 msgstr "使用者定義訊號 1"
 
@@ -1730,6 +1749,20 @@ msgid "or press ctrl-%c or ctrl-%c twice in a row."
 msgstr "或者連續按下 ctrl-%c 或 ctrl-%c 兩次。"
 
 #, c-format
+msgid "resume: %s denotes no suspension"
+msgstr ""
+
+#, c-format
+msgid "resume: %s is not a suspension handle"
+msgstr ""
+
+msgid "resume: expected one suspension handle"
+msgstr ""
+
+msgid "resume: the suspension records no stream"
+msgstr ""
+
+#, c-format
 msgid "rows %u to %u of %u"
 msgstr "第 %u 至 %u 列，共 %u 列"
 
@@ -1757,6 +1790,47 @@ msgstr "子命令沒有選項"
 #, c-format
 msgid "successfully set universal '%s'; but a global by that name shadows it"
 msgstr "成功設定了通域變數「%s」，但有同名的全域變數遮蔽了它"
+
+#, c-format
+msgid "suspend: %s: cannot open"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: descriptor bound twice"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: direction unsupported by backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: expected FD[:in|out|inout][=BACKEND]"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: inout requires a backend"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: invalid pair descriptor"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: standard descriptors are suspended already"
+msgstr ""
+
+#, c-format
+msgid "suspend: %s: unknown backend"
+msgstr ""
+
+msgid "suspend: --fd requires a source pipeline"
+msgstr ""
+
+msgid "suspend: the command form is not a pipeline stage"
+msgstr ""
+
+msgid "suspend: the joined source is not one foreground pipeline"
+msgstr ""
 
 #, c-format
 msgid "switch: Expected at most one argument, got %u"
@@ -3421,9 +3495,6 @@ msgstr "字串不一致"
 
 msgid "Suppress function and builtin lookup"
 msgstr "抑制尋找函式和內建命令"
-
-msgid "Suspend the current shell."
-msgstr "暫停此 shell。"
 
 msgid "TRAP handler: debug prompt"
 msgstr "TRAP 處理器：除錯提示"

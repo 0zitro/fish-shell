@@ -310,6 +310,10 @@ const BUILTIN_DATAS: &[BuiltinData] = &[
         func: realpath::realpath,
     },
     BuiltinData {
+        name: L!("resume"),
+        func: resume::resume,
+    },
+    BuiltinData {
         name: L!("return"),
         func: r#return::r#return,
     },
@@ -332,6 +336,10 @@ const BUILTIN_DATAS: &[BuiltinData] = &[
     BuiltinData {
         name: L!("string"),
         func: string::string,
+    },
+    BuiltinData {
+        name: L!("suspend"),
+        func: suspend::suspend,
     },
     BuiltinData {
         name: L!("switch"),
@@ -526,12 +534,14 @@ pub fn builtin_get_desc(name: &wstr) -> Option<&'static wstr> {
         _ if name == "random" => wgettext!("Generate random number"),
         _ if name == "read" => wgettext!("Read a line of input into variables"),
         _ if name == "realpath" => wgettext!("Show absolute path sans symlinks"),
+        _ if name == "resume" => wgettext!("Consume a suspended stream"),
         _ if name == "return" => wgettext!("Stop the currently evaluated function"),
         _ if name == "set" => wgettext!("Handle environment variables"),
         _ if name == "set_color" => wgettext!("Set the terminal color"),
         _ if name == "source" => wgettext!("Evaluate contents of file"),
         _ if name == "status" => wgettext!("Return status information about fish"),
         _ if name == "string" => wgettext!("Manipulate strings"),
+        _ if name == "suspend" => wgettext!("Suspend the current shell"),
         _ if name == "switch" => wgettext!("Conditionally run blocks of code"),
         _ if name == "test" => wgettext!("Test a condition"),
         _ if name == "time" => wgettext!("Measure how long a command or block takes"),
