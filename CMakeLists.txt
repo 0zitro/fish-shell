@@ -61,7 +61,7 @@ add_custom_target(
     COMMAND
         "${CMAKE_COMMAND}" -E
             env ${VARS_FOR_CARGO}
-                ${Rust_CARGO}
+                "${CMAKE_SOURCE_DIR}/build_tools/run_cargo.sh" "${Rust_CARGO}"
                     build --bin fish
                     $<$<CONFIG:Release>:--release>
                     $<$<CONFIG:RelWithDebInfo>:--profile=release-with-debug>
